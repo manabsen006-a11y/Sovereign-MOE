@@ -47,10 +47,24 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
           time_limit: float = 300.0, gap: float = 1e-4,
           tol: float = 1e-8, verbose: bool = False,
           sensitivity: bool = False) -> Solution:
-    """Solve an LP or MILP, picking the method automatically by default."""
+    """Solve an LP or MILP, picking the method automatically by default.
+
+    A quadratic objective is **refused**, not ignored. There is no QP solver
+    here yet; every engine below optimises ``c'x`` only. Silently dropping the
+    ``Q`` term would return a confident, wrong answer -- on a two-variable test
+    it reports -3.0 for a point whose true quadratic objective is -1.875 -- and
+    nothing downstream could detect it. Refusing is the only safe behaviour
+    until a QP path exists.
+    """
     from .lp.pdlp import PDLPParams, solve_pdlp
     from .lp.simplex import SimplexParams, solve_simplex
     from .mip.tree import MIPParams, solve_mip
+
+    if prob.is_qp:
+        raise NotImplementedError(
+            "this model has a quadratic objective (Q is set) and no QP solver "
+            "is implemented; solving it as an LP would silently discard the "
+            "quadratic term and report a wrong objective")
 
     if method == "auto":
         if prob.is_mip:

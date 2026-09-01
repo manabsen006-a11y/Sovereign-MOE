@@ -30,6 +30,13 @@ Therefore, in this repository:
 - `cupy` — GPU arrays and elementwise kernels. Vendor math, not a solver.
 - `scipy.sparse` — **only** inside `bench/` and `tests/` for constructing or
   cross-checking test data. Never inside `src/vyuha/`.
+- `scipy.optimize.linprog` — **only** inside `bench/comparator.py`, and only to
+  run HiGHS as an external *comparator*. The problem statement requires that
+  results be "compared against at least one established commercial or
+  open-source solver", so a comparator is mandatory, not optional. It is
+  quarantined to that one file, it never touches `src/vyuha/`, and
+  `tools/check_provenance.py` still bans it everywhere the engine lives. Using a
+  solver to *check* our numbers is the opposite of building on one.
 
 **Every algorithm module carries a citation header** naming the paper or
 textbook it implements. `tools/check_provenance.py` fails CI if one is missing.

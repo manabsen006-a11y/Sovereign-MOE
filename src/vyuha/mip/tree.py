@@ -330,6 +330,11 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     tol = params.tol
     t0 = time.perf_counter()
 
+    if prob.Q is not None:
+        raise NotImplementedError(
+            "solve_mip optimises a linear objective; this model has a "
+            "quadratic term, which would be silently discarded")
+
     if not prob.is_mip:
         from ..lp.pdlp import PDLPParams, solve_pdlp
         return solve_pdlp(prob, PDLPParams(device=params.device))

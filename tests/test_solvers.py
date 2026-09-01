@@ -277,3 +277,34 @@ def test_mip_incumbent_is_feasible_in_the_original_space():
         pytest.skip("no incumbent found within the limit")
     v = verify(p, s.x, s.objective, feas_tol=1e-6, int_tol=1e-6)
     assert v.ok, f"reported an incumbent the verifier rejects:\n{v.report()}"
+
+
+def test_quadratic_objective_is_refused_not_silently_dropped():
+    """REGRESSION: a QP was solved as an LP and the answer reported as optimal.
+
+    No QP solver exists here; every engine optimises c'x only. Dropping the Q
+    term silently returned a confident wrong answer -- on a two-variable model
+    it reported -3.0 for a point whose true quadratic objective is -1.875 -- and
+    nothing downstream could detect it, because the point *is* feasible and *is*
+    LP-optimal. Refusing is the only safe behaviour until a QP path exists.
+    """
+    from vyuha.cli import solve
+    from vyuha.core.sparse import SparseMatrix
+    from vyuha.lp.simplex import solve_simplex
+    from vyuha.mip.tree import solve_mip
+
+    A = SparseMatrix.from_dense(np.array([[1.0, 1.0]]))
+    Q = SparseMatrix.from_dense(np.eye(2))
+    qp = Problem(A=A, c=np.array([-2.0, -2.0]),
+                 row_lb=np.array([-INF]), row_ub=np.array([1.5]),
+                 col_lb=np.zeros(2), col_ub=np.full(2, 10.0), Q=Q, name="qp")
+    assert qp.is_qp
+
+    for fn in (solve, solve_simplex, solve_mip):
+        with pytest.raises(NotImplementedError):
+            fn(qp)
+
+    # the same model without Q must still solve normally
+    lp = qp.copy()
+    lp.Q = None
+    assert solve(lp).status == Status.OPTIMAL

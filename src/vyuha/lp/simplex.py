@@ -75,6 +75,7 @@ from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import VAL
 from ..core.tolerances import INF
 from ..numerics.scaling import scale_problem
+from ..numerics.lu import LUSingular
 from .basis import AT_LOWER, AT_UPPER, BASIC, FIXED, FREE, Basis
 
 __all__ = ["SimplexParams", "solve_simplex"]
@@ -457,13 +458,18 @@ class _Simplex:
 
         if r < 0:                                     # bound flip only
             B.status[q] = AT_UPPER if B.status[q] == AT_LOWER else AT_LOWER
-            return
+            return True
 
-        leaving = B.update(r, q, self.alpha)
+        try:
+            leaving = B.update(r, q, self.alpha)
+        except LUSingular:
+            self.maybe_refactorize(force=True)
+            return False
         self.zB[r] = zq
         B.status[leaving] = AT_UPPER if hit_upper else AT_LOWER
         if B.upper[leaving] - B.lower[leaving] <= 0.0:
             B.status[leaving] = FIXED
+        return True
 
     def update_devex(self, q, r, alpha_row, dirn):
         """Devex weight update against the current reference framework."""
@@ -604,10 +610,25 @@ def _dual_loop(S: _Simplex):
         theta = -delta / arq
 
         S.alpha = B.ftran_column(q, out=S.alpha)
+        # alpha_row[q] and alpha[r] are the same number computed two ways -- one
+        # from the pivot row, one from the FTRAN'd entering column. When the
+        # factorisation has drifted they disagree, and the ratio test can pass
+        # on a pivot the update then finds to be zero. Refactorise and retry
+        # rather than raising out of the solver.
+        if abs(S.alpha[r]) <= p.pivot_tol:
+            S.maybe_refactorize(force=True)
+            S.iters += 1
+            continue
+
         S.zB -= S.alpha * theta
         zq = B.nonbasic_value(q) + theta
 
-        leaving = B.update(r, q, S.alpha)
+        try:
+            leaving = B.update(r, q, S.alpha)
+        except LUSingular:
+            S.maybe_refactorize(force=True)
+            S.iters += 1
+            continue
         S.zB[r] = zq
         B.status[leaving] = AT_LOWER if sigma > 0 else AT_UPPER
         if B.upper[leaving] - B.lower[leaving] <= 0.0:
@@ -718,30 +739,33 @@ class NodeSolver:
         S.farkas = None
         S.refresh()
 
-        if S.primal_infeasibility() <= p.feas_tol:
-            status = _primal_loop(S, phase=2)
-        elif _dual_feasible(B, p.opt_tol):
-            status = _dual_loop(S)
-            if status == Status.OPTIMAL:
+        try:
+            if S.primal_infeasibility() <= p.feas_tol:
                 status = _primal_loop(S, phase=2)
-        else:
-            st1 = _primal_loop(S, phase=1)
-            if st1 != Status.OPTIMAL:
-                status = st1
-            else:
-                S.refresh()
-                if S.primal_infeasibility() > p.feas_tol * 100:
-                    # Phase 1 stalled with infeasibility left. Its own duals
-                    # are the certificate: y1 = B^-T c1 prices the rows in a
-                    # combination no feasible point can satisfy.
-                    ph1 = np.zeros(S.m, dtype=VAL)
-                    _phase1_costs(S.zB, B.basic, B.lower, B.upper,
-                                  p.feas_tol, ph1)
-                    B.btran(ph1)
-                    S.farkas = ph1
-                    status = Status.INFEASIBLE
-                else:
+            elif _dual_feasible(B, p.opt_tol):
+                status = _dual_loop(S)
+                if status == Status.OPTIMAL:
                     status = _primal_loop(S, phase=2)
+            else:
+                st1 = _primal_loop(S, phase=1)
+                if st1 != Status.OPTIMAL:
+                    status = st1
+                else:
+                    S.refresh()
+                    if S.primal_infeasibility() > p.feas_tol * 100:
+                        # Phase 1 stalled with infeasibility left. Its own duals
+                        # are the certificate: y1 = B^-T c1 prices the rows in a
+                        # combination no feasible point can satisfy.
+                        ph1 = np.zeros(S.m, dtype=VAL)
+                        _phase1_costs(S.zB, B.basic, B.lower, B.upper,
+                                      p.feas_tol, ph1)
+                        B.btran(ph1)
+                        S.farkas = ph1
+                        status = Status.INFEASIBLE
+                    else:
+                        status = _primal_loop(S, phase=2)
+        except LUSingular:
+            status = Status.NUMERICAL
 
         if S.perturbed:
             S.unperturb()
@@ -786,6 +810,11 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
     params = params or SimplexParams()
     t0 = time.perf_counter()
 
+    if prob.Q is not None:
+        raise NotImplementedError(
+            "solve_simplex optimises a linear objective; this model has a "
+            "quadratic term, which would be silently discarded")
+
     flip = prob.sense == ObjSense.MAXIMISE
     work = prob
     if flip:
@@ -813,27 +842,33 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
     S.refresh()
 
     # ---- choose the algorithm -------------------------------------------- #
+    # Any numerical failure below is reported as a status, never raised: a
+    # caller deep inside a spatial branch-and-bound cannot do anything useful
+    # with an exception, and one bad node must not abort the search.
     method = "dual"
     status = Status.NOT_SOLVED
-    if S.primal_infeasibility() <= params.feas_tol:
-        method = "primal"
-        status = _primal_loop(S, phase=2)
-    elif _dual_feasible(B, params.opt_tol):
-        status = _dual_loop(S)
-        if status == Status.OPTIMAL:
-            # dual simplex ends primal feasible; polish any residual dual error
+    try:
+        if S.primal_infeasibility() <= params.feas_tol:
+            method = "primal"
             status = _primal_loop(S, phase=2)
-    else:
-        method = "primal(2-phase)"
-        st1 = _primal_loop(S, phase=1)
-        if st1 == Status.OPTIMAL:
-            S.refresh()
-            if S.primal_infeasibility() > params.feas_tol * 100:
-                status = Status.INFEASIBLE
-            else:
+        elif _dual_feasible(B, params.opt_tol):
+            status = _dual_loop(S)
+            if status == Status.OPTIMAL:
+                # dual simplex ends primal feasible; polish residual dual error
                 status = _primal_loop(S, phase=2)
         else:
-            status = st1
+            method = "primal(2-phase)"
+            st1 = _primal_loop(S, phase=1)
+            if st1 == Status.OPTIMAL:
+                S.refresh()
+                if S.primal_infeasibility() > params.feas_tol * 100:
+                    status = Status.INFEASIBLE
+                else:
+                    status = _primal_loop(S, phase=2)
+            else:
+                status = st1
+    except LUSingular:
+        status = Status.NUMERICAL
 
     # ---- remove any perturbation and re-optimise -------------------------- #
     if S.perturbed:

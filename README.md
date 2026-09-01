@@ -120,7 +120,8 @@ python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
-python -m pytest tests/               # 105 tests
+python -m bench.comparator            # head-to-head against HiGHS
+python -m pytest tests/               # 137 tests
 ```
 
 ---
@@ -152,7 +153,7 @@ python -m pytest tests/               # 105 tests
 | Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
 | Refinery model templates + Haverly pooling | `models/` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
-| Crossover, sensitivity ranging, IPM, QP | — | **not built** (roadmap) |
+| Crossover, presolve, IPM, QP | — | **not built** (roadmap) |
 
 ---
 
@@ -198,6 +199,35 @@ That is the honest verdict on the batched idea: valid-but-loose bounds are cheap
 and parallel, but bound *quality* dominates tree size. BNR remains the right
 tool when nodes are large enough that an exact solve is unaffordable; the tree
 takes `node_solver="simplex"` or `"bnr"`.
+
+---
+
+## Verified against outside authorities
+
+Every correctness bug in this project was caught by an oracle *outside* the
+solver. None was caught by the solver agreeing with itself, which is why the
+checks below all reach for something external.
+
+| check | result |
+|---|---|
+| **HiGHS head-to-head** (`bench/comparator.py`) | 11/11 agree, max relative difference **3.7e-16** |
+| Independent verifier | every reported optimum accepted, recomputed in compensated arithmetic |
+| Exact rational arithmetic | forward error **0.0** at cond₁ 1.7e12 |
+| Published MIPLIB optima | every proved optimum matches exactly |
+| Brute-force global scan | Haverly 400 / 600 / 750 confirmed |
+| Cut validity (brute force) | 58 cuts vs every feasible point, worst slack −1.4e-14 |
+| Conflict clause validity | 40 clauses, worst slack 0.0 |
+| Shadow-price prediction | 239 rows, worst error 3.9e-15 |
+
+**Speed, stated plainly:** HiGHS solves the same eleven LP relaxations in 0.3 s
+against our 9.8 s — roughly **33× faster**, or 14× excluding the degenerate
+10teams. Matching its answers exactly is the achievement here; matching its
+clock is not yet true, and presolve plus a Forrest–Tomlin update are the two
+reasons why.
+
+A full requirement-by-requirement conformance audit against the problem
+statement — including what is *not* built — is in the artifact linked from the
+project notes.
 
 ---
 
@@ -282,6 +312,46 @@ collapses to a point the McCormick envelope becomes *exact*, so distributive
 recursion is simply the relaxation on a degenerate box. It is kept as the primal
 heuristic inside the tree -- supplying incumbents while the search proves
 optimality, instead of being the whole method with no guarantee.
+
+### Multi-pool: the pq-formulation
+
+Haverly has one pool. A refinery has many -- tanks, headers, intermediate
+streams -- and the hard non-convexity is several pools feeding one product.
+
+The **q-formulation** replaces pool qualities with the *proportions* `q_ij` of
+each source in each pool, leaving products `v_ijk = q_ij * y_jk`. The
+**pq-formulation** adds the reformulation-linearisation rows obtained by
+multiplying the proportion identity through by each outgoing flow:
+
+```
+(sum_i q_ij) * y_jk = y_jk        becomes        sum_i v_ijk = y_jk
+```
+
+Linear, redundant in the exact model, and decisive in the relaxation: without it
+each auxiliary floats independently inside its own McCormick box, and the
+relaxation can buy cheap quality from one while selling volume from another.
+
+Measured on random multi-pool networks, 60 s limit (maximisation, so a *lower*
+root bound is tighter):
+
+| network | terms | root q | root pq | tighter | q nodes/time | pq nodes/time |
+|---|---|---|---|---|---|---|
+| 4x2x2 s0 | 16 | 4391 | **1476** | 66.4% | 2528 / 60.0s | **2 / 0.4s** |
+| 4x2x2 s1 | 16 | 2503 | **1293** | 48.4% | 1362 / 60.0s | **0 / 0.3s** |
+| 5x2x3 s0 | 30 | 4539 | **3965** | 12.6% | 1581 / 60.0s | **23 / 1.1s** |
+| 5x2x3 s1 | 30 | 6384 | **3704** | 42.0% | 1600 / 60.0s | **10 / 0.5s** |
+| 6x3x3 s0 | 54 | 5725 | **3976** | 30.6% | 1645 / 60.0s | **4 / 0.6s** |
+| 6x3x3 s1 | 54 | 5033 | **3119** | 38.0% | 1774 / 60.0s | **5 / 0.4s** |
+
+**Every q run hits the time limit; every pq run closes in under 1.2 seconds.**
+On the two rows where the reported objectives differ (5x2x3 s0, 6x3x3 s1) it is
+because q never finished and returned a worse incumbent -- pq's value is the
+higher one in both cases, and pq proved it.
+
+On the single-pool Haverly instances pq matches the p-formulation rather than
+beating it (root 500 against 500). The RLT rows are what rescue the *q* encoding
+there, from 1950 to 500; the advantage over p is a multi-pool phenomenon, which
+is the point of the formulation.
 
 ---
 
@@ -492,8 +562,21 @@ values — not by unit tests. Both now have regression tests.
 - **Cuts are separated at the root only** and are never rolled back when they
   fail to pay for themselves (see p0201 above). Local cuts in the tree and a
   cost-aware rollback are the next steps.
-- **No IPM and no QP solve path** (QP models parse, but there is no quadratic
-  solver behind them).
+- **No QP solver.** The PS names QP in its initial focus. Models parse, and a
+  quadratic objective is now **refused** rather than silently solved as an LP —
+  which it previously was, reporting -3.0 for a point whose true QP objective is
+  -1.875.
+- **No interior-point method.** Named in the PS beside the revised simplex.
+- **No presolve module.** Domain propagation runs at every node, but there are
+  no singleton/doubleton eliminations, no dominated-column or forcing-row
+  reductions, and no postsolve stack.
+- **Netlib, Mittelmann and QPLIB are untouched.** Only 11 MIPLIB instances are
+  held; Netlib needs an `emps` decompressor that is not written.
+- **Scale is the weakest claim.** The largest MILP ever tested here is 230x2025
+  with 12k nonzeros, against a stated benchmark of "thousands to millions". LP
+  has reached 100k x 150k on the first-order path; MILP has not been near it.
+- **The branch-and-bound tree is single-threaded.** Nine kernels run in
+  parallel; the search does not.
 - GPU fp64 on a laptop RTX 3050 runs at 1/32 rate; a datacentre card changes the
   crossover point substantially.
 
@@ -508,6 +591,6 @@ src/vyuha/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        105 tests including regressions for every bug above
+tests/        137 tests including regressions for every bug above
 ui/           local single-page interface
 ```
