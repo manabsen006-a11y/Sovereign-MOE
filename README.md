@@ -56,25 +56,33 @@ are genuinely complementary, and `method="auto"` picks by size.
 
 MILP is exact where it closes. With exact node LPs the tree is sharp: a 22-item
 knapsack closes in **59 nodes** where the batched first-order bound needed
-**40,211**. On real MIPLIB instances at a 45 s limit:
+**40,211**. On the full MIPLIB set at a 60 s limit:
 
 ```
-instance     status         objective     reference   relerr    time
-flugpl       OPTIMAL          1201500       1201500  0.00e+00   5.55s
-gr4x6        OPTIMAL           202.35           nan       nan   0.70s
-mod010       OPTIMAL             6548          6548  0.00e+00   6.03s
-p0201        OPTIMAL             7615          7615  0.00e+00  26.28s
-dcmulti      TIME_LIMIT           nan        188182       nan  45.44s
-gt2          TIME_LIMIT           nan         21166       nan  45.03s
-khb05250     TIME_LIMIT           nan   1.0694023e+08      nan  45.08s
+instance     status         objective       reference   relerr    time  chk
+flugpl       OPTIMAL          1201500         1201500  0.00e+00   4.32s   ok
+gr4x6        OPTIMAL           202.35             nan       nan   0.58s   ok
+mod010       OPTIMAL             6548            6548  0.00e+00   2.34s   ok
+p0201        OPTIMAL             7615            7615  0.00e+00   8.16s   ok
+mas76        TIME_LIMIT     40589.436             nan       nan  60.04s   ok
+misc07       TIME_LIMIT          2810             nan       nan  60.03s   ok
+10teams      TIME_LIMIT           nan             nan       nan  60.22s    -
+dcmulti      TIME_LIMIT           nan          188182       nan  60.46s    -
+gt2          TIME_LIMIT           nan           21166       nan  60.04s    -
+khb05250     TIME_LIMIT           nan   1.0694023e+08       nan  60.20s    -
+qnet1        TIME_LIMIT           nan     16029.69300       nan  61.02s    -
+
+  status OPTIMAL      4/11        verifier accepted  6/11
+  verifier rejected   0           within 1e-4 of ref 3/3 with a reference
 ```
 
-**4/7 proved optimal, every one of them matching the published optimum
-exactly.** The three failures share a specific cause and it is worth naming: the
-solver found **no incumbent at all**, not a poor one. The bound is fine; the
-primal side is the gap. The only heuristic implemented is round-and-propagate,
-and cuts, diving and a feasibility pump are all unbuilt. That is the next piece
-of work, and it is a bigger lever on these instances than anything on the
+**4/11 proved optimal, every one matching the published optimum exactly, and no
+wrong answers anywhere.** The five blanks share one cause and it is worth naming
+precisely: the solver found **no incumbent at all**, not a poor one. The bound
+side is working; the primal side is the gap. The only heuristic implemented is
+round-and-propagate — no diving, no feasibility pump, no RINS — and without cuts
+the tree cannot close the remaining models in a minute. That is the next piece
+of work, and on these instances it is a larger lever than anything on the
 bounding side.
 
 ---
