@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
 
 from vyuha.core.backend import GPU_ERROR, gpu_available          # noqa: E402
 from vyuha.core.problem import ObjSense, Status, VarKind         # noqa: E402
-from vyuha.io.mps import read_mps                                # noqa: E402
+from vyuha.io import read_model                                  # noqa: E402
 from vyuha.models import TEMPLATES                               # noqa: E402
 from vyuha.numerics.scaling import compute_scaling               # noqa: E402
 
@@ -221,11 +221,18 @@ def _build(body):
     if body.get("source") == "mps":
         text = body.get("mps", "")
         if not text.strip():
-            raise ValueError("no MPS text supplied")
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_paste.mps")
+            raise ValueError("no model text supplied")
+        # Accept either format and work out which by looking at the text: the
+        # reader is chosen by extension, and pasted text has no filename. MPS
+        # is a sectioned card format, so its section keywords are decisive.
+        upper = text.upper()
+        is_mps = "ROWS" in upper and "COLUMNS" in upper
+        ext = ".mps" if is_mps else ".lp"
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "_paste" + ext)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
-        return read_mps(path)
+        return read_model(path)
 
     name = body.get("template", "blending")
     fn = TEMPLATES[name]

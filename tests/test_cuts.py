@@ -212,3 +212,64 @@ def test_cuts_improve_the_root_bound_and_keep_the_optimum():
     assert with_cuts.status == Status.OPTIMAL
     assert abs(without.objective - with_cuts.objective) < 1e-6
     assert with_cuts.info.get("root_cut_bound_gain", 0.0) >= -1e-9
+
+
+# --------------------------------------------------------------------------- #
+# mixed-integer rounding                                                       #
+# --------------------------------------------------------------------------- #
+
+
+def test_mir_cuts_never_remove_an_integer_feasible_point():
+    """Same brute-force standard the other cut families are held to.
+
+    MIR is separated from the model's own rows rather than the tableau, so it
+    has its own shift-and-complement logic and its own way to be wrong: a row
+    containing a free variable has no finite bound to complement against, and a
+    cut derived without one is not valid. Those rows are skipped, and this sweep
+    is what proves it.
+    """
+    from vyuha.mip.cuts import generate_mir
+
+    checked_instances = 0
+    checked_cuts = 0
+    for seed in range(40):
+        for gen, ub in ((lambda s: small_mip(seed=s, n=7, m=4, ub=2), 2),
+                        (lambda s: small_knapsack(seed=s, n=9, m=3), 1)):
+            p = gen(seed)
+            scaled, sc = scale_problem(p, method="pdlp")
+            node = NodeSolver(scaled, SimplexParams())
+            r = node.solve(scaled.col_lb, scaled.col_ub)
+            if r.status != Status.OPTIMAL:
+                continue
+            cuts = generate_mir(scaled, r.x, scaled.integer_mask,
+                                scaled.col_lb, scaled.col_ub, max_cuts=20)
+            if not cuts:
+                continue
+            feasible = enumerate_feasible(p, ub=ub)
+            if not feasible:
+                continue
+            checked_instances += 1
+            for c in cuts:
+                checked_cuts += 1
+                for xf in feasible:
+                    lhs = float(c.val @ xf[c.idx])
+                    assert lhs >= c.rhs - 1e-6, (
+                        f"seed {seed}: MIR cut removes a feasible point: "
+                        f"lhs={lhs:.10g} < rhs={c.rhs:.10g}")
+
+    assert checked_instances >= 15, (
+        f"only {checked_instances} instances produced MIR cuts")
+    assert checked_cuts >= 40, f"only {checked_cuts} MIR cuts checked"
+
+
+def test_mir_skips_rows_with_a_free_variable():
+    """No finite bound to complement against means no valid shift."""
+    from vyuha.mip.cuts import generate_mir
+
+    A = SparseMatrix.from_dense(np.array([[1.0, 1.0]]))
+    p = Problem(A=A, c=np.array([1.0, 1.0]), row_lb=np.array([-INF]),
+                row_ub=np.array([2.5]),
+                col_lb=np.array([-INF, 0.0]), col_ub=np.array([INF, 5.0]),
+                kind=np.ones(2, dtype=np.uint8), name="freevar")
+    assert generate_mir(p, np.array([0.5, 0.5]), p.integer_mask,
+                        p.col_lb, p.col_ub) == []

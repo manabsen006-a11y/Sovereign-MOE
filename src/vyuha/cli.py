@@ -1,7 +1,8 @@
 """Command line interface.
 
-    vyuha info    model.mps                 model statistics and a numerical health check
-    vyuha solve   model.mps [options]       solve and optionally write a solution file
+    vyuha demo                              end-to-end LP showcase
+    vyuha info    model.mps|model.lp        model statistics and a numerical health check
+    vyuha solve   model.mps|model.lp        solve; --sensitivity for shadow prices
     vyuha verify  model.mps solution.json   independent feasibility check
     vyuha devices                           what hardware this build can use
 
@@ -22,7 +23,7 @@ import numpy as np
 from .core.backend import GPU_ERROR, gpu_available
 from .core.problem import ObjSense, Problem, Solution, Status
 from .core.tolerances import INF
-from .io.mps import read_mps
+from .io import read_model
 
 try:                                    # keep the console honest on Windows
     sys.stdout.reconfigure(encoding="utf-8")
@@ -49,22 +50,33 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
           sensitivity: bool = False) -> Solution:
     """Solve an LP or MILP, picking the method automatically by default.
 
-    A quadratic objective is **refused**, not ignored. There is no QP solver
-    here yet; every engine below optimises ``c'x`` only. Silently dropping the
+    A **convex** quadratic objective is routed to the proximal primal-dual QP
+    solver. Anything else quadratic is refused rather than ignored: the simplex
+    and branch-and-bound engines below optimise ``c'x`` only, so dropping the
     ``Q`` term would return a confident, wrong answer -- on a two-variable test
     it reports -3.0 for a point whose true quadratic objective is -1.875 -- and
-    nothing downstream could detect it. Refusing is the only safe behaviour
-    until a QP path exists.
+    nothing downstream could detect it.
+
+    Refused, specifically: a non-convex ``Q`` (needs spatial branch-and-bound,
+    :mod:`vyuha.globalopt`) and any MIQP (needs a QP solved at every node).
     """
     from .lp.pdlp import PDLPParams, solve_pdlp
     from .lp.simplex import SimplexParams, solve_simplex
     from .mip.tree import MIPParams, solve_mip
 
     if prob.is_qp:
-        raise NotImplementedError(
-            "this model has a quadratic objective (Q is set) and no QP solver "
-            "is implemented; solving it as an LP would silently discard the "
-            "quadratic term and report a wrong objective")
+        if prob.is_mip:
+            raise NotImplementedError(
+                "this model is a MIQP (quadratic objective and integer "
+                "variables). The QP solver handles the continuous convex case; "
+                "branch-and-bound would need a QP solved at every node, which "
+                "is not implemented. Solving it as a MILP would silently "
+                "discard the quadratic term and report a wrong objective")
+        from .qp import QPParams, solve_qp
+        return solve_qp(prob, QPParams(time_limit=time_limit,
+                                       eps_abs=max(tol, 1e-10),
+                                       eps_rel=max(tol, 1e-10),
+                                       verbose=verbose))
 
     if method == "auto":
         if prob.is_mip:
@@ -97,7 +109,7 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
 
 def cmd_info(a):
     t = time.perf_counter()
-    prob = read_mps(a.model)
+    prob = read_model(a.model)
     dt = time.perf_counter() - t
     print(prob.summary())
     print(f"  parsed in {dt:.3f}s")
@@ -125,7 +137,7 @@ def cmd_info(a):
 
 
 def cmd_solve(a):
-    prob = read_mps(a.model)
+    prob = read_model(a.model)
     if a.maximise:
         prob.sense = ObjSense.MAXIMISE
     print(prob.summary())
@@ -174,6 +186,12 @@ def cmd_solve(a):
             json.dump(payload, fh, indent=1)
         print(f"  wrote       {a.out}")
 
+    if a.sensitivity and getattr(sol, "sensitivity", None) is None:
+        # Asked for and not delivered: say why rather than printing nothing.
+        print()
+        print("  no sensitivity report: ranging is read off a simplex "
+              "basis, and this model")
+        print(f"  was solved by {sol.method}, which produces no basis.")
     if getattr(sol, "sensitivity", None) is not None:
         print()
         print(sol.sensitivity.report())
@@ -194,6 +212,11 @@ def cmd_verify(a):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from bench.verify import main as vmain
     return vmain([a.model, a.solution])
+
+
+def cmd_demo(a):
+    from .demo import run
+    return run(size=a.size)
 
 
 def cmd_devices(a):
@@ -247,6 +270,11 @@ def main(argv=None):
     p.add_argument("model")
     p.add_argument("solution")
     p.set_defaults(fn=cmd_verify)
+
+    p = sub.add_parser("demo", help="end-to-end LP showcase")
+    p.add_argument("--size", type=int, default=14,
+                   help="blending model size (components)")
+    p.set_defaults(fn=cmd_demo)
 
     p = sub.add_parser("devices", help="show available compute")
     p.set_defaults(fn=cmd_devices)

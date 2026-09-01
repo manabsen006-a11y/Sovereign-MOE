@@ -23,7 +23,11 @@ FORBIDDEN = [
 ]
 
 # modules that are plumbing, not algorithms
-EXEMPT = {"__init__.py", "_jit.py", "cli.py", "tolerances.py", "problem.py"}
+# Files that implement no mathematics of their own: entry points, data
+# containers and presentation wrappers. Everything that implements an
+# algorithm must cite where the algorithm comes from.
+EXEMPT = {"__init__.py", "_jit.py", "cli.py", "tolerances.py", "problem.py",
+          "demo.py"}
 
 
 def main() -> int:

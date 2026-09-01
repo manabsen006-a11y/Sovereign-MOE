@@ -107,13 +107,20 @@ pip install cupy-cuda12x[ctk]   # optional, for the GPU path
 ```
 
 ```bash
+python -m vyuha.cli demo                         # the whole story, end to end
 python -m vyuha.cli devices                      # what hardware is usable
-python -m vyuha.cli info   model.mps             # stats + numerical health
+python -m vyuha.cli info   model.lp              # stats + numerical health
 python -m vyuha.cli solve  model.mps --device gpu --out sol.json
 python -m vyuha.cli solve  model.mps --sensitivity     # shadow prices + ranging
 python -m vyuha.cli verify model.mps sol.json    # independent check
 python -m ui.server                              # http://127.0.0.1:8000
 ```
+
+Models are read from MPS or CPLEX LP, plain or `.gz`/`.bz2`/`.xz`; the reader is
+chosen by extension. A `QUADOBJ` section is parsed and, if the Hessian is
+positive semi-definite, solved as a convex QP.
+
+Presenting this? [`docs/DEMO.md`](docs/DEMO.md) is the runbook.
 
 ```bash
 python -m bench.fetch --set small     # download MIPLIB instances
@@ -121,7 +128,7 @@ python -m bench.harness --mode lp                  # validate against published 
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 137 tests
+python -m pytest tests/               # 165 tests
 ```
 
 ---
@@ -132,6 +139,7 @@ python -m pytest tests/               # 137 tests
 |---|---|---|
 | Sparse core, dual CSR/CSC | `core/sparse.py` | done |
 | MPS reader / writer | `io/mps.py` | done (free + fixed, RANGES, MARKER, QUADOBJ) |
+| CPLEX LP reader | `io/lp_format.py` | done (ranged rows, both-side terms, bounds, General/Binary) |
 | Scaling: Ruiz, Curtis–Reid, Pock–Chambolle | `numerics/scaling.py` | done |
 | Sparse LU, threshold Markowitz + Gilbert–Peierls | `numerics/lu.py` | done |
 | Hypersparse FTRAN / BTRAN | `numerics/lu.py` | done |
@@ -145,7 +153,7 @@ python -m pytest tests/               # 137 tests
 | **Batched Node Relaxation** | `mip/bnr.py` | done |
 | Domain propagation | `mip/propagate.py` | done |
 | Branch and bound, exact or batched node LPs | `mip/tree.py` | done |
-| Gomory mixed-integer + knapsack cover cuts | `mip/cuts.py` | done |
+| Gomory mixed-integer, knapsack cover, MIR cuts | `mip/cuts.py` | done |
 | Symmetry detection + static breaking | `mip/symmetry.py` | done |
 | Conflict analysis (LP-infeasibility clauses) | `mip/conflict.py` | done |
 | Sensitivity: shadow prices, cost and RHS ranging | `lp/sensitivity.py` | done |
@@ -153,7 +161,8 @@ python -m pytest tests/               # 137 tests
 | Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
 | Refinery model templates + Haverly pooling | `models/` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
-| Crossover, presolve, IPM, QP | — | **not built** (roadmap) |
+| **Convex QP** (proximal PDHG, Condat–Vũ) | `qp/proximal.py` | done (convex only) |
+| Crossover, presolve, IPM, MIQP, non-convex QP | — | **not built** (roadmap) |
 
 ---
 
@@ -543,8 +552,6 @@ values — not by unit tests. Both now have regression tests.
 
 ## Known limits
 
-- **No sensitivity ranging.** The basis is there and the duals are exact, so
-  objective and RHS ranging is now a short step — but it is not written.
 - **No crossover** from a first-order point to a basis, so the PDLP path still
   cannot hand over to the simplex on large models. The two engines are chosen
   between, not composed.
@@ -562,10 +569,13 @@ values — not by unit tests. Both now have regression tests.
 - **Cuts are separated at the root only** and are never rolled back when they
   fail to pay for themselves (see p0201 above). Local cuts in the tree and a
   cost-aware rollback are the next steps.
-- **No QP solver.** The PS names QP in its initial focus. Models parse, and a
-  quadratic objective is now **refused** rather than silently solved as an LP —
-  which it previously was, reporting -3.0 for a point whose true QP objective is
-  -1.875.
+- **QP is convex-only, and first-order.** `vyuha.qp` solves a convex quadratic
+  by proximal PDHG (Condat–Vũ), validated against six hand-derived optima
+  including one whose answer is *not* a vertex — the case a simplex provably
+  cannot reach. What it does not do: a non-convex `Q` (needs spatial
+  branch-and-bound) and any MIQP (needs a QP at every node) are **refused**, not
+  approximated. It returns no basis, so no ranging on a QP, and it reaches
+  ~1e-8, not the simplex's 1e-12.
 - **No interior-point method.** Named in the PS beside the revised simplex.
 - **No presolve module.** Domain propagation runs at every node, but there are
   no singleton/doubleton eliminations, no dominated-column or forcing-row

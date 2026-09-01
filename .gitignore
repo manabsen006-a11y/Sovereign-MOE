@@ -2,5 +2,5 @@ __pycache__/
 *.pyc
 data/instances/
 .pytest_cache/
-ui/_paste.mps
+ui/_paste.*
 *.egg-info/

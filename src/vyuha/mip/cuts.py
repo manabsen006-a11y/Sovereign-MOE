@@ -408,3 +408,118 @@ def append_cuts(prob, cuts: list[Cut]):
         out.row_names = list(prob.row_names) + [f"cut_{c.kind}_{t}"
                                                 for t, c in enumerate(cuts)]
     return out
+
+
+# --------------------------------------------------------------------------- #
+# mixed-integer rounding                                                       #
+# --------------------------------------------------------------------------- #
+
+
+def _mir_function(a, f0):
+    """MIR coefficient for an integer column: ``floor(a) + max(0, f-f0)/(1-f0)``."""
+    fl = np.floor(a)
+    f = a - fl
+    return fl + np.maximum(f - f0, 0.0) / (1.0 - f0)
+
+
+def generate_mir(prob, x, int_mask, lo, hi, max_cuts: int = 50,
+                 min_violation: float = 1e-5, away: float = 0.01,
+                 max_coef: float = 1e7) -> list[Cut]:
+    """Mixed-integer rounding cuts from single original rows.
+
+    GMI cuts are MIR applied to a *tableau* row; these are MIR applied to the
+    model's own rows, which reaches inequalities the tableau does not expose --
+    and, unlike GMI, they need no basis, so they can be separated anywhere.
+
+    For a row ``sum a_j x_j <= b`` with every variable shifted to be
+    non-negative, and any scale ``d > 0``, writing ``a'_j = a_j/d``,
+    ``b' = b/d`` and ``f0 = b' - floor(b')``, the inequality
+
+        sum_{j integer} MIR(a'_j) x_j + sum_{j continuous, a'_j<0} a'_j/(1-f0) x_j
+            <= floor(b')
+
+    is valid whenever ``f0`` is strictly between 0 and 1. Several scales are
+    tried per row -- the coefficients of the integer columns are the classic
+    choices, because they are what make ``f0`` land away from the ends.
+
+    Rows containing a free variable are skipped: the shift needs a finite bound
+    to complement against, and a cut derived without one is not valid.
+    """
+    cuts: list[Cut] = []
+    A = prob.A
+
+    for i in range(prob.m):
+        if len(cuts) >= max_cuts:
+            break
+        for side in (1.0, -1.0):
+            bound = prob.row_ub[i] if side > 0 else prob.row_lb[i]
+            if side > 0 and bound >= INF:
+                continue
+            if side < 0 and bound <= -INF:
+                continue
+
+            cols, vals = A.row(i)
+            if cols.size == 0 or cols.size > 400:
+                continue
+            a = side * vals
+            b = side * bound
+
+            # shift every variable to a non-negative deviation from a bound
+            shift_up = np.zeros(cols.size, dtype=bool)
+            ok = True
+            for t, j in enumerate(cols):
+                if lo[j] > -INF:
+                    b -= a[t] * lo[j]
+                elif hi[j] < INF:
+                    shift_up[t] = True
+                    b -= a[t] * hi[j]
+                    a[t] = -a[t]
+                else:
+                    ok = False
+                    break
+            if not ok:
+                continue
+
+            isint = int_mask[cols]
+            if not isint.any():
+                continue
+
+            scales = {1.0}
+            for t in np.flatnonzero(isint):
+                v = abs(a[t])
+                if v > 1e-9:
+                    scales.add(v)
+            for d in sorted(scales)[:6]:
+                if len(cuts) >= max_cuts:
+                    break
+                ad = a / d
+                bd = b / d
+                f0 = bd - np.floor(bd)
+                if f0 < away or f0 > 1.0 - away:
+                    continue
+
+                coef = np.zeros(cols.size, dtype=VAL)
+                coef[isint] = _mir_function(ad[isint], f0)
+                cont = ~isint
+                neg = cont & (ad < 0.0)
+                coef[neg] = ad[neg] / (1.0 - f0)
+                rhs = np.floor(bd)
+
+                if not np.isfinite(coef).all() or np.abs(coef).max() > max_coef:
+                    continue
+
+                # undo the shift: coef.t <= rhs  with t = x - lo  or  hi - x
+                g = np.where(shift_up, -coef, coef)
+                r = rhs
+                for t, j in enumerate(cols):
+                    r += coef[t] * (hi[j] if shift_up[t] else lo[j]) * \
+                        (-1.0 if shift_up[t] else 1.0) * -1.0
+                # express as  -g.x >= -r   (the >= convention used here)
+                idx = np.flatnonzero(np.abs(g) > 1e-11)
+                if idx.size == 0:
+                    continue
+                cut = Cut(cols[idx].astype(IDX), -g[idx].copy(), float(-r),
+                          kind="mir")
+                if cut.violation(x) > min_violation:
+                    cuts.append(cut)
+    return cuts

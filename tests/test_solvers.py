@@ -279,14 +279,25 @@ def test_mip_incumbent_is_feasible_in_the_original_space():
     assert v.ok, f"reported an incumbent the verifier rejects:\n{v.report()}"
 
 
-def test_quadratic_objective_is_refused_not_silently_dropped():
+def test_quadratic_objective_is_never_silently_dropped():
     """REGRESSION: a QP was solved as an LP and the answer reported as optimal.
 
-    No QP solver exists here; every engine optimises c'x only. Dropping the Q
-    term silently returned a confident wrong answer -- on a two-variable model
-    it reported -3.0 for a point whose true quadratic objective is -1.875 -- and
+    Dropping the ``Q`` term silently returned a confident wrong answer, and
     nothing downstream could detect it, because the point *is* feasible and *is*
-    LP-optimal. Refusing is the only safe behaviour until a QP path exists.
+    LP-optimal. The fix was first to refuse; a convex QP is now actually solved.
+    Either way the property this test defends is the same one: the reported
+    objective must never be the objective of a model we quietly replaced.
+
+    On this two-variable model the three numbers are all different, which is
+    what makes it a usable test:
+
+        -3.0000   what dropping Q reports (the LP optimum of c'x alone)
+        -1.8750   the true quadratic value *at* that LP vertex
+        -2.4375   the true QP optimum, at x = y = 0.75
+
+    The last is obtained from the KKT system directly: the gradient is
+    (x-2, y-2), the row x+y <= 1.5 is active with multiplier 1.25, so
+    x = y = 2 - 1.25 = 0.75.
     """
     from vyuha.cli import solve
     from vyuha.core.sparse import SparseMatrix
@@ -300,9 +311,25 @@ def test_quadratic_objective_is_refused_not_silently_dropped():
                  col_lb=np.zeros(2), col_ub=np.full(2, 10.0), Q=Q, name="qp")
     assert qp.is_qp
 
-    for fn in (solve, solve_simplex, solve_mip):
+    # the QP path solves it, and lands on none of the wrong answers
+    s = solve(qp)
+    assert s.status == Status.OPTIMAL
+    assert abs(s.objective - (-2.4375)) < 1e-6
+    assert abs(s.objective - (-3.0)) > 0.5      # not the dropped-Q answer
+    assert abs(s.objective - (-1.875)) > 0.5    # strictly better than the vertex
+    assert np.allclose(s.x, [0.75, 0.75], atol=1e-4)
+
+    # the engines that optimise c'x only must still refuse rather than drop Q
+    for fn in (solve_simplex, solve_mip):
         with pytest.raises(NotImplementedError):
             fn(qp)
+
+    # a non-convex Q has no QP path either, and must not fall through to an LP
+    from vyuha.qp import NotConvexError
+    nonconvex = qp.copy()
+    nonconvex.Q = SparseMatrix.from_dense(np.diag([1.0, -1.0]))
+    with pytest.raises((NotImplementedError, NotConvexError)):
+        solve(nonconvex)
 
     # the same model without Q must still solve normally
     lp = qp.copy()
