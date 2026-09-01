@@ -148,8 +148,9 @@ python -m pytest tests/               # 105 tests
 | Symmetry detection + static breaking | `mip/symmetry.py` | done |
 | Conflict analysis (LP-infeasibility clauses) | `mip/conflict.py` | done |
 | Sensitivity: shadow prices, cost and RHS ranging | `lp/sensitivity.py` | done |
+| **Global bilinear pooling** (McCormick + spatial B&B + OBBT) | `globalopt/` | done |
 | Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
-| Refinery model templates | `models/refinery.py` | done |
+| Refinery model templates + Haverly pooling | `models/` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
 | Crossover, sensitivity ranging, IPM, QP | — | **not built** (roadmap) |
 
@@ -237,6 +238,52 @@ symmetry swaps every variable of a unit across every period at once, so it could
 never fire), and colour numbering by order of first appearance, which made two
 independently-refined colourings incomparable and returned zero generators on
 every input including obvious Sym(8).
+
+## Global bilinear pooling
+
+The highest-value piece here for a refinery, because **crude blending is a
+pooling problem**. A pool's sulfur content multiplied by the flow leaving it is
+a product of two decisions, so the feasible set is non-convex and a local
+optimum is not a global one. The industry's standard workaround --
+*distributive recursion* inside PIMS and GRTMPS: guess the pool qualities, solve
+the LP, re-read the qualities, repeat -- is a fixed-point iteration with no
+global guarantee.
+
+`globalopt/` solves these to **proven** global optimality: McCormick envelopes
+give a convex relaxation whose optimum is a rigorous bound, optimality-based
+bound tightening shrinks the box first, and spatial branch-and-bound splits
+*continuous* ranges until bound and incumbent meet. Envelope error is quadratic
+in box width, so halving a range roughly quarters the gap that term contributes.
+
+On Haverly's benchmarks, checked three ways -- against the published values,
+against an independent brute-force scan, and against the solver's own bound:
+
+| instance | global optimum | dual bound | brute force | nodes |
+|---|---|---|---|---|
+| haverly1 | **400** | 400 | 400 | 3 |
+| haverly2 | **600** | 600 | 600 | 9 |
+| haverly3 | **750** | 750 | 750 | 15 |
+
+And the reason it matters, measured against the method it replaces:
+
+```
+                 global   recursion, 21 starting points
+  haverly1          400   reaches 400 from 1 start; stuck below it from 20
+  haverly2          600   stuck below global from 20 of 21
+  haverly3          750   stuck below global from 20 of 21
+```
+
+Recursion returns a blend and no way to know whether a better one exists. This
+returns a blend **and a proof of how far from optimal it can be**. The gap is
+quality give-away, and it has a price.
+
+One structural nicety falls out of the formulation: when a factor's range
+collapses to a point the McCormick envelope becomes *exact*, so distributive
+recursion is simply the relaxation on a degenerate box. It is kept as the primal
+heuristic inside the tree -- supplying incumbents while the search proves
+optimality, instead of being the whole method with no guarantee.
+
+---
 
 ## Sensitivity analysis
 
@@ -447,8 +494,6 @@ values — not by unit tests. Both now have regression tests.
   cost-aware rollback are the next steps.
 - **No IPM and no QP solve path** (QP models parse, but there is no quadratic
   solver behind them).
-- **No global/bilinear (pooling) solver.** The blending template uses the linear
-  blending assumption; genuine crude-blending non-convexity is not addressed.
 - GPU fp64 on a laptop RTX 3050 runs at 1/32 rate; a datacentre card changes the
   crossover point substantially.
 
