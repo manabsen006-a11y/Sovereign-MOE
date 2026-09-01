@@ -508,12 +508,25 @@ def generate_mir(prob, x, int_mask, lo, hi, max_cuts: int = 50,
                 if not np.isfinite(coef).all() or np.abs(coef).max() > max_coef:
                     continue
 
-                # undo the shift: coef.t <= rhs  with t = x - lo  or  hi - x
+                # Undo the shift. The cut holds in the shifted space as
+                #     sum_t coef_t * t_t <= rhs,
+                # with t_t = x_j - lo_j, or hi_j - x_j where shift_up. Both
+                # substitutions move a constant to the right-hand side:
+                #     x_j - lo_j :  coef*x_j - coef*lo_j   ->  r += coef*lo_j
+                #     hi_j - x_j : -coef*x_j + coef*hi_j   ->  r -= coef*hi_j
+                # Getting either sign wrong is invisible on any column whose
+                # lower bound is zero, which is most columns in most models.
+                # It stayed invisible through 133 brute-forced cuts over 55
+                # instances, until flugpl -- five columns with lower bound 57
+                # -- where the cut removed the integer optimum and the solver
+                # reported INFEASIBLE on a provably feasible model.
                 g = np.where(shift_up, -coef, coef)
                 r = rhs
                 for t, j in enumerate(cols):
-                    r += coef[t] * (hi[j] if shift_up[t] else lo[j]) * \
-                        (-1.0 if shift_up[t] else 1.0) * -1.0
+                    if shift_up[t]:
+                        r -= coef[t] * hi[j]
+                    else:
+                        r += coef[t] * lo[j]
                 # express as  -g.x >= -r   (the >= convention used here)
                 idx = np.flatnonzero(np.abs(g) > 1e-11)
                 if idx.size == 0:

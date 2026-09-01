@@ -198,6 +198,16 @@ class BNREngine:
         else:
             X[...] = 0.0
             Y[...] = 0.0
+
+        # The iterate must start inside the node's box. Zero is outside it
+        # whenever a column has a non-zero lower bound, and the x returned
+        # from an unconverged batch is what the tree branches on: branching
+        # on x_j = 0 where lo_j = 57 gives a down-child with ub = 0 < lb,
+        # empty by construction. Both children die, the node dies, and a
+        # feasible model is reported INFEASIBLE. PDHG's own projection
+        # fixes this within an iteration, but the *warm* path can import an
+        # out-of-box iterate from a parent with different bounds, so clamp
+        # both paths here rather than relying on the loop to repair it.
         xp.clip(X, L, U, out=X)
 
         AX = self.AX[:, :K]

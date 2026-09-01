@@ -453,6 +453,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     warm_hits = 0
     warm_tries = 0
     node_infeasible = 0
+    node_lp_rows = scaled.m if node_lp is not None else -1
 
     def _accept(cand_scaled):
         """Unscale a candidate and validate it against the *original* model.
@@ -701,6 +702,32 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             idx = np.flatnonzero(int_mask)
             fr = np.abs(xv[idx] - np.round(xv[idx]))
             cands = idx[fr > tol.integrality]
+            if cands.size == 0 and use_bnr:
+                # No fractional variable, and _accept above did not take the
+                # point. With an exact node LP that cannot happen: an
+                # integral vertex is feasible, so the node really is done.
+                # A BNR iterate is not a certificate of anything -- an
+                # unconverged first-order point can look integral while
+                # being LP-infeasible, and then there is nothing to branch
+                # on. Dropping the node would discard that subtree unproven;
+                # on flugpl it discards the whole tree and reports
+                # INFEASIBLE on a model with a published optimum. Re-solve
+                # the node exactly and decide from a real vertex.
+                if node_lp is None or node_lp_rows != scaled.m:
+                    node_lp = NodeSolver(scaled, SimplexParams(
+                        time_limit=params.time_limit,
+                        feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
+                    node_lp_rows = scaled.m
+                r_exact = node_lp.solve(l, h)
+                if r_exact.status == Status.OPTIMAL and r_exact.x is not None:
+                    xv = r_exact.x
+                    b = max(b, r_exact.objective / sc.obj)
+                    got = _accept(np.clip(xv, l, h))
+                    if got is not None and got[1] < incumbent:
+                        best_x, incumbent = got[0], got[1]
+                    if got is None:
+                        fr = np.abs(xv[idx] - np.round(xv[idx]))
+                        cands = idx[fr > tol.integrality]
             if cands.size == 0:
                 continue
 
