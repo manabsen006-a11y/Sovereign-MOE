@@ -100,6 +100,10 @@ class SimplexParams:
     """Consecutive degenerate pivots before the costs are perturbed."""
 
     perturb_scale: float = 1e-7
+    sensitivity: bool = False
+    """Compute cost and RHS ranging after solving. Costs one BTRAN per basic
+    structural column and one FTRAN per binding row, so it is opt-in."""
+
     scaling: str = "auto"
     verbose: bool = False
     log_every: int = 5000
@@ -860,6 +864,9 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
                    basis_status=B.status.copy(), iterations=S.iters,
                    time=time.perf_counter() - t0,
                    method=f"simplex[{method}]")
+    if params.sensitivity and status == Status.OPTIMAL:
+        from .sensitivity import compute_sensitivity
+        sol.sensitivity = compute_sensitivity(S, sc, prob, flip)
     sol.dual_bound = obj
     sol.info = {**B.stats(), "algorithm": method,
                 "perturbed": S.perturbed,

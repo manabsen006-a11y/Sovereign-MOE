@@ -45,7 +45,8 @@ SIMPLEX_NNZ_LIMIT = 500_000
 
 def solve(prob: Problem, method: str = "auto", device: str = "auto",
           time_limit: float = 300.0, gap: float = 1e-4,
-          tol: float = 1e-8, verbose: bool = False) -> Solution:
+          tol: float = 1e-8, verbose: bool = False,
+          sensitivity: bool = False) -> Solution:
     """Solve an LP or MILP, picking the method automatically by default."""
     from .lp.pdlp import PDLPParams, solve_pdlp
     from .lp.simplex import SimplexParams, solve_simplex
@@ -54,6 +55,8 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
     if method == "auto":
         if prob.is_mip:
             method = "bnb"
+        elif sensitivity:
+            method = "simplex"      # only a basis can answer ranging questions
         else:
             method = "simplex" if prob.nnz <= SIMPLEX_NNZ_LIMIT else "pdlp"
 
@@ -61,6 +64,7 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
         return solve_simplex(prob, SimplexParams(time_limit=time_limit,
                                                  feas_tol=max(tol, 1e-9),
                                                  opt_tol=max(tol, 1e-9),
+                                                 sensitivity=sensitivity,
                                                  verbose=verbose))
     if method == "pdlp":
         return solve_pdlp(prob, PDLPParams(device=device, eps_abs=tol,
@@ -116,7 +120,7 @@ def cmd_solve(a):
     t = time.perf_counter()
     sol = solve(prob, method=a.method, device=a.device,
                 time_limit=a.time_limit, gap=a.gap, tol=a.tol,
-                verbose=a.verbose)
+                verbose=a.verbose, sensitivity=a.sensitivity)
     dt = time.perf_counter() - t
 
     print()
@@ -155,6 +159,10 @@ def cmd_solve(a):
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=1)
         print(f"  wrote       {a.out}")
+
+    if getattr(sol, "sensitivity", None) is not None:
+        print()
+        print(sol.sensitivity.report())
 
     if a.print_solution and sol.x is not None:
         names = prob.col_names or [f"C{i}" for i in range(prob.n)]
@@ -216,6 +224,8 @@ def main(argv=None):
                    help="write the solution keyed by column name")
     p.add_argument("--print-solution", type=int, default=0, metavar="N",
                    help="print the first N nonzero variables")
+    p.add_argument("--sensitivity", action="store_true",
+                   help="report shadow prices and cost/RHS ranging")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(fn=cmd_solve)
 

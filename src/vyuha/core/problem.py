@@ -283,6 +283,8 @@ class Solution:
     work_units: float = 0.0
     method: str = ""
     log: list = field(default_factory=list)
+    sensitivity: object = None
+    """Cost and RHS ranging, when it was requested and the solve was optimal."""
 
     @property
     def gap(self) -> float:

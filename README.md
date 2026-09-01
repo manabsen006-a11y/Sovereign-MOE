@@ -110,6 +110,7 @@ pip install cupy-cuda12x[ctk]   # optional, for the GPU path
 python -m vyuha.cli devices                      # what hardware is usable
 python -m vyuha.cli info   model.mps             # stats + numerical health
 python -m vyuha.cli solve  model.mps --device gpu --out sol.json
+python -m vyuha.cli solve  model.mps --sensitivity     # shadow prices + ranging
 python -m vyuha.cli verify model.mps sol.json    # independent check
 python -m ui.server                              # http://127.0.0.1:8000
 ```
@@ -119,7 +120,7 @@ python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
-python -m pytest tests/               # 96 tests
+python -m pytest tests/               # 105 tests
 ```
 
 ---
@@ -146,6 +147,7 @@ python -m pytest tests/               # 96 tests
 | Gomory mixed-integer + knapsack cover cuts | `mip/cuts.py` | done |
 | Symmetry detection + static breaking | `mip/symmetry.py` | done |
 | Conflict analysis (LP-infeasibility clauses) | `mip/conflict.py` | done |
+| Sensitivity: shadow prices, cost and RHS ranging | `lp/sensitivity.py` | done |
 | Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
 | Refinery model templates | `models/refinery.py` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
@@ -235,6 +237,41 @@ symmetry swaps every variable of a unit across every period at once, so it could
 never fire), and colour numbering by order of first appearance, which made two
 independently-refined colourings incomparable and returned zero generators on
 every input including obvious Sym(8).
+
+## Sensitivity analysis
+
+The industrial payoff of having a basis, and the reason the simplex was worth
+building. "The optimum is 4.2 crore" is the least interesting number a refinery
+LP produces; the questions that change decisions are *what is one more tonne of
+this crude worth*, *how far can its price move before I should buy something
+else*, and *over what range is that price still valid*. An interior point cannot
+answer any of them.
+
+```
+  shadow prices (binding rows, by value)
+    row                            dual       activity           rhs range
+    c3                          2.33333              3              [0, 3]
+    c2                         0.666667              6              [3, 6]
+
+  cost ranging (variables at non-zero value)
+    column          value      cost   reduced        cost range
+    x                   3         3        -0    [0.666667, +inf]
+    y                   1         2        -0             [-0, 9]
+```
+
+Validated against reality rather than against a formula: perturb each row inside
+its reported range and check the objective moves by exactly `dual x delta`.
+Across 12 models and **239 binding rows**, the worst relative prediction error
+is **3.9e-15**. A shadow price that does not predict the objective is worse than
+none, because a planner acts on it.
+
+Degeneracy is reported rather than hidden. At a degenerate optimum several bases
+describe the same point and the ranges are those of the basis the solver stopped
+at; a zero-width range means "this price is one of several valid ones here", not
+"infinitely sensitive". Refinery LPs are massively degenerate, so the report
+counts and states it.
+
+---
 
 ## Conflict analysis
 
@@ -426,6 +463,6 @@ src/vyuha/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        96 tests including regressions for every bug above
+tests/        105 tests including regressions for every bug above
 ui/           local single-page interface
 ```
