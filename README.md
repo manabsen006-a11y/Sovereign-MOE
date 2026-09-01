@@ -85,10 +85,17 @@ rejects nothing. The motivating failure -- five instances returning *no answer
 at all* -- is down to one.
 
 **The cost, stated plainly:** p0201 went from 8.16 s to 39.65 s and flugpl from
-4.32 s to 9.04 s. Both are still solved to proven optimality, but cuts made
-their node LPs more expensive than the bound they bought. The principled fix is
-to roll a cut round back when it fails to pay for the LP slowdown it causes;
-that is identified and not yet built.
+4.32 s to 9.04 s, because cuts made their node LPs more expensive than the
+bound they bought. flugpl is still comfortably solved. **p0201 is now marginal
+at a 60 s limit** -- it came out OPTIMAL at 39.65 s in the run above and
+TIME_LIMIT at 60.5 s on a repeat, finding the optimum 7615 both times but only
+proving it in one. Treat the 39.65 s as one draw from a borderline instance,
+not a reliable figure.
+
+A cost-aware cut rollback was built to fix exactly this and **removed again**:
+it fixed p0201 and flugpl but broke gt2 and khb05250, which cuts were saving.
+The measurements and the reason the metric cannot work as posed are recorded in
+[`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
 
 ---
 
