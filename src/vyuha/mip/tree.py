@@ -50,6 +50,9 @@ from ..core.tolerances import DEFAULT, INF, Tolerances
 from ..numerics.scaling import scale_problem
 from ..lp.simplex import NodeSolver, SimplexParams
 from .bnr import BNRConfig, BNREngine
+from .cuts import CutPool, append_cuts, generate_cover, generate_gomory
+from .heuristics import (HeuristicStats, feasibility_jump, feasibility_pump,
+                         fix_and_propagate)
 from .propagate import propagate
 
 __all__ = ["MIPParams", "solve_mip"]
@@ -92,6 +95,15 @@ class MIPParams:
 
     propagate_rounds: int = 6
     heuristic_every: int = 1
+
+    cut_rounds: int = 10
+    """Rounds of the root cutting-plane loop. Cuts are separated at the root
+    only, where they are globally valid and where most of the gap closure
+    lives; local cuts in the tree would have to be tracked per node."""
+
+    cuts_per_round: int = 40
+    heuristics: bool = True
+    fj_iterations: int = 30_000
     device: str = "auto"
 
     verbose: bool = False
@@ -217,6 +229,63 @@ def _round_and_repair(prob, x, int_mask, lo, hi, tol):
     return None
 
 
+def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol):
+    """Separate globally valid cuts at the root until they stop paying.
+
+    Cuts are generated from the root LP with the *root* bounds, so they hold
+    for every node. The loop stops when a round produces nothing worth adding
+    or when the bound stops moving -- "tailing off" -- because past that point
+    each extra row costs more in LP time than it returns in bound.
+
+    Returns ``(scaled, node_lp, x, bound, basis, n_cuts)``.
+    """
+    pool = CutPool(max_cuts=params.cuts_per_round)
+    n = scaled.n
+    total = 0
+    x = None
+    bound = -np.inf
+    basis = None
+    # logicals are treated as continuous: row scaling destroys any integrality
+    # their coefficients had, and calling a continuous variable integral would
+    # make the cut invalid. Conservative here costs strength, never validity.
+    int_full = np.concatenate([int_mask, np.zeros(scaled.m, dtype=bool)])
+
+    for _rnd in range(params.cut_rounds):
+        r = node_lp.solve(lo0, hi0)
+        if r.status != Status.OPTIMAL or r.x is None:
+            return scaled, node_lp, x, bound, basis, total
+        prev = bound
+        x, bound, basis = r.x, r.objective, r.basis
+
+        frac = np.abs(x[int_mask] - np.round(x[int_mask]))
+        if frac.size == 0 or frac.max() <= tol.integrality:
+            break
+
+        B = node_lp.S.B
+        cands = generate_gomory(B, node_lp.S.zB, int_full,
+                                max_cuts=params.cuts_per_round)
+        cands += generate_cover(scaled, x, int_mask, lo0, hi0,
+                                max_cuts=params.cuts_per_round)
+        chosen = pool.select(cands, x, n, limit=params.cuts_per_round)
+        if not chosen:
+            break
+
+        scaled = append_cuts(scaled, chosen)
+        int_full = np.concatenate([int_mask, np.zeros(scaled.m, dtype=bool)])
+        node_lp = NodeSolver(scaled, SimplexParams(
+            time_limit=params.time_limit,
+            feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
+        total += len(chosen)
+
+        if np.isfinite(prev) and bound - prev <= 1e-9 * max(1.0, abs(bound)):
+            break                                  # tailing off
+
+    r = node_lp.solve(lo0, hi0)
+    if r.status == Status.OPTIMAL and r.x is not None:
+        x, bound, basis = r.x, r.objective, r.basis
+    return scaled, node_lp, x, bound, basis, total
+
+
 def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     """Solve a MILP by batched-relaxation branch-and-bound."""
     params = params or MIPParams()
@@ -263,6 +332,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
 
     # ---- root relaxation, solved harder than an ordinary node ------------- #
     root_basis = None
+    n_cuts = 0
+    cut_gain = 0.0
     if use_bnr:
         root_cfg = engine.cfg.iters
         engine.cfg.iters = params.root_iters
@@ -281,6 +352,15 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             root_bound = rr.objective / sc.obj
             root_x = rr.x
             root_basis = rr.basis
+
+        if params.cut_rounds > 0:
+            before = root_bound
+            scaled, node_lp, cx, cb, cbasis, n_cuts = _root_cut_loop(
+                scaled, node_lp, lo0, hi0, int_mask, params, tol)
+            if cx is not None:
+                root_x, root_basis = cx, cbasis
+                root_bound = cb / sc.obj
+            cut_gain = root_bound - before
 
     if not np.isfinite(root_bound):
         root_bound = -np.inf
@@ -341,6 +421,52 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         got = _accept(root_cand)
         if got is not None:
             best_x, incumbent = got[0], got[1]
+
+    # ---- primal heuristics at the root ---------------------------------- #
+    # Order matters: cheapest first, and each is skipped once an incumbent
+    # exists that it is unlikely to beat. Finding *any* feasible point is the
+    # binding constraint on the instances this solver fails.
+    heur = HeuristicStats()
+    if params.heuristics:
+        def _lp_at(l, h, obj=None):
+            saved = None
+            if obj is not None:
+                saved = scaled.c.copy()
+                scaled.c = np.ascontiguousarray(obj, dtype=VAL)
+                node_lp.S.B.cost[:n] = scaled.c
+            try:
+                rl = node_lp.solve(l, h)
+                return rl.x if rl.status == Status.OPTIMAL else None
+            finally:
+                if saved is not None:
+                    scaled.c = saved
+                    node_lp.S.B.cost[:n] = saved
+
+        trials = [
+            ("fix_and_propagate",
+             lambda: fix_and_propagate(scaled, root_x, int_mask, lo0, hi0,
+                                       tol.primal_feas,
+                                       lp_solve=(None if use_bnr
+                                                 else (lambda l, h: _lp_at(l, h))))),
+            ("feasibility_jump",
+             lambda: feasibility_jump(scaled, int_mask, lo0, hi0, x0=root_x,
+                                      max_iter=params.fj_iterations)),
+        ]
+        if not use_bnr:
+            trials.append(("feasibility_pump",
+                           lambda: feasibility_pump(scaled, int_mask, lo0, hi0,
+                                                    _lp_at, x_lp=root_x)))
+        for name, fn in trials:
+            if np.isfinite(incumbent):
+                break
+            try:
+                cand = fn()
+            except Exception:
+                cand = None
+            got = _accept(cand) if cand is not None else None
+            heur.record(name, got is not None)
+            if got is not None and got[1] < incumbent:
+                best_x, incumbent = got[0], got[1]
 
     while frontier:
         now = time.perf_counter()
@@ -558,6 +684,9 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                    time=time.perf_counter() - t0, method="bnr-bb")
     sol.info = (engine.stats() if engine is not None else node_lp.stats())
     sol.info["node_solver"] = params.node_solver
+    sol.info["root_cuts"] = n_cuts
+    sol.info["root_cut_bound_gain"] = cut_gain
+    sol.info["heuristics"] = heur.summary()
     sol.info["warm_start_hit_rate"] = warm_hits / max(warm_tries, 1)
     sol.info["nodes_infeasible"] = node_infeasible
     return sol
