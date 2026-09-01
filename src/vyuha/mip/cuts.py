@@ -122,12 +122,47 @@ class CutPool:
     """
 
     def __init__(self, min_efficacy: float = 1e-4, max_dynamism: float = 1e8,
-                 min_orthogonality: float = 0.05, max_cuts: int = 200):
+                 min_orthogonality: float = 0.05, max_cuts: int = 200,
+                 max_density_frac: float = 0.4, density_multiple: float = 5.0,
+                 min_support: int = 20, small_basis_rows: int = 150):
         self.min_efficacy = min_efficacy
         self.max_dynamism = max_dynamism
         self.min_orthogonality = min_orthogonality
         self.max_cuts = max_cuts
+        self.max_density_frac = max_density_frac
+        self.density_multiple = density_multiple
+        self.min_support = min_support
+        self.small_basis_rows = small_basis_rows
+        self.rejected_dense = 0
         self.accepted: list[Cut] = []
+
+    def support_limit(self, n: int, avg_row_nnz: float, m: int | None = None) -> int:
+        """Largest cut support worth adding to a matrix of this shape.
+
+        **The most important filter here, and the one whose scaling is easy to
+        get backwards.** A GMI cut derived from a sparse model is typically
+        *dense*: on MIPLIB p0201, whose rows average 14.5 nonzeros, the median
+        GMI cut touches 168 of 201 columns. Near-dense rows make the basis
+        factor dense, so FTRAN and BTRAN stop being hypersparse -- the exact
+        property the LU is built to exploit -- and each node LP slows by orders
+        of magnitude. Measured on p0201: 1619 nodes in 9s without cuts, 63
+        nodes in 60s with them, for a bound gain of 290 on an objective of 7615.
+
+        The cost scales with the **basis size m**, not the column count. Below
+        a few hundred rows a dense triangular solve is a few hundred flops and
+        there was no hypersparsity to lose in the first place, so a density cap
+        keyed to ``n`` only throws away good cuts. Measured on gt2 (m=29):
+        dense cuts lift the root bound from 13941 to 20725 and close the model
+        in 0.9s, while capping them leaves it unsolved after 60s.
+
+        So: no density restriction on a small basis; above that, keep cuts
+        comparable to the model's own rows.
+        """
+        if m is not None and m <= self.small_basis_rows:
+            return n
+        return int(max(self.min_support,
+                       min(self.max_density_frac * n,
+                           self.density_multiple * max(avg_row_nnz, 1.0))))
 
     def _dense(self, cut: Cut, n: int):
         v = np.zeros(n, dtype=VAL)
@@ -135,12 +170,18 @@ class CutPool:
         nrm = np.linalg.norm(v)
         return (v / nrm) if nrm > 0 else v
 
-    def select(self, candidates: list[Cut], x, n: int, limit: int | None = None):
+    def select(self, candidates: list[Cut], x, n: int, limit: int | None = None,
+               avg_row_nnz: float | None = None, m: int | None = None):
         """Filter and rank candidates; returns the cuts to add."""
         limit = limit if limit is not None else self.max_cuts
+        cap = (self.support_limit(n, avg_row_nnz, m)
+               if avg_row_nnz is not None else n)
         scored = []
         for c in candidates:
             if c.idx.size == 0:
+                continue
+            if c.idx.size > cap:
+                self.rejected_dense += 1
                 continue
             nrm = c.norm
             if nrm <= 0 or not np.isfinite(nrm):

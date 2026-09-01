@@ -96,6 +96,12 @@ class MIPParams:
     propagate_rounds: int = 6
     heuristic_every: int = 1
 
+    cut_time_frac: float = 0.25
+    """Share of the time limit the root cut loop and heuristics may spend.
+
+    Without a cap they can blow through the whole budget before the tree starts
+    a single node -- measured overruns of 69s against a 60s limit."""
+
     cut_rounds: int = 10
     """Rounds of the root cutting-plane loop. Cuts are separated at the root
     only, where they are globally valid and where most of the gap closure
@@ -229,7 +235,8 @@ def _round_and_repair(prob, x, int_mask, lo, hi, tol):
     return None
 
 
-def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol):
+def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol,
+                   deadline=None):
     """Separate globally valid cuts at the root until they stop paying.
 
     Cuts are generated from the root LP with the *root* bounds, so they hold
@@ -250,7 +257,11 @@ def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol):
     # make the cut invalid. Conservative here costs strength, never validity.
     int_full = np.concatenate([int_mask, np.zeros(scaled.m, dtype=bool)])
 
+    avg_row_nnz = scaled.nnz / max(scaled.m, 1)
+
     for _rnd in range(params.cut_rounds):
+        if deadline is not None and time.perf_counter() > deadline:
+            break
         r = node_lp.solve(lo0, hi0)
         if r.status != Status.OPTIMAL or r.x is None:
             return scaled, node_lp, x, bound, basis, total
@@ -266,7 +277,8 @@ def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol):
                                 max_cuts=params.cuts_per_round)
         cands += generate_cover(scaled, x, int_mask, lo0, hi0,
                                 max_cuts=params.cuts_per_round)
-        chosen = pool.select(cands, x, n, limit=params.cuts_per_round)
+        chosen = pool.select(cands, x, n, limit=params.cuts_per_round,
+                             avg_row_nnz=avg_row_nnz, m=scaled.m)
         if not chosen:
             break
 
@@ -356,7 +368,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         if params.cut_rounds > 0:
             before = root_bound
             scaled, node_lp, cx, cb, cbasis, n_cuts = _root_cut_loop(
-                scaled, node_lp, lo0, hi0, int_mask, params, tol)
+                scaled, node_lp, lo0, hi0, int_mask, params, tol,
+                deadline=t0 + params.cut_time_frac * params.time_limit)
             if cx is not None:
                 root_x, root_basis = cx, cbasis
                 root_bound = cb / sc.obj
@@ -456,8 +469,11 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             trials.append(("feasibility_pump",
                            lambda: feasibility_pump(scaled, int_mask, lo0, hi0,
                                                     _lp_at, x_lp=root_x)))
+        heur_deadline = t0 + params.cut_time_frac * params.time_limit
         for name, fn in trials:
             if np.isfinite(incumbent):
+                break
+            if time.perf_counter() > heur_deadline:
                 break
             try:
                 cand = fn()

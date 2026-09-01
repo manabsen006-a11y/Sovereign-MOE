@@ -56,34 +56,39 @@ are genuinely complementary, and `method="auto"` picks by size.
 
 MILP is exact where it closes. With exact node LPs the tree is sharp: a 22-item
 knapsack closes in **59 nodes** where the batched first-order bound needed
-**40,211**. On the full MIPLIB set at a 60 s limit:
+**40,211**. On the full MIPLIB set at a 60 s limit, before and after adding
+cutting planes and primal heuristics:
 
 ```
-instance     status         objective       reference   relerr    time  chk
-flugpl       OPTIMAL          1201500         1201500  0.00e+00   4.32s   ok
-gr4x6        OPTIMAL           202.35             nan       nan   0.58s   ok
-mod010       OPTIMAL             6548            6548  0.00e+00   2.34s   ok
-p0201        OPTIMAL             7615            7615  0.00e+00   8.16s   ok
-mas76        TIME_LIMIT     40589.436             nan       nan  60.04s   ok
-misc07       TIME_LIMIT          2810             nan       nan  60.03s   ok
-10teams      TIME_LIMIT           nan             nan       nan  60.22s    -
-dcmulti      TIME_LIMIT           nan          188182       nan  60.46s    -
-gt2          TIME_LIMIT           nan           21166       nan  60.04s    -
-khb05250     TIME_LIMIT           nan   1.0694023e+08       nan  60.20s    -
-qnet1        TIME_LIMIT           nan     16029.69300       nan  61.02s    -
+instance   before                     after                        after time
+flugpl     OPTIMAL     1201500        OPTIMAL     1201500              9.04s
+gr4x6      OPTIMAL      202.35        OPTIMAL      202.35              0.55s
+gt2        TIME_LIMIT   (none)        OPTIMAL       21166              1.71s   <-
+khb05250   TIME_LIMIT   (none)        OPTIMAL  1.0694023e+08           7.70s   <-
+mod010     OPTIMAL        6548        OPTIMAL        6548              2.52s
+p0201      OPTIMAL        7615        OPTIMAL        7615             39.65s
+mas76      TIME_LIMIT 40589.44        TIME_LIMIT 40408.48             60.33s
+misc07     TIME_LIMIT     2810        TIME_LIMIT     2810             60.05s
+dcmulti    TIME_LIMIT   (none)        TIME_LIMIT 202598.49  (7.7% off)   60.41s
+qnet1      TIME_LIMIT   (none)        TIME_LIMIT  20627.76 (28.7% off)   60.86s
+10teams    TIME_LIMIT   (none)        TIME_LIMIT   (none)             62.36s
 
-  status OPTIMAL      4/11        verifier accepted  6/11
-  verifier rejected   0           within 1e-4 of ref 3/3 with a reference
+                        before    after
+  status OPTIMAL         4/11      6/11
+  verifier accepted      6/11     10/11
+  no incumbent at all    5/11      1/11     <- the motivating number
+  shifted geomean       31.4s     22.7s
 ```
 
-**4/11 proved optimal, every one matching the published optimum exactly, and no
-wrong answers anywhere.** The five blanks share one cause and it is worth naming
-precisely: the solver found **no incumbent at all**, not a poor one. The bound
-side is working; the primal side is the gap. The only heuristic implemented is
-round-and-propagate — no diving, no feasibility pump, no RINS — and without cuts
-the tree cannot close the remaining models in a minute. That is the next piece
-of work, and on these instances it is a larger lever than anything on the
-bounding side.
+Every proved optimum matches the published value exactly, and the verifier
+rejects nothing. The motivating failure -- five instances returning *no answer
+at all* -- is down to one.
+
+**The cost, stated plainly:** p0201 went from 8.16 s to 39.65 s and flugpl from
+4.32 s to 9.04 s. Both are still solved to proven optimality, but cuts made
+their node LPs more expensive than the bound they bought. The principled fix is
+to roll a cut round back when it fails to pay for the LP slowdown it causes;
+that is identified and not yet built.
 
 ---
 
@@ -107,7 +112,7 @@ python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
-python -m pytest tests/               # 49 tests
+python -m pytest tests/               # 74 tests
 ```
 
 ---
@@ -131,9 +136,11 @@ python -m pytest tests/               # 49 tests
 | **Batched Node Relaxation** | `mip/bnr.py` | done |
 | Domain propagation | `mip/propagate.py` | done |
 | Branch and bound, exact or batched node LPs | `mip/tree.py` | done |
+| Gomory mixed-integer + knapsack cover cuts | `mip/cuts.py` | done |
+| Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
 | Refinery model templates | `models/refinery.py` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
-| Crossover, sensitivity ranging, cuts, IPM | — | **not built** (roadmap) |
+| Crossover, sensitivity ranging, IPM, QP | — | **not built** (roadmap) |
 
 ---
 
@@ -314,8 +321,11 @@ values — not by unit tests. Both now have regression tests.
 - **Product-form update, not Forrest–Tomlin.** Fill grows linearly in the number
   of etas, forcing a refactorisation every 60 pivots. This is the main reason
   10teams takes 18k iterations and 12 s.
-- **No cuts, no conflict analysis, no symmetry handling**, so weak-relaxation
-  models still explore far more nodes than they should.
+- **No conflict analysis and no symmetry handling**, so weak-relaxation models
+  still explore far more nodes than they should.
+- **Cuts are separated at the root only** and are never rolled back when they
+  fail to pay for themselves (see p0201 above). Local cuts in the tree and a
+  cost-aware rollback are the next steps.
 - **No IPM and no QP solve path** (QP models parse, but there is no quadratic
   solver behind them).
 - **No global/bilinear (pooling) solver.** The blending template uses the linear
@@ -334,6 +344,6 @@ src/vyuha/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        49 tests including regressions for all three bugs above
+tests/        74 tests including regressions for every bug above
 ui/           local single-page interface
 ```
