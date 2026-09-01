@@ -13,8 +13,10 @@ clean-room policy in [`CLAUDE.md`](CLAUDE.md).
 
 ## Status
 
-Working end to end. Validated against **published MIPLIB reference values** and
-an **independent verifier** that recomputes feasibility from the original model.
+Working end to end, with **two independent LP engines** -- an exact revised
+simplex and a GPU first-order method -- validated against **published MIPLIB
+reference values** and an **independent verifier** that recomputes feasibility
+from the original model.
 
 ```
 VYUHA benchmark  mode=lp  device=cpu  time-limit=90s  tol=1e-8
@@ -39,10 +41,41 @@ qnet1             503   1541     4622 OPTIMAL           14274.103        14274.1
   worst relative error 5.08e-07 (mod010)
 ```
 
-MILP is exact on tested instances (matches a brute-force DP optimum on knapsacks)
-but the tree is young: the bound comes from a fixed iteration budget of a
-first-order method, so node counts are high on models with weak relaxations.
-That is the honest state and the next thing to improve.
+The revised simplex solves the same set to the same published values, exactly,
+and considerably faster:
+
+| engine | optimal | verified | shifted geomean | total | worst rel. err |
+|---|---|---|---|---|---|
+| first-order (PDLP) | 11/11 | 11/11 | 1.592 s | 35.0 s | 5.08e-07 |
+| **revised simplex** | 11/11 | 11/11 | **0.513 s** | **14.3 s** | 5.10e-07 |
+
+Per-instance the gap is much wider than the aggregate suggests -- simplex is
+794x faster on mas76, 132x on khb05250, 14x on qnet1 -- while PDLP wins
+decisively on 10teams (0.29 s against 11.8 s), which is highly degenerate. They
+are genuinely complementary, and `method="auto"` picks by size.
+
+MILP is exact where it closes. With exact node LPs the tree is sharp: a 22-item
+knapsack closes in **59 nodes** where the batched first-order bound needed
+**40,211**. On real MIPLIB instances at a 45 s limit:
+
+```
+instance     status         objective     reference   relerr    time
+flugpl       OPTIMAL          1201500       1201500  0.00e+00   5.55s
+gr4x6        OPTIMAL           202.35           nan       nan   0.70s
+mod010       OPTIMAL             6548          6548  0.00e+00   6.03s
+p0201        OPTIMAL             7615          7615  0.00e+00  26.28s
+dcmulti      TIME_LIMIT           nan        188182       nan  45.44s
+gt2          TIME_LIMIT           nan         21166       nan  45.03s
+khb05250     TIME_LIMIT           nan   1.0694023e+08      nan  45.08s
+```
+
+**4/7 proved optimal, every one of them matching the published optimum
+exactly.** The three failures share a specific cause and it is worth naming: the
+solver found **no incumbent at all**, not a poor one. The bound is fine; the
+primal side is the gap. The only heuristic implemented is round-and-propagate,
+and cuts, diving and a feasibility pump are all unbuilt. That is the next piece
+of work, and it is a bigger lever on these instances than anything on the
+bounding side.
 
 ---
 
@@ -63,9 +96,10 @@ python -m ui.server                              # http://127.0.0.1:8000
 
 ```bash
 python -m bench.fetch --set small     # download MIPLIB instances
-python -m bench.harness --mode lp     # validate against published values
+python -m bench.harness --mode lp                  # validate against published values
+python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
-python -m pytest tests/               # 23 tests
+python -m pytest tests/               # 49 tests
 ```
 
 ---
@@ -81,15 +115,62 @@ python -m pytest tests/               # 23 tests
 | Hypersparse FTRAN / BTRAN | `numerics/lu.py` | done |
 | Iterative refinement, compensated residual | `numerics/refine.py` | done |
 | Condition estimation (Hager) | `numerics/refine.py` | done |
+| **Revised simplex**, primal + dual, bounded | `lp/simplex.py` | done |
+| Basis, product-form update, singularity repair | `lp/basis.py` | done |
 | First-order LP (PDLP-class), CPU + CUDA | `lp/pdlp.py` | done |
 | Hand-written CUDA kernels | `core/backend.py` | done |
 | Safe dual bounds (Neumaier–Shcherbina) | `mip/safebound.py` | done |
 | **Batched Node Relaxation** | `mip/bnr.py` | done |
 | Domain propagation | `mip/propagate.py` | done |
-| Branch and bound | `mip/tree.py` | working, early |
+| Branch and bound, exact or batched node LPs | `mip/tree.py` | done |
 | Refinery model templates | `models/refinery.py` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
-| Revised simplex, crossover, cuts, IPM | — | **not built** (roadmap) |
+| Crossover, sensitivity ranging, cuts, IPM | — | **not built** (roadmap) |
+
+---
+
+## The revised simplex
+
+The exact engine. It is what a first-order method cannot be: it terminates at a
+**vertex**, with a basis, and therefore with duals, reduced costs and the
+identity of every binding constraint. A refinery planner reads marginal prices
+off that basis; an approximate optimal *value* is of no use for the question
+"what is one more tonne of this crude worth".
+
+Bounded-variable primal and dual over the augmented system `M z = 0` with
+`M = [A | -I]`, so `<=`, `>=`, `=` and ranged rows are all one code path -- a
+row's type lives entirely in its logical variable's bounds.
+
+- **Dual simplex** is the branch-and-bound workhorse. Reduced costs are
+  `d = c - Aᵀ B^-T c_B`, which depends on the basis and objective but **not on
+  the bounds**, so a branching decision cannot disturb dual feasibility. The
+  parent's basis is therefore still dual feasible at the child and the dual
+  simplex resumes from it. Measured: **1.7 pivots per node**, 100% warm-start
+  hit rate.
+- **Harris two-pass ratio test** in both directions. Pass one finds the largest
+  step with bounds relaxed by the feasibility tolerance; pass two takes the
+  largest *pivot magnitude* among rows blocking within it. The textbook
+  minimum-ratio row routinely means pivoting on 1e-9 because it tied, which
+  wrecks the factorisation a few iterations later.
+- **Devex pricing** rather than Dantzig's rule, which is scale-dependent and
+  takes far more iterations.
+- **Product-form basis update** with periodic refactorisation, and repair of
+  singular bases by swapping in logicals. Forrest–Tomlin would keep the factors
+  sparser for longer and is the natural next step; it is not built.
+- **Anti-degeneracy**: random cost perturbation after a run of zero-length
+  pivots, removed and re-optimised before the answer is reported.
+
+What it unlocks, measured on a 22-item knapsack:
+
+| node bound | nodes | time |
+|---|---|---|
+| batched first-order (BNR) | 40,211 | 22.6 s |
+| **exact LP, dual simplex warm start** | **59** | **1.5 s** |
+
+That is the honest verdict on the batched idea: valid-but-loose bounds are cheap
+and parallel, but bound *quality* dominates tree size. BNR remains the right
+tool when nodes are large enough that an exact solve is unaffordable; the tree
+takes `node_solver="simplex"` or `"bnr"`.
 
 ---
 
@@ -206,18 +287,29 @@ values — not by unit tests. Both now have regression tests.
    OPTIMAL for points its own checker rejected. Feasibility is now judged
    absolutely, optimality relatively.
 
+3. **The phase-1 ratio test computed a breakpoint for a basic variable already
+   outside its box and moving further out.** That ratio is negative, clamping
+   the step to zero and stalling phase 1 at a non-optimal point — so the
+   feasible instance misc07 was reported **INFEASIBLE**. Such a variable has no
+   breakpoint at all: its infeasibility grows at a constant rate the phase-1
+   objective already accounts for.
+
 ---
 
 ## Known limits
 
-- **No revised simplex yet.** LP accuracy is capped at what a first-order method
-  reaches; there is no basis, so no sensitivity ranging and no exact crossover.
-  This is the largest gap and the next major piece.
-- **MILP node counts are high** on weak-relaxation models. The bound comes from
-  a fixed 80-iteration budget; tightening it costs time per node, loosening it
-  costs nodes. Cuts and better branching are unbuilt.
-- **No cuts, no conflict analysis, no symmetry handling, no IPM, no QP solve
-  path** (QP models parse, but there is no quadratic solver behind them).
+- **No sensitivity ranging.** The basis is there and the duals are exact, so
+  objective and RHS ranging is now a short step — but it is not written.
+- **No crossover** from a first-order point to a basis, so the PDLP path still
+  cannot hand over to the simplex on large models. The two engines are chosen
+  between, not composed.
+- **Product-form update, not Forrest–Tomlin.** Fill grows linearly in the number
+  of etas, forcing a refactorisation every 60 pivots. This is the main reason
+  10teams takes 18k iterations and 12 s.
+- **No cuts, no conflict analysis, no symmetry handling**, so weak-relaxation
+  models still explore far more nodes than they should.
+- **No IPM and no QP solve path** (QP models parse, but there is no quadratic
+  solver behind them).
 - **No global/bilinear (pooling) solver.** The blending template uses the linear
   blending assumption; genuine crude-blending non-convexity is not addressed.
 - GPU fp64 on a laptop RTX 3050 runs at 1/32 rate; a datacentre card changes the
@@ -230,10 +322,10 @@ src/vyuha/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer
   numerics/   scaling, LU, hypersparse solves, refinement
-  lp/         first-order LP
+  lp/         revised simplex, basis, first-order LP
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        23 tests including regressions for both bugs above
+tests/        49 tests including regressions for all three bugs above
 ui/           local single-page interface
 ```

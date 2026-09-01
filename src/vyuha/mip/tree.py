@@ -48,6 +48,7 @@ from ..core.problem import ObjSense, Problem, Solution, Status, VarKind
 from ..core.sparse import VAL
 from ..core.tolerances import DEFAULT, INF, Tolerances
 from ..numerics.scaling import scale_problem
+from ..lp.simplex import NodeSolver, SimplexParams
 from .bnr import BNRConfig, BNREngine
 from .propagate import propagate
 
@@ -64,6 +65,20 @@ class MIPParams:
     batch: int = 64
     """Nodes bounded per batch. 32-64 is the sweet spot measured on the
     sparse kernels; beyond that the dense operands stop fitting in cache."""
+
+    node_solver: str = "simplex"
+    """How each node's relaxation is bounded.
+
+    ``"simplex"``  exact LP per node, dual simplex warm-started from the
+                   parent's basis. Tight bounds, few nodes. The default,
+                   because a bound that is merely valid is not worth much:
+                   the batched path needed 40,000 nodes on a knapsack the
+                   exact path closes in a handful.
+    ``"bnr"``      batched first-order bounding on the GPU. Cheap per node and
+                   massively parallel, but the bound after a fixed iteration
+                   budget is loose. Wins when nodes are enormous and the
+                   frontier is wide.
+    """
 
     bnr_iters: int = 80
     root_iters: int = 3000
@@ -227,17 +242,38 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                         time=time.perf_counter() - t0, method="bnr-bb")
     lo0, hi0 = root.lo, root.hi
 
-    engine = BNREngine(scaled, sc, BNRConfig(batch=params.batch,
-                                             iters=params.bnr_iters,
-                                             device=params.device))
+    use_bnr = params.node_solver == "bnr"
+    engine = None
+    node_lp = None
+    if use_bnr:
+        engine = BNREngine(scaled, sc, BNRConfig(batch=params.batch,
+                                                 iters=params.bnr_iters,
+                                                 device=params.device))
+    else:
+        node_lp = NodeSolver(scaled, SimplexParams(
+            time_limit=params.time_limit,
+            feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
 
     # ---- root relaxation, solved harder than an ordinary node ------------- #
-    root_cfg = engine.cfg.iters
-    engine.cfg.iters = params.root_iters
-    r = engine.solve_batch(lo0[:, None].copy(), hi0[:, None].copy())
-    engine.cfg.iters = root_cfg
-    root_bound = float(r.bounds[0])
-    root_x = r.x[:, 0]
+    root_basis = None
+    if use_bnr:
+        root_cfg = engine.cfg.iters
+        engine.cfg.iters = params.root_iters
+        r = engine.solve_batch(lo0[:, None].copy(), hi0[:, None].copy())
+        engine.cfg.iters = root_cfg
+        root_bound = float(r.bounds[0])
+        root_x = r.x[:, 0]
+    else:
+        rr = node_lp.solve(lo0, hi0)
+        if rr.status == Status.INFEASIBLE:
+            return Solution(status=Status.INFEASIBLE, nodes=0,
+                            time=time.perf_counter() - t0, method="bb")
+        if rr.status != Status.OPTIMAL or rr.x is None:
+            root_bound, root_x = -np.inf, np.zeros(n, dtype=VAL)
+        else:
+            root_bound = rr.objective / sc.obj
+            root_x = rr.x
+            root_basis = rr.basis
 
     if not np.isfinite(root_bound):
         root_bound = -np.inf
@@ -252,15 +288,21 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         best_x = cand
 
     frontier: list[_Node] = []
-    heapq.heappush(frontier, _Node((), root_bound, 0))
+    root_node = _Node((), root_bound, 0)
+    root_node.parent_id = 0          # key 0 is free: _order starts at 1
+    heapq.heappush(frontier, root_node)
     pc = _Pseudocost(n)
 
     nodes = 0
     status = Status.NODE_LIMIT
     last_log = t0
     duals: dict = {}
+    warm_cache: dict = {}
+    if root_basis is not None:
+        warm_cache[0] = root_basis
     warm_hits = 0
     warm_tries = 0
+    node_infeasible = 0
 
     def _obj(xv):
         """Objective in the *working* problem's units.
@@ -318,45 +360,73 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
 
         Ka = len(alive)
 
-        # ---- warm start ---------------------------------------------------
-        # A child's LP differs from its parent's by one bound, so the parent's
-        # dual iterate is an excellent starting point: the first-order method
-        # resumes near the solution instead of from zero. Without this the
-        # bound after a fixed iteration budget is far weaker and the tree grows
-        # by orders of magnitude.
-        #
-        # Duals are cached per node rather than stored on it: keeping an
-        # (m,)-vector on every open node would dominate memory on a large
-        # model. Best-bound search pops children soon after their parent, so a
-        # small cache captures nearly all of the benefit.
-        warm = None
-        if engine.cfg.warm_start:
-            Yw = np.zeros((scaled.m, Ka), dtype=VAL)
-            Xw = np.zeros((n, Ka), dtype=VAL)
-            hit = 0
+        # ---- bound the slab -----------------------------------------------
+        # Two strategies, same interface: fill `bounds` (in working-problem
+        # objective units) and `xs` (relaxation points for the heuristics).
+        bounds = np.empty(Ka, dtype=VAL)
+        xs = np.zeros((n, Ka), dtype=VAL)
+
+        if use_bnr:
+            # A child's LP differs from its parent's by one bound, so the
+            # parent's dual iterate is an excellent starting point. Duals are
+            # cached per node rather than stored on it: an (m,)-vector on every
+            # open node would dominate memory on a large model.
+            warm = None
+            if engine.cfg.warm_start:
+                Yw = np.zeros((scaled.m, Ka), dtype=VAL)
+                Xw = np.zeros((n, Ka), dtype=VAL)
+                hit = 0
+                for t, nd in enumerate(alive):
+                    cached = duals.get(nd.parent_id)
+                    if cached is not None:
+                        Yw[:, t] = cached[0]
+                        Xw[:, t] = cached[1]
+                        hit += 1
+                if hit:
+                    warm = (Xw, Yw)
+                warm_hits += hit
+                warm_tries += Ka
+
+            res = engine.solve_batch(LO[:, :Ka], HI[:, :Ka], warm=warm)
+            bounds[:] = res.bounds
+            xs[:] = res.x
+
+            Yout = engine.bk.to_host(engine.Y[:, :Ka])
             for t, nd in enumerate(alive):
-                cached = duals.get(nd.parent_id)
-                if cached is not None:
-                    Yw[:, t] = cached[0]
-                    Xw[:, t] = cached[1]
-                    hit += 1
-            if hit:
-                warm = (Xw, Yw)
-            warm_hits += hit
-            warm_tries += Ka
+                duals[nd._order] = (Yout[:, t].copy(), res.x[:, t].copy())
+            while len(duals) > 6 * params.batch:
+                duals.pop(next(iter(duals)))
+        else:
+            # Exact node LPs. The parent's basis is still dual feasible at the
+            # child -- reduced costs do not depend on the bounds -- so the dual
+            # simplex resumes from it in a few pivots.
+            for t, nd in enumerate(alive):
+                wb = warm_cache.get(nd.parent_id)
+                warm_tries += 1
+                if wb is not None:
+                    warm_hits += 1
+                r = node_lp.solve(LO[:, t], HI[:, t], warm_basis=wb)
+                if r.status == Status.INFEASIBLE:
+                    bounds[t] = np.inf
+                    node_infeasible += 1
+                elif r.status == Status.OPTIMAL and r.x is not None:
+                    bounds[t] = r.objective / sc.obj
+                    xs[:, t] = r.x
+                    warm_cache[nd._order] = r.basis
+                else:
+                    bounds[t] = nd.bound
+            while len(warm_cache) > 8 * params.batch:
+                k = next(iter(warm_cache))
+                if k == 0:
+                    warm_cache.pop(k)
+                    continue
+                warm_cache.pop(k)
 
-        res = engine.solve_batch(LO[:, :Ka], HI[:, :Ka], warm=warm)
         nodes += Ka
-
-        Yout = engine.bk.to_host(engine.Y[:, :Ka])
-        for t, nd in enumerate(alive):
-            duals[nd._order] = (Yout[:, t].copy(), res.x[:, t].copy())
-        while len(duals) > 6 * params.batch:
-            duals.pop(next(iter(duals)))
 
         # ---- process the slab ---------------------------------------------
         for t, nd in enumerate(alive):
-            b = float(res.bounds[t])
+            b = float(bounds[t])
             if not np.isfinite(b):
                 b = nd.bound                       # vacuous bound: keep parent's
             b = max(b, nd.bound)                   # bounds only improve downward
@@ -365,7 +435,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                     params.gap_abs, params.gap_rel * abs(incumbent)):
                 continue
 
-            xv = res.x[:, t]
+            xv = xs[:, t]
             l = LO[:, t]
             h = HI[:, t]
 
@@ -460,6 +530,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     sol = Solution(status=status, x=x_orig, objective=obj,
                    dual_bound=db, nodes=nodes,
                    time=time.perf_counter() - t0, method="bnr-bb")
-    sol.info = engine.stats()
+    sol.info = (engine.stats() if engine is not None else node_lp.stats())
+    sol.info["node_solver"] = params.node_solver
     sol.info["warm_start_hit_rate"] = warm_hits / max(warm_tries, 1)
+    sol.info["nodes_infeasible"] = node_infeasible
     return sol

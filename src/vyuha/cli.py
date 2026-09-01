@@ -35,16 +35,33 @@ except Exception:
 # --------------------------------------------------------------------------- #
 
 
+#: Above this many nonzeros the first-order method is preferred over the
+#: simplex: it is the regime where the GPU pays and where the simplex's
+#: sequential factorisation updates stop keeping up. Below it the simplex wins
+#: decisively -- measured at 10x to 800x on the MIPLIB LP relaxations -- and it
+#: returns a basis, which the first-order method cannot.
+SIMPLEX_NNZ_LIMIT = 500_000
+
+
 def solve(prob: Problem, method: str = "auto", device: str = "auto",
           time_limit: float = 300.0, gap: float = 1e-4,
           tol: float = 1e-8, verbose: bool = False) -> Solution:
     """Solve an LP or MILP, picking the method automatically by default."""
     from .lp.pdlp import PDLPParams, solve_pdlp
+    from .lp.simplex import SimplexParams, solve_simplex
     from .mip.tree import MIPParams, solve_mip
 
     if method == "auto":
-        method = "bnb" if prob.is_mip else "pdlp"
+        if prob.is_mip:
+            method = "bnb"
+        else:
+            method = "simplex" if prob.nnz <= SIMPLEX_NNZ_LIMIT else "pdlp"
 
+    if method == "simplex":
+        return solve_simplex(prob, SimplexParams(time_limit=time_limit,
+                                                 feas_tol=max(tol, 1e-9),
+                                                 opt_tol=max(tol, 1e-9),
+                                                 verbose=verbose))
     if method == "pdlp":
         return solve_pdlp(prob, PDLPParams(device=device, eps_abs=tol,
                                            eps_rel=tol, time_limit=time_limit,
@@ -118,6 +135,10 @@ def cmd_solve(a):
     if sol.x is not None:
         rv, bv, iv = prob.violation(sol.x)
         print(f"  violation   row {rv:.2e}  bound {bv:.2e}  integrality {iv:.2e}")
+    if sol.basis_status is not None:
+        from .lp.basis import BASIC
+        nb = int((sol.basis_status == BASIC).sum())
+        print(f"  basis       {nb} basic variables (duals and reduced costs available)")
 
     if a.out and sol.x is not None:
         payload = {
@@ -183,7 +204,8 @@ def main(argv=None):
 
     p = sub.add_parser("solve", help="solve a model")
     p.add_argument("model")
-    p.add_argument("--method", choices=["auto", "pdlp", "bnb"], default="auto")
+    p.add_argument("--method", choices=["auto", "simplex", "pdlp", "bnb"],
+                   default="auto")
     p.add_argument("--device", choices=["auto", "cpu", "gpu"], default="auto")
     p.add_argument("--time-limit", type=float, default=300.0)
     p.add_argument("--gap", type=float, default=1e-4, help="relative MIP gap")

@@ -46,7 +46,8 @@ def shifted_geomean(values, shift):
     return float(np.exp(np.mean(np.log(np.maximum(v, 0.0) + shift))) - shift)
 
 
-def run(mode, paths, time_limit, device, tol, gap, verbose=False):
+def run(mode, paths, time_limit, device, tol, gap, verbose=False,
+        method=None):
     from vyuha.cli import solve
 
     rows = []
@@ -72,8 +73,9 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False):
             target = ref.get("best_soln")
 
         t = time.perf_counter()
+        chosen = method or ("auto" if mode == "lp" else "bnb")
         try:
-            sol = solve(prob, method="pdlp" if mode == "lp" else "bnb",
+            sol = solve(prob, method=chosen,
                         device=device, time_limit=time_limit, gap=gap, tol=tol,
                         verbose=verbose)
         except Exception as e:
@@ -133,6 +135,8 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["lp", "mip"], default="lp")
+    ap.add_argument("--method", choices=["auto", "simplex", "pdlp", "bnb"],
+                    default=None, help="override the solver choice")
     ap.add_argument("--dir", default=DATA_DIR)
     ap.add_argument("--time-limit", type=float, default=60.0)
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "gpu"])
@@ -152,10 +156,11 @@ def main(argv=None):
         print(f"no instances in {a.dir}; run:  python -m bench.fetch --set small")
         return 1
 
-    print(f"VYUHA benchmark  mode={a.mode}  device={a.device}  "
-          f"time-limit={a.time_limit}s  tol={a.tol:g}")
+    print(f"VYUHA benchmark  mode={a.mode}  method={a.method or 'auto'}  "
+          f"device={a.device}  time-limit={a.time_limit}s  tol={a.tol:g}")
     print()
-    run(a.mode, paths, a.time_limit, a.device, a.tol, a.gap, a.verbose)
+    run(a.mode, paths, a.time_limit, a.device, a.tol, a.gap, a.verbose,
+        method=a.method)
     return 0
 
 

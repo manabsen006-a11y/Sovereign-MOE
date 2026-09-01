@@ -27,6 +27,8 @@ library. This document is the evidence for that claim.
 | `numerics/scaling.py` | Ruiz equilibration; Curtis-Reid least squares; Pock-Chambolle | Ruiz 2001; Curtis & Reid 1972; Pock & Chambolle 2011; Tomlin 1975 |
 | `numerics/lu.py` | Gilbert-Peierls left-looking LU, threshold Markowitz, singleton peeling, DFS reachability | Gilbert & Peierls 1988; Markowitz 1957; Suhl & Suhl 1990; Davis 2006 ch.6 |
 | `numerics/refine.py` | Error-free transformations, compensated dot product, iterative refinement, Hager condition estimate | Dekker 1971; Knuth TAOCP 2 §4.2.2; Ogita-Rump-Oishi 2005; Wilkinson 1963; Higham 2002 ch.12,15; Hager 1984 |
+| `lp/basis.py` | Product form of the inverse, augmented form with logicals | Dantzig & Orchard-Hays 1954; Chvatal 1983 ch.7,24; Maros 2003 ch.5,9; Forrest & Tomlin 1972 |
+| `lp/simplex.py` | Bounded-variable primal and dual revised simplex, Harris two-pass ratio tests, Devex pricing, anti-degeneracy perturbation | Dantzig 1963; Harris 1973; Gill et al. 1989 (EXPAND); Forrest & Goldfarb 1992; Fourer 1994; Koberstein 2005; Maros 2003 |
 | `lp/pdlp.py` | Restarted average PDHG, adaptive step size, adaptive restarts, primal weight | Chambolle & Pock 2011; Applegate et al. NeurIPS 2021; Applegate et al. Math.Prog. 2023; Malitsky & Pock 2018 |
 | `mip/safebound.py` | Valid bounds from arbitrary duals | Neumaier & Shcherbina 2004; Cook et al. 2013; Althaus & Dumitriu 2012 |
 | `mip/propagate.py` | Activity-based bound tightening | Savelsbergh 1994; Brearley-Mitra-Williams 1975; Achterberg 2007 §7.1 |
