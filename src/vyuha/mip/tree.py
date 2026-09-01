@@ -54,6 +54,7 @@ from .cuts import CutPool, append_cuts, generate_cover, generate_gomory
 from .heuristics import (HeuristicStats, feasibility_jump, feasibility_pump,
                          fix_and_propagate)
 from .propagate import propagate
+from .symmetry import breaking_constraints, detect_symmetry
 
 __all__ = ["MIPParams", "solve_mip"]
 
@@ -109,6 +110,17 @@ class MIPParams:
 
     cuts_per_round: int = 40
     heuristics: bool = True
+
+    symmetry: bool = True
+    """Detect fully interchangeable variable groups and order them.
+
+    Identical process units, identical tanks and interchangeable time slots make
+    a tree re-derive the same schedule under every relabelling -- a factor of
+    k! of wasted search for k identical objects. Detection is exact (every
+    candidate transposition is verified against the model), so this can only
+    ever remove duplicates of solutions that remain reachable."""
+
+    symmetry_time: float = 2.0
     fj_iterations: int = 30_000
     device: str = "auto"
 
@@ -329,6 +341,16 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         return Solution(status=Status.INFEASIBLE, nodes=0,
                         time=time.perf_counter() - t0, method="bnr-bb")
     lo0, hi0 = root.lo, root.hi
+
+    # ---- static symmetry breaking, before anything else sees the model ---- #
+    sym_info = None
+    if params.symmetry:
+        sym_info = detect_symmetry(scaled, time_limit=params.symmetry_time)
+        rows = breaking_constraints(sym_info, scaled.integer_mask)
+        if rows:
+            from .cuts import Cut
+            scaled = append_cuts(scaled, [Cut(i, v, r, kind="symmetry")
+                                          for i, v, r in rows])
 
     use_bnr = params.node_solver == "bnr"
     engine = None
@@ -701,6 +723,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     sol.info = (engine.stats() if engine is not None else node_lp.stats())
     sol.info["node_solver"] = params.node_solver
     sol.info["root_cuts"] = n_cuts
+    if sym_info is not None:
+        sol.info["symmetry"] = sym_info.summary()
     sol.info["root_cut_bound_gain"] = cut_gain
     sol.info["heuristics"] = heur.summary()
     sol.info["warm_start_hit_rate"] = warm_hits / max(warm_tries, 1)

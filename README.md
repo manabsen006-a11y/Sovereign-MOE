@@ -119,7 +119,7 @@ python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
-python -m pytest tests/               # 74 tests
+python -m pytest tests/               # 88 tests
 ```
 
 ---
@@ -144,6 +144,7 @@ python -m pytest tests/               # 74 tests
 | Domain propagation | `mip/propagate.py` | done |
 | Branch and bound, exact or batched node LPs | `mip/tree.py` | done |
 | Gomory mixed-integer + knapsack cover cuts | `mip/cuts.py` | done |
+| Symmetry detection + static breaking | `mip/symmetry.py` | done |
 | Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
 | Refinery model templates | `models/refinery.py` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
@@ -193,6 +194,46 @@ That is the honest verdict on the batched idea: valid-but-loose bounds are cheap
 and parallel, but bound *quality* dominates tree size. BNR remains the right
 tool when nodes are large enough that an exact solve is unaffordable; the tree
 takes `node_solver="simplex"` or `"bnr"`.
+
+---
+
+## Symmetry
+
+Refineries have identical parallel units; schedules have interchangeable slots.
+A tree without symmetry handling re-derives the same plan under every
+relabelling, wasting up to `k!` for `k` identical objects.
+
+Detection is two-stage and **only the second stage is trusted**. Colour
+refinement (1-WL) on the bipartite variable-constraint graph proposes
+candidates; individualisation-refinement turns a candidate pair into a full
+permutation; and that permutation is then checked against the model in its
+entirety -- objective, bounds, kinds, row bounds, every matrix entry. The search
+may be incomplete without ever being unsound: it can miss a symmetry, it cannot
+invent one.
+
+Measured on identical-unit refinery scheduling, with the optimum preserved in
+every case:
+
+| identical units | nodes without | nodes with |
+|---|---|---|
+| 4 | 8378 | **6633** |
+| 5 | 21813 | **17636** |
+| 6 | 20338 | **16516** |
+
+On the MIPLIB subset the effect is **within measurement noise** (shifted geomean
+22.7 s against 24.1 s, on a machine that has shown 2.3x swings from background
+load alone). p0201 and misc07 do have detectable symmetry -- 40 and 13 verified
+generators -- but breaking it neither helps nor hurts them measurably. 10teams
+has none at all: refinement drives it to 2025 singleton colours, and refinement
+provably cannot separate two variables in the same orbit, so that is a proof of
+absence rather than a failure to look.
+
+Two bugs found building this, both of the *silently does nothing* kind, and both
+now pinned by tests: detection that only tried single transpositions (a real
+symmetry swaps every variable of a unit across every period at once, so it could
+never fire), and colour numbering by order of first appearance, which made two
+independently-refined colourings incomparable and returned zero generators on
+every input including obvious Sym(8).
 
 ---
 
@@ -328,8 +369,11 @@ values — not by unit tests. Both now have regression tests.
 - **Product-form update, not Forrest–Tomlin.** Fill grows linearly in the number
   of etas, forcing a refactorisation every 60 pivots. This is the main reason
   10teams takes 18k iterations and 12 s.
-- **No conflict analysis and no symmetry handling**, so weak-relaxation models
-  still explore far more nodes than they should.
+- **No conflict analysis.** Weak-relaxation models still explore far more nodes
+  than they should.
+- **Symmetry breaking is weak.** One inequality per generator rather than full
+  lexicographic ordering, so it captures a fraction of what orbitopal fixing
+  would. Sound, but nowhere near the `k!` the theory allows.
 - **Cuts are separated at the root only** and are never rolled back when they
   fail to pay for themselves (see p0201 above). Local cuts in the tree and a
   cost-aware rollback are the next steps.
@@ -351,6 +395,6 @@ src/vyuha/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        74 tests including regressions for every bug above
+tests/        88 tests including regressions for every bug above
 ui/           local single-page interface
 ```

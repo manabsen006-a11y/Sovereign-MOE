@@ -221,18 +221,29 @@ def production_planning(n_crudes: int = 6, n_units: int = 4,
 
 
 def unit_scheduling(n_units: int = 5, n_periods: int = 10,
-                    seed: int = 2) -> Problem:
+                    seed: int = 2, identical_units: bool = False) -> Problem:
     """Run/idle scheduling with minimum up-time -- a weak-relaxation MILP.
 
     Binary ``on[u,t]`` linked to continuous throughput by big-M, which is
     exactly the formulation that makes refinery scheduling relaxations weak.
+
+    ``identical_units`` makes every unit the same size and cost. That is the
+    ordinary situation in a refinery -- parallel trains, identical tanks -- and
+    it makes the model **symmetric**: any relabelling of the units maps a
+    schedule to an equally good one, so a plain branch-and-bound re-derives the
+    same plan ``n_units!`` times. See :mod:`vyuha.mip.symmetry`.
     """
     rng = np.random.default_rng(seed)
     nu, T = n_units, n_periods
 
-    cap = rng.uniform(60, 180, nu)
-    startup = rng.uniform(400, 1200, nu)
-    varcost = rng.uniform(6, 18, nu)
+    if identical_units:
+        cap = np.full(nu, 120.0)
+        startup = np.full(nu, 800.0)
+        varcost = np.full(nu, 12.0)
+    else:
+        cap = rng.uniform(60, 180, nu)
+        startup = rng.uniform(400, 1200, nu)
+        varcost = rng.uniform(6, 18, nu)
     demand = rng.uniform(0.45, 0.8, T) * cap.sum()
 
     non = nu * T
