@@ -50,7 +50,8 @@ from ..core.tolerances import DEFAULT, INF, Tolerances
 from ..numerics.scaling import scale_problem
 from ..lp.simplex import NodeSolver, SimplexParams
 from .bnr import BNRConfig, BNREngine
-from .cuts import CutPool, append_cuts, generate_cover, generate_gomory
+from .conflict import ConflictAnalyzer
+from .cuts import Cut, CutPool, append_cuts, generate_cover, generate_gomory
 from .heuristics import (HeuristicStats, feasibility_jump, feasibility_pump,
                          fix_and_propagate)
 from .propagate import propagate
@@ -110,6 +111,19 @@ class MIPParams:
 
     cuts_per_round: int = 40
     heuristics: bool = True
+
+    conflict: bool = True
+    """Learn a clause from each infeasible node.
+
+    An ordinary tree discards the fact that a subproblem was empty and
+    rediscovers it in every sibling repeating the same decisions. Conflict
+    analysis records *which* decisions were to blame and forbids that
+    combination globally."""
+
+    clause_batch: int = 30
+    """Learned clauses are added in batches: each rebuild of the node solver
+    invalidates the warm-start basis cache, so doing it per clause would cost
+    more than the clauses save."""
 
     symmetry: bool = True
     """Detect fully interchangeable variable groups and order them.
@@ -414,6 +428,13 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     nodes = 0
     status = Status.NODE_LIMIT
     last_log = t0
+    binary_mask = (int_mask & (lo0 >= -1e-9) & (hi0 <= 1.0 + 1e-9))
+    conflict = None
+    if params.conflict and not use_bnr and binary_mask.any():
+        conflict = ConflictAnalyzer(root_lo=lo0.copy(), root_hi=hi0.copy(),
+                                    binary=binary_mask)
+    pending_clauses: list = []
+
     duals: dict = {}
     warm_cache: dict = {}
     if root_basis is not None:
@@ -602,6 +623,12 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 if r.status == Status.INFEASIBLE:
                     bounds[t] = np.inf
                     node_infeasible += 1
+                    if conflict is not None and r.farkas is not None:
+                        cl = conflict.analyse(scaled.A, scaled.row_lb,
+                                              scaled.row_ub, LO[:, t], HI[:, t],
+                                              r.farkas)
+                        if cl is not None:
+                            pending_clauses.append(cl)
                 elif r.status == Status.OPTIMAL and r.x is not None:
                     bounds[t] = r.objective / sc.obj
                     xs[:, t] = r.x
@@ -616,6 +643,15 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 warm_cache.pop(k)
 
         nodes += Ka
+
+        if pending_clauses and len(pending_clauses) >= params.clause_batch:
+            scaled = append_cuts(scaled, [Cut(i, v, rr, kind="conflict")
+                                          for i, v, rr in pending_clauses])
+            node_lp = NodeSolver(scaled, SimplexParams(
+                time_limit=params.time_limit,
+                feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
+            warm_cache.clear()          # basis size changed
+            pending_clauses = []
 
         # ---- process the slab ---------------------------------------------
         for t, nd in enumerate(alive):
@@ -723,6 +759,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     sol.info = (engine.stats() if engine is not None else node_lp.stats())
     sol.info["node_solver"] = params.node_solver
     sol.info["root_cuts"] = n_cuts
+    if conflict is not None:
+        sol.info["conflict"] = conflict.stats()
     if sym_info is not None:
         sol.info["symmetry"] = sym_info.summary()
     sol.info["root_cut_bound_gain"] = cut_gain

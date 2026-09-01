@@ -390,6 +390,12 @@ class _Simplex:
         self.devex = np.ones(self.N, dtype=VAL)
         self.dual_weight = np.ones(self.m, dtype=VAL)
         self._cost_backup = None
+        self.farkas = None
+        """Dual ray certifying primal infeasibility, when one was produced.
+
+        Set by the dual simplex at the moment its ratio test fails, and by the
+        phase-1 primal when it stalls with infeasibility remaining. It is what
+        :mod:`vyuha.mip.conflict` analyses to learn why a node was empty."""
 
     # -- bookkeeping -------------------------------------------------------- #
 
@@ -576,6 +582,10 @@ def _dual_loop(S: _Simplex):
         q, _tdual = _dual_ratio(alpha_row, d, B.status, sigma,
                                 p.pivot_tol, p.opt_tol, p.harris_relax)
         if q < 0:
+            # No column can repair row r without breaking dual feasibility:
+            # rho is row r of B^-1, and it is exactly the Farkas certificate
+            # that this subproblem is empty. Keep it for conflict analysis.
+            S.farkas = S.rho.copy()
             return Status.INFEASIBLE
 
         # ---- primal step --------------------------------------------------
@@ -620,6 +630,8 @@ class NodeResult:
     x: np.ndarray | None
     basis: np.ndarray | None
     iterations: int = 0
+    farkas: np.ndarray | None = None
+    """Dual ray certifying infeasibility, when the solve produced one."""
 
 
 class NodeSolver:
@@ -699,6 +711,7 @@ class NodeSolver:
         S.iters = 0
         S.devex[:] = 1.0
         S.dual_weight[:] = 1.0
+        S.farkas = None
         S.refresh()
 
         if S.primal_infeasibility() <= p.feas_tol:
@@ -714,6 +727,14 @@ class NodeSolver:
             else:
                 S.refresh()
                 if S.primal_infeasibility() > p.feas_tol * 100:
+                    # Phase 1 stalled with infeasibility left. Its own duals
+                    # are the certificate: y1 = B^-T c1 prices the rows in a
+                    # combination no feasible point can satisfy.
+                    ph1 = np.zeros(S.m, dtype=VAL)
+                    _phase1_costs(S.zB, B.basic, B.lower, B.upper,
+                                  p.feas_tol, ph1)
+                    B.btran(ph1)
+                    S.farkas = ph1
                     status = Status.INFEASIBLE
                 else:
                     status = _primal_loop(S, phase=2)
@@ -730,7 +751,9 @@ class NodeSolver:
 
         if status != Status.OPTIMAL:
             return NodeResult(status, np.inf if status == Status.INFEASIBLE
-                              else np.nan, None, None, S.iters)
+                              else np.nan, None, None, S.iters,
+                              farkas=(None if S.farkas is None
+                                      else np.asarray(S.farkas).copy()))
 
         z = B.nonbasic_values()
         z[B.basic] = S.zB

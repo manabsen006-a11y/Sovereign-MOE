@@ -119,7 +119,7 @@ python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
-python -m pytest tests/               # 88 tests
+python -m pytest tests/               # 96 tests
 ```
 
 ---
@@ -145,6 +145,7 @@ python -m pytest tests/               # 88 tests
 | Branch and bound, exact or batched node LPs | `mip/tree.py` | done |
 | Gomory mixed-integer + knapsack cover cuts | `mip/cuts.py` | done |
 | Symmetry detection + static breaking | `mip/symmetry.py` | done |
+| Conflict analysis (LP-infeasibility clauses) | `mip/conflict.py` | done |
 | Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
 | Refinery model templates | `models/refinery.py` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
@@ -234,6 +235,33 @@ symmetry swaps every variable of a unit across every period at once, so it could
 never fire), and colour numbering by order of first appearance, which made two
 independently-refined colourings incomparable and returned zero generators on
 every input including obvious Sym(8).
+
+## Conflict analysis
+
+When a node is infeasible, an ordinary tree throws the fact away and
+rediscovers it in every sibling repeating the same decisions. Conflict analysis
+asks which decisions were to blame and forbids that combination globally.
+
+The certificate is the Neumaier-Shcherbina bound with a **zero objective**: for
+any `y`, every feasible point of the node satisfies `0 >= L(y)`, so `L(y) > 0`
+proves the node empty. Because `L(y)` is a sum of independent per-variable
+terms, testing whether a branching decision was *needed* costs one subtraction
+rather than another LP solve:
+
+```
+L_without_j  =  L  -  term_j(node bounds)  +  term_j(root bounds)
+```
+
+That is what turns "these thirty decisions are jointly infeasible" -- useless,
+it excludes one node -- into a short clause that prunes broadly.
+
+Validated by brute force: 40 clauses over 15 small models, each checked against
+**every** integer-feasible point, worst slack exactly `0.000e+00`. Clauses come
+out at median length 2 on those models.
+
+It fires rarely in practice, for a structural reason: propagation runs before
+the node LP, so nodes it can refute never produce the dual ray this needs. See
+`mip/conflict.py` for the measured numbers and what would fix it.
 
 ---
 
@@ -369,8 +397,11 @@ values — not by unit tests. Both now have regression tests.
 - **Product-form update, not Forrest–Tomlin.** Fill grows linearly in the number
   of etas, forcing a refactorisation every 60 pivots. This is the main reason
   10teams takes 18k iterations and 12 s.
-- **No conflict analysis.** Weak-relaxation models still explore far more nodes
-  than they should.
+- **Conflict analysis only sees LP infeasibilities.** The tree propagates before
+  solving a node, so nodes propagation can refute never reach the LP that would
+  produce a dual ray. Measured: misc07 learns 42 clauses (3168 nodes -> 2848),
+  while p0201, gr4x6 and gt2 analyse zero nodes. Propagation-based conflict
+  analysis is the larger prize and needs the propagator to carry reasons.
 - **Symmetry breaking is weak.** One inequality per generator rather than full
   lexicographic ordering, so it captures a fraction of what orbitopal fixing
   would. Sound, but nowhere near the `k!` the theory allows.
@@ -395,6 +426,6 @@ src/vyuha/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        88 tests including regressions for every bug above
+tests/        96 tests including regressions for every bug above
 ui/           local single-page interface
 ```
