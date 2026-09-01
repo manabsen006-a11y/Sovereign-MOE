@@ -278,6 +278,10 @@ never fire), and colour numbering by order of first appearance, which made two
 independently-refined colourings incomparable and returned zero generators on
 every input including obvious Sym(8).
 
+A third, found later and far worse, is bug 4 below: an overflowing colour key
+made the *exact verification step* accept a permutation that was not an
+automorphism — the one outcome the paragraph above is supposed to rule out.
+
 ## Global bilinear pooling
 
 The highest-value piece here for a refinery, because **crude blending is a
@@ -524,10 +528,12 @@ search), and tree node management (irregular, pointer-chasing).
 
 ---
 
-## Two bugs worth recording
+## Bugs worth recording
 
-Both were caught by the independent verifier and by comparison against published
-values — not by unit tests. Both now have regression tests.
+Not one of these was found by a unit test passing. Each was surfaced by
+something outside the solver's agreement with itself — the independent
+verifier, a published value, or in the last case the runtime objecting to an
+undefined cast. All four now have regression tests.
 
 1. **Dual unscaling multiplied by the objective scale where it must divide.**
    Every dual was wrong by `obj_scale²`. Residuals still looked converged and
@@ -547,6 +553,26 @@ values — not by unit tests. Both now have regression tests.
    feasible instance misc07 was reported **INFEASIBLE**. Such a variable has no
    breakpoint at all: its infeasibility grows at a constant rate the phase-1
    objective already accounts for.
+
+4. **A symmetry colour key overflowed `int64`, and the exact verification step
+   compares those keys.** They were built as
+   `round(value / 1e-9).astype(int64)`, which needs `|value| / 1e-9` to fit in
+   an `int64` — a ceiling of about 9.2e9 on the value itself. Everything past
+   it cast to `INT64_MIN`: `±1e30`, and equally an ordinary big-M of 1e10 or
+   1e12. All of them became **one key**. Inside colour refinement that would
+   only cost wasted candidates, which the exact check then rejects; but
+   `verify_permutation` compares the same keys, so it accepted a permutation
+   swapping a lower bound of `-inf` onto a finite one. An unsound generator is
+   the worst failure this module has, because its breaking constraint deletes
+   real solutions and the solver then reports a worse optimum with complete
+   confidence. It contradicted the only property the design promises — the
+   search may be incomplete, it may never be unsound. The cast is gone; the key
+   stays a float, and an infinity now compares equal to nothing but itself.
+
+   Found by the `RuntimeWarning: invalid value encountered in cast` that NumPy
+   had been emitting on every symmetry test run, which is worth its own note:
+   the suite was green, and the warning was the only thing in the room saying
+   otherwise.
 
 ---
 

@@ -153,6 +153,40 @@ def test_verify_permutation_rejects_a_non_automorphism():
     assert not verify_permutation(p, bad, np.arange(p.m))
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_verify_permutation_rejects_bounds_only_an_overflow_made_equal():
+    """REGRESSION: the colour key overflowed int64 and distinct bounds collided.
+
+    Keys were ``round(value / 1e-9).astype(int64)``, which needs
+    ``|value| / 1e-9`` to fit in an int64 -- a cap of about 9.2e9 on the value.
+    Bounds are clipped to 1e30 before quantising, so every infinite bound blew
+    straight past it. An overflowing cast is undefined: NumPy warns and yields
+    ``INT64_MIN``, so all of them landed on one key.
+
+    The two columns here are identical except for their lower bound, and the
+    bounds are chosen so the collision is exact: ``-1e30 / 1e-9`` overflows to
+    ``INT64_MIN``, and ``-9223372036.854776 / 1e-9`` *is* ``INT64_MIN``. So the
+    only field that can reject the swap reported the two as equal, and
+    ``verify_permutation`` returned True for a permutation that is not an
+    automorphism -- the first column is unbounded below, the second is not.
+
+    A collision in ``_initial_colours`` would merely cost candidates, which the
+    exact check rejects. A collision *inside* the exact check is the one thing
+    this module is not allowed to do: the search may be incomplete, it may
+    never be unsound.
+    """
+    edge = 9223372036.854776
+    p = Problem(A=SparseMatrix.from_dense(np.array([[1.0, 1.0]])),
+                c=np.array([1.0, 1.0]),
+                row_lb=np.array([-INF]), row_ub=np.array([1.0]),
+                col_lb=np.array([-INF, -edge]), col_ub=np.array([10.0, 10.0]),
+                name="overflow")
+    assert p.col_lb[0] != p.col_lb[1], "the two bounds must actually differ"
+    assert not verify_permutation(p, np.array([1, 0]), np.array([0])), (
+        "accepted a permutation swapping an infinite lower bound onto a "
+        "finite one")
+
+
 def test_generators_map_feasible_points_to_feasible_points():
     """The defining property, checked directly on sampled solutions."""
     p = identical_items(7, cap=3.0)

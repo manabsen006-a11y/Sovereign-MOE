@@ -131,8 +131,30 @@ class SymmetryInfo:
 
 
 def _quantise(a, tol=1e-9):
-    """Round to a stable key so 1.0 and 1.0+1e-16 share a colour."""
-    return np.round(np.asarray(a, dtype=VAL) / tol).astype(np.int64)
+    """Round to a stable key so 1.0 and 1.0+1e-16 share a colour.
+
+    The key stays a **float**. Casting to ``int64`` needs ``|a| / tol`` to fit
+    in an ``int64``, which caps ``|a|`` at about 9.2e9 -- and a big-M
+    coefficient, let alone the 1e30 that ``_clip`` produces for an infinite
+    bound, is far past that. The overflowing cast is undefined: NumPy warns
+    ``invalid value encountered in cast`` and yields ``INT64_MIN``, so every
+    magnitude beyond the cap collapsed onto a single key, ``+INF`` and ``-INF``
+    together.
+
+    In :func:`_initial_colours` that only wastes candidates, which the exact
+    check downstream rejects anyway. But :func:`verify_permutation` compares
+    these same keys, and there a collision is an *acceptance*: a permutation
+    carrying an infinite bound onto a large finite one would have passed as an
+    automorphism. That contradicts the one property this module promises --
+    the search may be incomplete, it may never be unsound.
+
+    Dropping the cast keeps the grid and the ordering, costs nothing, and
+    carries infinities through as infinities, which compare equal to
+    themselves and to nothing else. Above 2^53 the grid becomes the float's
+    own spacing rather than ``tol``, which is the finest distinction the input
+    can carry in the first place.
+    """
+    return np.round(np.asarray(a, dtype=VAL) / tol)
 
 
 def _relabel(keys):
