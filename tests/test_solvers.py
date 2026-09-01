@@ -241,3 +241,39 @@ def test_integer_solution_is_actually_integral():
         pytest.skip("no incumbent within the time limit")
     mask = p.integer_mask
     assert np.abs(s.x[mask] - np.round(s.x[mask])).max() < 1e-6
+
+
+def test_mip_incumbent_is_feasible_in_the_original_space():
+    """REGRESSION: incumbents were validated in the *scaled* space.
+
+    The search runs on a scaled model, but a row scaled by 1e-3 turns a scaled
+    violation of 1e-6 into an unscaled one of 1e-3 -- a thousand times past what
+    the independent verifier accepts. The tree therefore adopted infeasible
+    points as incumbents and reported them as the answer (caught on MIPLIB
+    mas76). Acceptance now unscales the candidate and tests it against the
+    original model at the verifier's own tolerance.
+    """
+    from bench.verify import verify
+    from vyuha.core.sparse import SparseMatrix
+    from vyuha.mip.tree import MIPParams, solve_mip
+
+    rng = np.random.default_rng(17)
+    m, n = 18, 24
+    A = SparseMatrix.from_dense(
+        rng.standard_normal((m, n)) * (rng.random((m, n)) < 0.4))
+    # heavy row scaling is what makes the two spaces disagree
+    A.scale(10.0 ** rng.integers(-3, 4, size=m).astype(float), np.ones(n))
+    b = A.matvec(rng.random(n) * 3.0) + np.abs(A.matvec(np.ones(n))) * 0.1
+
+    kind = np.zeros(n, dtype=np.uint8)
+    kind[::2] = VarKind.INTEGER
+    p = Problem(A=A, c=rng.standard_normal(n),
+                row_lb=np.full(m, -INF), row_ub=b,
+                col_lb=np.zeros(n), col_ub=np.full(n, 4.0), kind=kind,
+                name="scaled_mip")
+
+    s = solve_mip(p, MIPParams(device="cpu", time_limit=45))
+    if s.x is None:
+        pytest.skip("no incumbent found within the limit")
+    v = verify(p, s.x, s.objective, feas_tol=1e-6, int_tol=1e-6)
+    assert v.ok, f"reported an incumbent the verifier rejects:\n{v.report()}"

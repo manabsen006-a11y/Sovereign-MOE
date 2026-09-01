@@ -54,6 +54,13 @@ from .propagate import propagate
 
 __all__ = ["MIPParams", "solve_mip"]
 
+ACCEPT_FEAS_TOL = 1e-6
+"""Absolute feasibility an incumbent must satisfy on the *original* model.
+
+Matched to the independent verifier deliberately: the tree must never adopt a
+point the checker would reject.
+"""
+
 
 @dataclass
 class MIPParams:
@@ -281,11 +288,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     incumbent = np.inf
     best_x = None
 
-    cand = _round_and_repair(scaled, root_x, int_mask, lo0, hi0, tol)
-
-    if cand is not None:
-        incumbent = (float(scaled.c @ cand) + scaled.obj_offset) / sc.obj
-        best_x = cand
+    root_cand = _round_and_repair(scaled, root_x, int_mask, lo0, hi0, tol)
 
     frontier: list[_Node] = []
     root_node = _Node((), root_bound, 0)
@@ -304,6 +307,27 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     warm_tries = 0
     node_infeasible = 0
 
+    def _accept(cand_scaled):
+        """Unscale a candidate and validate it against the *original* model.
+
+        Feasibility must be judged where the answer will be read, not in the
+        scaled space the search happens to run in. Row scale factors here go
+        down to 1e-3, so a scaled violation of 1e-6 is an unscaled violation of
+        1e-3 -- a thousand times past what the independent verifier accepts.
+        Checking in the scaled space lets the tree adopt an infeasible point as
+        its incumbent and report it as the answer.
+
+        Returns ``(x, objective)`` in the working problem's space, or None.
+        """
+        x = np.clip(sc.unscale_primal(cand_scaled), work.col_lb, work.col_ub)
+        ii = work.integer_mask
+        if ii.any():
+            x[ii] = np.round(x[ii])
+        rv, bv, iv = work.violation(x)
+        if max(rv, bv) > ACCEPT_FEAS_TOL or iv > tol.integrality:
+            return None
+        return x, float(work.c @ x) + work.obj_offset
+
     def _obj(xv):
         """Objective in the *working* problem's units.
 
@@ -312,6 +336,11 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         scales and the search terminates at the wrong point.
         """
         return (float(scaled.c @ xv) + scaled.obj_offset) / sc.obj
+
+    if root_cand is not None:
+        got = _accept(root_cand)
+        if got is not None:
+            best_x, incumbent = got[0], got[1]
 
     while frontier:
         now = time.perf_counter()
@@ -443,21 +472,19 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             xi = xv[int_mask]
             frac_all = np.abs(xi - np.round(xi))
             if frac_all.size == 0 or frac_all.max() <= tol.integrality:
-                cx = np.clip(xv, l, h)
-                rv, bv, iv = scaled.violation(cx)
-                if max(rv, bv) <= 1e-6:
-                    v = _obj(cx)
-                    if v < incumbent:
-                        incumbent, best_x = v, cx.copy()
+                got = _accept(np.clip(xv, l, h))
+                if got is not None and got[1] < incumbent:
+                    best_x, incumbent = got[0], got[1]
+                if got is not None:
                     continue
 
             # primal heuristic on the node's fractional point
             if params.heuristic_every:
                 capt = _round_and_repair(scaled, xv, int_mask, l, h, tol)
                 if capt is not None:
-                    v = _obj(capt)
-                    if v < incumbent:
-                        incumbent, best_x = v, capt.copy()
+                    got = _accept(capt)
+                    if got is not None and got[1] < incumbent:
+                        best_x, incumbent = got[0], got[1]
 
             # ---- branch ---------------------------------------------------
             idx = np.flatnonzero(int_mask)
@@ -518,9 +545,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                         nodes=nodes, time=time.perf_counter() - t0,
                         dual_bound=dual_bound, method="bnr-bb")
 
-    x_orig = np.clip(sc.unscale_primal(best_x), work.col_lb, work.col_ub)
-    ii = work.integer_mask
-    x_orig[ii] = np.round(x_orig[ii])
+    # best_x is already unscaled and validated by _accept
+    x_orig = best_x
     obj = float(prob.c @ x_orig) + prob.obj_offset
 
     db = dual_bound
