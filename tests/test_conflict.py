@@ -138,10 +138,11 @@ def test_learned_clauses_never_exclude_a_feasible_point():
 
 def test_reason_is_a_subset_that_still_certifies():
     """Minimisation must not weaken the proof it is shrinking."""
-    p = binary_mip(seed=3)
-    nodes = infeasible_nodes(p, seed=3)
-    if not nodes:
-        pytest.skip("no infeasible nodes generated")
+    # seed 6 yields 9 infeasible nodes; seed 3, used here originally, yields
+    # none at all, so this test skipped on every run and checked nothing.
+    p = binary_mip(seed=6)
+    nodes = infeasible_nodes(p, seed=6)
+    assert nodes, "fixture produced no infeasible nodes; nothing to minimise"
 
     ca = ConflictAnalyzer(root_lo=p.col_lb.copy(), root_hi=p.col_ub.copy(),
                           binary=p.integer_mask.copy())

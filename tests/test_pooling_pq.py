@@ -51,12 +51,18 @@ def test_p_and_pq_formulations_agree(variant):
 @pytest.mark.parametrize("seed", [0, 1])
 def test_q_and_pq_reach_the_same_optimum(seed):
     """RLT rows change the bound, never the feasible set."""
-    q = random_pooling(4, 2, 2, 1, seed=seed, rlt=False)
-    pq = random_pooling(4, 2, 2, 1, seed=seed, rlt=True)
-    sq = solve_global(q, SpatialParams(time_limit=90))
-    spq = solve_global(pq, SpatialParams(time_limit=90))
-    if sq.status != Status.OPTIMAL or spq.status != Status.OPTIMAL:
-        pytest.skip("not both proved optimal within the limit")
+    # A 2x2x2 network, where *both* encodings prove optimality in well under a
+    # second. The 4x2x2 used here before never let the q-formulation close --
+    # that is the whole point of the pq-formulation and it is measured in
+    # bench/pq_check.py -- so this test skipped every time and never once
+    # compared the two optima it exists to compare.
+    q = random_pooling(2, 2, 2, 1, seed=seed, rlt=False)
+    pq = random_pooling(2, 2, 2, 1, seed=seed, rlt=True)
+    sq = solve_global(q, SpatialParams(time_limit=60))
+    spq = solve_global(pq, SpatialParams(time_limit=60))
+    assert sq.status == Status.OPTIMAL and spq.status == Status.OPTIMAL, (
+        f"q={sq.status.name} pq={spq.status.name}; both must close for the "
+        f"objectives to be comparable")
     assert abs(sq.objective - spq.objective) < 1e-4 * max(1.0, abs(spq.objective))
 
 

@@ -121,13 +121,17 @@ def test_cuts_never_remove_an_integer_feasible_point():
     assert "cover" in by_kind, f"no cover cuts exercised, only {by_kind}"
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("seed", [0, 2, 7])
 def test_cuts_are_violated_by_the_relaxation_point(seed):
-    """A cut that does not cut is wasted work."""
+    """A cut that does not cut is wasted work.
+
+    Seeds chosen because they actually separate cuts (1, 2 and 3 of them).
+    Seed 1, previously in this list, separates none, so a third of this test
+    skipped on every run.
+    """
     p = small_mip(seed=seed, n=8, m=5, ub=3)
     scaled, sc, node, x_lp, cuts = _root_cuts(p)
-    if not cuts:
-        pytest.skip("no cuts separated")
+    assert cuts, "fixture separated no cuts; nothing to check"
     for c in cuts:
         assert c.violation(x_lp) > 1e-9, f"{c.kind} cut is not violated"
 

@@ -127,9 +127,14 @@ def test_shadow_price_predicts_the_objective_inside_the_range():
     assert worst <= 1e-9, f"worst prediction error {worst:.3e}"
 
 
-@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("seed", [0, 3])
 def test_basis_survives_cost_changes_inside_the_range(seed):
-    """Inside the cost range the optimal point must not move."""
+    """Inside the cost range the optimal point must not move.
+
+    Seeds 0 and 3 are the ones with a column whose cost range is finite and
+    non-degenerate. Seed 1, previously here, has none -- blending LPs are
+    massively degenerate -- so half this test skipped on every run.
+    """
     p = blending(n_components=8, n_products=3, n_properties=2, seed=seed)
     s = solved(p)
     sn = s.sensitivity
@@ -150,27 +155,52 @@ def test_basis_survives_cost_changes_inside_the_range(seed):
             tested += 1
         if tested >= 4:
             break
-    if tested == 0:
-        pytest.skip("no column with a finite non-degenerate cost range")
+    assert tested > 0, (
+        "no column had a finite non-degenerate cost range, so nothing was "
+        "perturbed; the fixture no longer exercises this property")
 
 
 def test_nonbasic_reduced_cost_equals_its_cost_range_edge():
-    """For a nonbasic at its lower bound, the cost may fall by exactly d_j."""
-    p = blending(n_components=10, n_products=3, n_properties=2, seed=4)
+    """For a nonbasic at its lower bound, the cost may fall by exactly d_j.
+
+    On a hand-checkable LP rather than a blending model, for a reason worth
+    recording: **no blending instance can exercise this at all.** Across 18
+    fixture variants every column sitting at its lower bound had a reduced cost
+    of exactly zero -- 16 of 30 columns on one of them -- because refinery
+    blending LPs are massively dual-degenerate and alternative optima are
+    everywhere. The test therefore skipped on every run since it was written.
+
+    Here the optimum is ``x = (4, 0, 0)``: all three columns compete for the
+    same unit of capacity in row 0 and ``x`` pays best, so ``y`` and ``z`` stay
+    at zero with strictly positive reduced costs. That makes the claim exact
+    rather than merely non-vacuous -- ``cost_lo[j]`` must equal ``c_j - d_j``,
+    the point at which the column becomes worth using -- where the previous
+    assertion only checked that one end of the range was finite.
+    """
+    A = SparseMatrix.from_dense(np.array([[1.0, 1.0, 1.0], [1.0, 3.0, 0.0]]))
+    p = Problem(A=A, c=np.array([-3.0, -2.0, -0.5]),
+                row_lb=np.full(2, -INF), row_ub=np.array([4.0, 6.0]),
+                col_lb=np.zeros(3), col_ub=np.full(3, 10.0), name="edge")
     s = solved(p)
     sn = s.sensitivity
+    assert np.allclose(s.x, [4.0, 0.0, 0.0], atol=1e-9), s.x
+
     at_zero = np.flatnonzero(np.abs(s.x - p.col_lb) < 1e-9)
     checked = 0
-    for j in at_zero[:20]:
+    for j in at_zero:
         j = int(j)
         d = sn.reduced_cost[j]
         if abs(d) < 1e-7 or not np.isfinite(sn.cost_lo[j]):
             continue
-        # maximisation: an unattractive column's cost may rise by |d|
-        assert np.isfinite(sn.cost_lo[j]) or np.isfinite(sn.cost_hi[j])
+        # the cost may fall by exactly d_j before the column becomes attractive
+        assert abs(sn.cost_lo[j] - (p.c[j] - d)) < 1e-9, (
+            f"column {j}: cost_lo {sn.cost_lo[j]} != c {p.c[j]} - d {d}")
+        # and it may rise without limit; it is already unattractive
+        assert sn.cost_hi[j] == np.inf or sn.cost_hi[j] > p.c[j]
         checked += 1
-    if checked == 0:
-        pytest.skip("no strictly nonbasic column with a non-zero reduced cost")
+    assert checked >= 2, (
+        f"only {checked} strictly nonbasic columns with a non-zero reduced "
+        f"cost; the fixture no longer exercises this property")
 
 
 # --------------------------------------------------------------------------- #
