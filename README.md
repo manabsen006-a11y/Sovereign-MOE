@@ -197,17 +197,35 @@ row's type lives entirely in its logical variable's bounds.
 - **Anti-degeneracy**: random cost perturbation after a run of zero-length
   pivots, removed and re-optimised before the answer is reported.
 
-What it unlocks, measured on a 22-item knapsack:
+What it unlocks, measured on a **near-correlated 22-item knapsack** — values
+within ±5 of weights drawn from [1000, 4000), capacity 40% of total weight,
+`default_rng(0)`. Correlation is what makes a knapsack hard: the LP relaxation
+is nearly flat, so the tree is decided almost entirely by bound quality. Both
+engines, same instance, same 60 s limit, default settings:
 
-| node bound | nodes | time |
-|---|---|---|
-| batched first-order (BNR) | 40,211 | 22.6 s |
-| **exact LP, dual simplex warm start** | **59** | **1.5 s** |
+| node bound | nodes | time | outcome |
+|---|---|---|---|
+| batched first-order (BNR) | 41,535 | 60 s (limit) | **TIME_LIMIT**, best −23003, bound −23014.92 |
+| **exact LP, dual simplex warm start** | **2,375** | **2.24 s** | **OPTIMAL, −23007** |
+
+BNR does not merely fail to *prove* optimality here — it never finds the
+optimum, finishing on −23003 against a true −23007. Its bound stays valid, as
+it must; it is simply too loose to close anything. Reruns land within 0.5% on
+nodes (41,535 / 41,663) and the simplex figure is stable to the node.
 
 That is the honest verdict on the batched idea: valid-but-loose bounds are cheap
 and parallel, but bound *quality* dominates tree size. BNR remains the right
 tool when nodes are large enough that an exact solve is unaffordable; the tree
 takes `node_solver="simplex"` or `"bnr"`.
+
+> **This table replaces an earlier one** claiming 40,211 nodes / 22.6 s for BNR
+> against 59 nodes / 1.5 s for the simplex, which did not survive re-measurement.
+> The 59 is real and reproducible — on an *easy* uncorrelated knapsack, where
+> BNR needs 65 and the contrast evaporates. The 40,211 only ever appears on a
+> hard instance, and there it was a stopwatch reading rather than a search: the
+> node count tracks the time limit (30,207 at 45 s, 41,535 at 60 s) because BNR
+> never finished. The two rows had been measured on different instances and an
+> unfinished run reported as a completed one. See `docs/NEGATIVE-RESULTS.md`.
 
 ---
 

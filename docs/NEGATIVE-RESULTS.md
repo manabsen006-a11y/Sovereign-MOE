@@ -1,8 +1,8 @@
 # Negative results
 
-Things that were built, measured, and removed. Recorded because the measurements
-cost more than the code did, and because each of these looks obviously correct
-until you run it.
+Things that were built, measured, and removed — and, at the end, a published
+measurement that was withdrawn. Recorded because the measurements cost more than
+the code did, and because each of these looks obviously correct until you run it.
 
 ---
 
@@ -93,3 +93,68 @@ fixed p0201 and broke gt2, which closes at the root on dense cuts. The damage
 from a dense row scales with the **basis size `m`**, not the column count:
 below a few hundred rows there is no hypersparsity to lose, so a cap keyed to
 `n` only discards good cuts. See the docstring on `CutPool.support_limit`.
+
+---
+
+## The 22-item knapsack table (published, withdrawn)
+
+Not a failed optimisation — a failed *measurement*. It is the first published
+figure here to be re-checked against the commit that produced it, and it did
+not survive; the other performance claims in the README have not had the same
+treatment yet.
+
+**What it said.** Under "The revised simplex", as the demonstration that bound
+quality dominates tree size:
+
+| node bound | nodes | time |
+|---|---|---|
+| batched first-order (BNR) | 40,211 | 22.6 s |
+| exact LP, dual simplex warm start | 59 | 1.5 s |
+
+**What re-measurement found.** The instance was not stored, so it was
+reconstructed from the recipe both knapsack generators in the test suite share
+(integer weights in [1,40), values in [1,60), capacity a fraction of total
+weight, `default_rng(0)`, n = 22). On that instance the simplex row reproduces
+*exactly* — 59 nodes, both at `a1c9df7` where the table was written and at
+HEAD — which is strong evidence the instance is the right one.
+
+BNR on the same instance gives **65 nodes**, not 40,211. At `a1c9df7` itself it
+returns **INFEASIBLE**, on that instance and on all eight knapsack variants
+tried, always in three nodes. At `901d738`, the commit before the simplex
+existed and therefore BNR by default, the same instance gives **59 nodes**. The
+figure 40,211 matches neither engine at any commit tested.
+
+It reproduces only on a much harder *near-correlated* knapsack, and there it is
+a stopwatch reading rather than a search:
+
+| time limit | BNR nodes | BNR status | simplex |
+|---|---|---|---|
+| 45 s | 30,207 | TIME_LIMIT | 2,567 nodes, 1.83 s, OPTIMAL |
+| 60 s | 41,535 | TIME_LIMIT | 2,375 nodes, 2.24 s, OPTIMAL |
+
+The node count tracks the clock, not the problem. No instance was found on
+which the simplex needs 59 nodes and BNR needs ~40,000: on easy knapsacks the
+two are within a few nodes of each other (85 vs 83, 75 vs 79), and on hard ones
+BNR times out while the simplex finishes in around two thousand.
+
+**The conclusion.** The two rows were measured on different instances, and the
+BNR row reported an unfinished search as a completed one. The table has been
+replaced with a same-instance comparison at a stated time limit, which makes
+the original point more strongly: on the hard knapsack BNR does not merely fail
+to prove optimality, it never reaches it, finishing on −23003 against a true
+−23007.
+
+**Why it matters beyond one table.** The underlying claim was true, which is
+exactly why the numbers went unchecked: nobody re-derives a figure that agrees
+with what they already believe. A correct conclusion resting on numbers nobody
+can reproduce is indistinguishable, from the outside, from a wrong one.
+
+The replacement table states its instance completely enough to rebuild — n,
+distribution, capacity fraction, seed, time limit, settings — which the
+original did not. **The rest of the README's performance figures have not been
+audited to that standard**, and until they are, the honest status of any single
+one of them is "measured once, on an instance that was not kept". The GPU
+kernel timings and the MIPLIB tables are the ones worth doing next, in that
+order: the kernel numbers because they are the load-bearing claim for the whole
+batched idea, the MIPLIB tables because they are the ones a reviewer will try
+to reproduce.
