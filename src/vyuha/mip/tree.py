@@ -556,6 +556,14 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     # binding constraint on the instances this solver fails.
     heur = HeuristicStats()
     last_heuristic = 0
+    heur_spent = 0.0
+    heur_budget = params.cut_time_frac * params.time_limit
+    """Total wall time the heuristics may consume, root and restarts together.
+
+    Needed because none of them accept a deadline: they stop on iteration
+    counts, so a call cannot be cut short once entered and the between-trial
+    check cannot bound one that is already running. Without this cap the
+    restarts turned a 600 s limit into a 5,445 s run."""
     if params.heuristics:
         def _lp_at(l, h, obj=None):
             saved = None
@@ -571,7 +579,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                     scaled.c = saved
                     node_lp.S.B.cost[:n] = saved
 
-        def _heuristic_round(x0, hl, hh, deadline):
+        def _heuristic_round(x0, hl, hh, deadline, cheap_only=False):
             """Run the primal heuristics from one point and box.
 
             Callable more than once, which it needs to be. Run only at the
@@ -583,7 +591,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             the binding constraint on the instances this solver fails, and
             trying once does not act like it.
             """
-            nonlocal best_x, incumbent
+            nonlocal best_x, incumbent, heur_spent
+            _h0 = time.perf_counter()
             trials = [
                 ("fix_and_propagate",
                  lambda: fix_and_propagate(scaled, x0, int_mask, hl, hh,
@@ -594,23 +603,31 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                  lambda: feasibility_jump(scaled, int_mask, hl, hh, x0=x0,
                                           max_iter=params.fj_iterations)),
             ]
-            if not use_bnr:
+            # The pump costs up to 40 LP solves and has no internal time
+            # bound, so it runs at the root only. None of these take a
+            # deadline -- they stop on iteration counts -- which means one call
+            # cannot be cut short, and that is what makes the budget below
+            # necessary rather than tidy.
+            if not use_bnr and not cheap_only:
                 trials.append(("feasibility_pump",
                                lambda: feasibility_pump(scaled, int_mask, hl, hh,
                                                         _lp_at, x_lp=x0)))
-            for name, fn in trials:
-                if np.isfinite(incumbent):
-                    break
-                if time.perf_counter() > deadline:
-                    break
-                try:
-                    cand = fn()
-                except Exception:
-                    cand = None
-                got = _accept(cand) if cand is not None else None
-                heur.record(name, got is not None)
-                if got is not None and got[1] < incumbent:
-                    best_x, incumbent = got[0], got[1]
+            try:
+                for name, fn in trials:
+                    if np.isfinite(incumbent):
+                        break
+                    if time.perf_counter() > deadline:
+                        break
+                    try:
+                        cand = fn()
+                    except Exception:
+                        cand = None
+                    got = _accept(cand) if cand is not None else None
+                    heur.record(name, got is not None)
+                    if got is not None and got[1] < incumbent:
+                        best_x, incumbent = got[0], got[1]
+            finally:
+                heur_spent += time.perf_counter() - _h0
 
         _heuristic_round(root_x, lo0, hi0,
                          t0 + params.cut_time_frac * params.time_limit)
@@ -793,11 +810,15 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             # the expensive ones have earned another attempt.
             if (params.heuristics and not np.isfinite(incumbent)
                     and params.heuristic_restart
+                    and heur_spent < heur_budget
                     and nodes - last_heuristic >= params.heuristic_restart):
                 last_heuristic = nodes
-                _heuristic_round(xv, l, h, min(
-                    time.perf_counter() + 0.1 * params.time_limit,
-                    t0 + params.time_limit))
+                _heuristic_round(
+                    xv, l, h,
+                    min(t0 + params.time_limit,
+                        time.perf_counter()
+                        + max(1.0, min(5.0, 0.02 * params.time_limit))),
+                    cheap_only=True)
 
             # ---- branch ---------------------------------------------------
             idx = np.flatnonzero(int_mask)
