@@ -454,6 +454,10 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     warm_tries = 0
     node_infeasible = 0
     node_lp_rows = scaled.m if node_lp is not None else -1
+    # Nodes left neither expanded nor proved empty. Any such node makes an
+    # exhausted frontier stop being a proof, so the report below must not
+    # promote the run to OPTIMAL or read a dual bound off the incumbent.
+    undecided = 0
 
     def _accept(cand_scaled):
         """Unscale a candidate and validate it against the *original* model.
@@ -725,9 +729,27 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                     got = _accept(np.clip(xv, l, h))
                     if got is not None and got[1] < incumbent:
                         best_x, incumbent = got[0], got[1]
-                    if got is None:
-                        fr = np.abs(xv[idx] - np.round(xv[idx]))
-                        cands = idx[fr > tol.integrality]
+                    # Recompute the candidates from the *vertex*, whatever
+                    # _accept did with it. _accept rounds the integer
+                    # variables, so it is a repair heuristic as much as a
+                    # validator: on a fractional vertex it often succeeds and
+                    # returns a perfectly good incumbent, which says nothing
+                    # about whether this node is finished. Gating the
+                    # recompute on ``got is None`` therefore dropped precisely
+                    # the nodes whose rounding worked -- subtree and all --
+                    # and an empty frontier is read below as proof of
+                    # optimality, so the search reported OPTIMAL with
+                    # dual_bound == incumbent, one unit above the true
+                    # optimum on a five-variable model.
+                    fr = np.abs(xv[idx] - np.round(xv[idx]))
+                    cands = idx[fr > tol.integrality]
+                elif r_exact.status != Status.INFEASIBLE:
+                    # Neither solved nor proved empty, so nothing at all is
+                    # known about this node. INFEASIBLE is the one safe case:
+                    # the node really is gone. Anything else falls through to
+                    # the drop below, and a dropped node is what turns an
+                    # empty frontier into a proof that was never made.
+                    undecided += 1
             if cands.size == 0:
                 continue
 
@@ -770,10 +792,14 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     # exhausted: every node was either pruned or expanded, so the incumbent is
     # proved optimal. Leaving the initial NODE_LIMIT status in place here would
     # report a solved model as merely truncated.
-    if not frontier and status in (Status.NODE_LIMIT,):
+    if not frontier and status in (Status.NODE_LIMIT,) and not undecided:
         status = Status.OPTIMAL
 
     dual_bound = frontier[0].bound if frontier else incumbent
+    if undecided and not frontier:
+        # The frontier emptied, but not every node in it was decided, so
+        # there is no bound to report and nothing to call proved.
+        dual_bound = -float("inf")
     if status == Status.OPTIMAL and not frontier:
         dual_bound = incumbent
 
