@@ -468,20 +468,43 @@ which is right for a CPU and wrong for a GPU: one node's sparse product cannot
 fill the device.
 
 VYUHA pops a *slab* of nodes and bounds them all in one sparse-times-dense
-product. Measured on a 20,000 × 30,000 matrix with 240k nonzeros:
+product. Reproduce with `python -m bench.gpu_bench --skip-pdlp`, which builds
+the instance deterministically — 20,000 × 30,000, 239,952 nonzeros, `seed=1234`
+— on an RTX 3050 Laptop:
 
 | K | K × SpMV | SpMM | speedup | GFLOP/s |
 |---|---|---|---|---|
-| 8 | 0.81 ms | 0.21 ms | 3.9× | 18.2 |
-| 32 | 3.19 ms | 0.36 ms | **8.8×** | 42.4 |
-| 64 | 6.37 ms | 0.72 ms | **8.8×** | 42.4 |
-| 128 | 10.73 ms | 1.45 ms | 7.4× | 42.3 |
-| 256 | 19.59 ms | 4.61 ms | 4.3× | 26.6 |
+| 8 | 0.81 ms | 0.20 ms | 4.1× | 19.7 |
+| 32 | 3.17 ms | 0.34 ms | **9.2×** | 44.7 |
+| 64 | 6.35 ms | 0.71 ms | **9.0×** | 43.5 |
+| 128 | 12.13 ms | 1.44 ms | 8.4× | 42.7 |
+| 256 | 19.56 ms | 2.89 ms | 6.8× | 42.5 |
+| 512 | 39.17 ms | 5.77 ms | 6.8× | 42.6 |
+| 1024 | 78.19 ms | 11.59 ms | 6.8× | 42.4 |
 
-42 GFLOP/s sustained in fp64 on a card whose fp64 *peak* is ~86 — about half of
-peak, from a sparse kernel. Combined with the 3.4× raw SpMV advantage over the
-CPU, batched bounding costs roughly **11 µs per node** against 410 µs for
-one-at-a-time CPU bounding.
+**42 GFLOP/s sustained in fp64** on a card whose fp64 *peak* is ~86 — about half
+of peak, from a sparse kernel — and it stays there: throughput saturates by
+K = 32 and is flat to K = 1024. The SpMM column repeats to about 1%; the
+`K × SpMV` column is a Python loop of K launches and is much noisier (K = 128
+ranged over 9.8–12.7 ms across runs), so the speedup column inherits that
+noise. Read the SpMM and GFLOP/s columns as the measurement and the speedup as
+an approximation.
+
+The batch size ceiling is a **CPU** phenomenon, not a GPU one. The same sweep
+on the CPU kernels:
+
+| K | 8 | 32 | 64 | 128 | 256 | 512 | 1024 |
+|---|---|---|---|---|---|---|---|
+| CPU GFLOP/s | 12.1 | 13.1 | 7.4 | 5.0 | 4.6 | 4.6 | 4.6 |
+
+That is the dense operands falling out of cache, and it is why `MIPParams.batch`
+defaults to 64: the default has to be safe on the machine that has no GPU.
+
+Per node, for the same operation at K = 64, the SpMM costs **11.1 µs on the GPU
+against 65 µs on the CPU** — 5.9×. An earlier version of this section claimed a
+"3.4× raw SpMV advantage"; re-measured, a single SpMV on this matrix ranges from
+0.76× to 2.56× depending on size and run, with too much variance to quote a
+figure, so the claim is withdrawn rather than restated.
 
 ### Why unconverged GPU bounds are still rigorous
 

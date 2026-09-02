@@ -76,8 +76,20 @@ class MIPParams:
     node_limit: int = 1_000_000
 
     batch: int = 64
-    """Nodes bounded per batch. 32-64 is the sweet spot measured on the
-    sparse kernels; beyond that the dense operands stop fitting in cache."""
+    """Nodes bounded per batch.
+
+    32-64 is the sweet spot on the **CPU** kernels, where the dense operands
+    stop fitting in cache beyond it: measured SpMM throughput on a 240k-nonzero
+    matrix falls 13.1 -> 7.4 -> 5.0 GFLOP/s across K = 32, 64, 128 and settles
+    near 4.6. The default is 64 because it has to be safe on a machine with no
+    GPU.
+
+    The **GPU** kernels have no such ceiling in the range tested -- throughput
+    saturates by K = 32 and is flat at ~42 GFLOP/s out to K = 1024 -- so a
+    GPU-only deployment can raise this considerably. An earlier version of this
+    note attributed the cache fall-off to the sparse kernels generally, on the
+    strength of a K = 256 GPU measurement that did not survive re-measurement.
+    """
 
     node_solver: str = "simplex"
     """How each node's relaxation is bounded.

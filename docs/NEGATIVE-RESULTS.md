@@ -151,10 +151,51 @@ can reproduce is indistinguishable, from the outside, from a wrong one.
 
 The replacement table states its instance completely enough to rebuild — n,
 distribution, capacity fraction, seed, time limit, settings — which the
-original did not. **The rest of the README's performance figures have not been
-audited to that standard**, and until they are, the honest status of any single
+original did not. **The rest of the README's performance figures have not all
+been audited to that standard**, and until they are, the honest status of any
 one of them is "measured once, on an instance that was not kept". The GPU
-kernel timings and the MIPLIB tables are the ones worth doing next, in that
-order: the kernel numbers because they are the load-bearing claim for the whole
-batched idea, the MIPLIB tables because they are the ones a reviewer will try
-to reproduce.
+kernel timings have since been checked (below). The MIPLIB tables have not, and
+they are the ones a reviewer will actually try to reproduce.
+
+---
+
+## The K = 256 batching row (published, corrected)
+
+Checked because the entry above named it as the next thing to verify. Unlike
+the knapsack, this one is stored: `python -m bench.gpu_bench --skip-pdlp`
+rebuilds the instance deterministically, so it can simply be re-run.
+
+**Four rows of five held.** K = 8, 32, 64 and 128 reproduced within a few
+percent on the same RTX 3050 the README names, across four runs. The headline
+claims held with them: 42 GFLOP/s sustained in fp64, an 8.8× peak speedup
+(measured 8.85–9.21×), and 11 µs per node at K = 64 (measured 11.1 µs). The
+published table is also internally consistent — both derived columns recompute
+correctly from the times and the nonzero count.
+
+**The K = 256 row did not.** Published 4.61 ms / 4.3× / 26.6 GFLOP/s; measured
+2.88–2.92 ms / 6.7–6.8× / 42.1–42.6 GFLOP/s, stable across every run. The
+throughput collapse it depicts is not there. Extending the sweep settles it:
+
+| K | 32 | 64 | 128 | 256 | 512 | 1024 |
+|---|---|---|---|---|---|---|
+| GPU GFLOP/s | 44.7 | 43.5 | 42.7 | 42.5 | 42.6 | 42.4 |
+| CPU GFLOP/s | 13.1 | 7.4 | 5.0 | 4.6 | 4.6 | 4.6 |
+
+GPU throughput saturates by K = 32 and is flat to K = 1024. **The fall-off is a
+CPU effect that had been attributed to the GPU** — which also made the
+`MIPParams.batch` docstring wrong, since it cited that row to justify a ceiling
+that only exists on the CPU. The default of 64 is still right, for a different
+reason: it has to be safe on a machine with no GPU.
+
+Also withdrawn: "the 3.4× raw SpMV advantage over the CPU". Re-measured, a
+single SpMV on this matrix ranges from 0.76× to 2.56× depending on size and
+run — two runs at the same 240k size gave 0.76× and 1.17×. The variance is the
+finding; a headline ratio should not rest on a quantity that swings that far.
+Replaced with a per-node, same-operation comparison at K = 64: 11.1 µs on the
+GPU against 65 µs on the CPU.
+
+**The lesson is different from the knapsack's.** Nothing here was measured on
+the wrong instance, and the error was in the *pessimistic* direction, which is
+why it survived. But the one wrong row was the load-bearing one — the sole
+evidence for a batch-size ceiling, cited by a default in the code. A table can
+be 80% right and still have its conclusion resting entirely on the 20%.
