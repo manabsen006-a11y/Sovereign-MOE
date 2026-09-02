@@ -125,6 +125,16 @@ class MIPParams:
     cuts_per_round: int = 40
     heuristics: bool = True
 
+    heuristic_restart: int = 400
+    """Nodes between re-running the primal heuristics while no incumbent exists.
+
+    They used to run at the root and nowhere else. On dcmulti all three failed
+    there -- ``0/1`` each -- and the search then explored 1,811 nodes without
+    trying again, returning no answer at all. Which vertex a node LP hands the
+    rounding heuristic is luck, so re-drawing costs little and is the
+    difference between a plan and nothing. Only fires while the incumbent is
+    still infinite, so a solve that has an answer pays nothing."""
+
     conflict: bool = True
     """Learn a clause from each infeasible node.
 
@@ -545,6 +555,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     # exists that it is unlikely to beat. Finding *any* feasible point is the
     # binding constraint on the instances this solver fails.
     heur = HeuristicStats()
+    last_heuristic = 0
     if params.heuristics:
         def _lp_at(l, h, obj=None):
             saved = None
@@ -560,34 +571,49 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                     scaled.c = saved
                     node_lp.S.B.cost[:n] = saved
 
-        trials = [
-            ("fix_and_propagate",
-             lambda: fix_and_propagate(scaled, root_x, int_mask, lo0, hi0,
-                                       tol.primal_feas,
-                                       lp_solve=(None if use_bnr
-                                                 else (lambda l, h: _lp_at(l, h))))),
-            ("feasibility_jump",
-             lambda: feasibility_jump(scaled, int_mask, lo0, hi0, x0=root_x,
-                                      max_iter=params.fj_iterations)),
-        ]
-        if not use_bnr:
-            trials.append(("feasibility_pump",
-                           lambda: feasibility_pump(scaled, int_mask, lo0, hi0,
-                                                    _lp_at, x_lp=root_x)))
-        heur_deadline = t0 + params.cut_time_frac * params.time_limit
-        for name, fn in trials:
-            if np.isfinite(incumbent):
-                break
-            if time.perf_counter() > heur_deadline:
-                break
-            try:
-                cand = fn()
-            except Exception:
-                cand = None
-            got = _accept(cand) if cand is not None else None
-            heur.record(name, got is not None)
-            if got is not None and got[1] < incumbent:
-                best_x, incumbent = got[0], got[1]
+        def _heuristic_round(x0, hl, hh, deadline):
+            """Run the primal heuristics from one point and box.
+
+            Callable more than once, which it needs to be. Run only at the
+            root, all three failed on dcmulti -- ``0/1`` apiece -- and the
+            search then explored 1,811 nodes without trying again and returned
+            no answer at all. Which vertex a node LP hands the rounding
+            heuristic is luck, and a single draw of it is a thin basis for
+            giving up: the comment above says finding *any* feasible point is
+            the binding constraint on the instances this solver fails, and
+            trying once does not act like it.
+            """
+            nonlocal best_x, incumbent
+            trials = [
+                ("fix_and_propagate",
+                 lambda: fix_and_propagate(scaled, x0, int_mask, hl, hh,
+                                           tol.primal_feas,
+                                           lp_solve=(None if use_bnr
+                                                     else (lambda l, h: _lp_at(l, h))))),
+                ("feasibility_jump",
+                 lambda: feasibility_jump(scaled, int_mask, hl, hh, x0=x0,
+                                          max_iter=params.fj_iterations)),
+            ]
+            if not use_bnr:
+                trials.append(("feasibility_pump",
+                               lambda: feasibility_pump(scaled, int_mask, hl, hh,
+                                                        _lp_at, x_lp=x0)))
+            for name, fn in trials:
+                if np.isfinite(incumbent):
+                    break
+                if time.perf_counter() > deadline:
+                    break
+                try:
+                    cand = fn()
+                except Exception:
+                    cand = None
+                got = _accept(cand) if cand is not None else None
+                heur.record(name, got is not None)
+                if got is not None and got[1] < incumbent:
+                    best_x, incumbent = got[0], got[1]
+
+        _heuristic_round(root_x, lo0, hi0,
+                         t0 + params.cut_time_frac * params.time_limit)
 
     while frontier:
         now = time.perf_counter()
@@ -761,6 +787,18 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                     if got is not None and got[1] < incumbent:
                         best_x, incumbent = got[0], got[1]
 
+            # Still nothing after a stretch of search: run the full heuristics
+            # again, from this node's relaxation point and box rather than the
+            # root's. Cheap rounding has now failed on hundreds of vertices, so
+            # the expensive ones have earned another attempt.
+            if (params.heuristics and not np.isfinite(incumbent)
+                    and params.heuristic_restart
+                    and nodes - last_heuristic >= params.heuristic_restart):
+                last_heuristic = nodes
+                _heuristic_round(xv, l, h, min(
+                    time.perf_counter() + 0.1 * params.time_limit,
+                    t0 + params.time_limit))
+
             # ---- branch ---------------------------------------------------
             idx = np.flatnonzero(int_mask)
             fr = np.abs(xv[idx] - np.round(xv[idx]))
@@ -886,10 +924,21 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     db = -dual_bound if flip else dual_bound
 
     if best_x is None:
-        return Solution(status=Status.INFEASIBLE if status == Status.OPTIMAL
-                        else status,
-                        nodes=nodes, time=time.perf_counter() - t0,
-                        dual_bound=db, method="bnr-bb")
+        # Attach the diagnostics here too. They were dropped on this path, so
+        # the one outcome that most needs explaining -- no answer at all --
+        # was the one that arrived with nothing to explain it: no heuristic
+        # counts, no cut counts, no node statistics.
+        out = Solution(status=Status.INFEASIBLE if status == Status.OPTIMAL
+                       else status,
+                       nodes=nodes, time=time.perf_counter() - t0,
+                       dual_bound=db, method="bnr-bb")
+        out.info = (engine.stats() if engine is not None else node_lp.stats())
+        out.info["node_solver"] = params.node_solver
+        out.info["root_cuts"] = n_cuts
+        out.info["heuristics"] = heur.summary()
+        out.info["nodes_infeasible"] = node_infeasible
+        out.info["undecided_nodes"] = undecided
+        return out
 
     # best_x is already unscaled and validated by _accept
     x_orig = best_x
