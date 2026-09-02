@@ -373,7 +373,12 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         sym_info = detect_symmetry(scaled, time_limit=params.symmetry_time)
         rows = breaking_constraints(sym_info, scaled.integer_mask)
         if rows:
-            from .cuts import Cut
+            # NB: no local ``from .cuts import Cut`` here. Cut is imported at
+            # module level, and re-importing it inside this branch made the
+            # name local to the whole of solve_mip -- so on a model with no
+            # detectable symmetry, where this branch never runs, the conflict
+            # clause append below raised UnboundLocalError on default
+            # parameters (symmetry and conflict are both on by default).
             scaled = append_cuts(scaled, [Cut(i, v, r, kind="symmetry")
                                           for i, v, r in rows])
 
@@ -803,19 +808,27 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     if status == Status.OPTIMAL and not frontier:
         dual_bound = incumbent
 
+    # A MAXIMISE model was negated on the way in and the whole search ran as a
+    # minimisation, so every bound above lives in that negated space. Both
+    # return paths report in the caller's sense, so the flip belongs here,
+    # above the split -- applying it only on the path that happens to have an
+    # incumbent left the other one reporting the negation of its bound. With
+    # all-positive costs that is not merely the wrong sign but a number below
+    # every feasible objective, offered as an upper bound. The no-incumbent
+    # return is the common case on a model too big to crack inside its limit,
+    # which is exactly when a user reads the bound to decide whether to keep
+    # going.
+    db = -dual_bound if flip else dual_bound
+
     if best_x is None:
         return Solution(status=Status.INFEASIBLE if status == Status.OPTIMAL
                         else status,
                         nodes=nodes, time=time.perf_counter() - t0,
-                        dual_bound=dual_bound, method="bnr-bb")
+                        dual_bound=db, method="bnr-bb")
 
     # best_x is already unscaled and validated by _accept
     x_orig = best_x
     obj = float(prob.c @ x_orig) + prob.obj_offset
-
-    db = dual_bound
-    if flip:
-        db = -db
 
     sol = Solution(status=status, x=x_orig, objective=obj,
                    dual_bound=db, nodes=nodes,

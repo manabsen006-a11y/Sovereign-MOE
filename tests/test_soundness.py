@@ -18,7 +18,7 @@ import os
 import numpy as np
 import pytest
 
-from vyuha.core.problem import Problem, Status, VarKind
+from vyuha.core.problem import ObjSense, Problem, Status, VarKind
 from vyuha.core.sparse import SparseMatrix
 from vyuha.core.tolerances import INF
 from vyuha.mip.cuts import generate_mir
@@ -115,6 +115,86 @@ def test_batched_node_relaxation_does_not_drop_nodes_unproven():
         assert s.status == Status.OPTIMAL
         assert abs(s.objective - 1201500.0) < 1e-4
         assert s.nodes > 1, "the tree cannot have been explored in one node"
+
+
+# --------------------------------------------------------------------------- #
+# 3. a bound reported in the wrong sense                                       #
+# --------------------------------------------------------------------------- #
+
+
+def _random_max_binary(seed, n=14, m=8):
+    """A MAXIMISE binary model with positive costs and a few equality rows.
+
+    The equalities are what stop the root relaxation rounding to a feasible
+    point, which is what leaves the search with no incumbent to report.
+    """
+    rng = np.random.default_rng(seed)
+    A = rng.integers(-4, 9, size=(m, n)).astype(float)
+    ru = ((A @ np.full(n, 0.5)) + rng.integers(0, 5, size=m)).astype(float)
+    eq = rng.random(m) < 0.2
+    return Problem(A=SparseMatrix.from_dense(A),
+                   c=rng.integers(1, 9, n).astype(float),
+                   row_lb=np.where(eq, ru, -INF).astype(float),
+                   row_ub=ru, col_lb=np.zeros(n), col_ub=np.ones(n),
+                   kind=np.full(n, VarKind.BINARY, dtype=np.uint8),
+                   sense=ObjSense.MAXIMISE, name="maxbin")
+
+
+def test_maximisation_dual_bound_is_reported_in_the_users_sense():
+    """REGRESSION: the no-incumbent return path never un-negated the bound.
+
+    A MAXIMISE model is negated on the way into the tree and searched as a
+    minimisation, so every bound inside lives in that negated space. The
+    normal return flipped it back; the early return taken when no incumbent
+    was found did not, and reported the negation of its own bound. With
+    positive costs that is not merely the wrong sign but a number below every
+    feasible objective, offered as an upper bound on the maximum.
+
+    That path is the ordinary outcome on a model too large to crack inside its
+    limit -- exactly the case where the bound is the only thing a user has to
+    judge whether continuing is worthwhile.
+
+    The property asserted is the definition: a maximisation's dual bound is an
+    *upper* bound, so it cannot sit below an objective actually achieved on
+    the same model. ``node_limit=0`` stops the search before any incumbent
+    exists without reference to the clock, so which models exercise the path
+    does not vary with machine speed.
+    """
+    checked = 0
+    for seed in range(20):
+        p = _random_max_binary(seed)
+        s = solve_mip(p.copy(), MIPParams(node_limit=0, heuristics=False))
+        if s.x is not None or not np.isfinite(s.dual_bound):
+            continue
+        ref = solve_mip(p.copy(), MIPParams(time_limit=30))
+        if ref.status != Status.OPTIMAL:
+            continue                    # nothing achievable to compare against
+        checked += 1
+        assert s.dual_bound >= ref.objective - 1e-6, (
+            f"seed {seed}: reported dual bound {s.dual_bound:.6g} is below an "
+            f"achievable objective {ref.objective:.6g} on a maximisation")
+    assert checked >= 4, (
+        f"only {checked} models reached the no-incumbent return; the test is "
+        f"not exercising the path it is meant to pin")
+
+
+def test_conflict_clauses_can_be_added_without_symmetry_breaking():
+    """REGRESSION: a redundant local import made ``Cut`` local to all of solve_mip.
+
+    ``from .cuts import Cut`` sat inside the symmetry-breaking branch, although
+    Cut is already imported at module level. In Python an import anywhere in a
+    function makes the name local to the *whole* function, so on a model where
+    symmetry breaking contributes no rows -- that branch never running -- the
+    conflict-clause append later in the search raised UnboundLocalError rather
+    than solving. Symmetry and conflict analysis are both on by default, so
+    reaching it needed only a model with no detectable symmetry that learns
+    enough clauses to hit the batch threshold.
+    """
+    p = _random_max_binary(8)
+    s = solve_mip(p, MIPParams(symmetry=False, conflict=True, clause_batch=1,
+                               time_limit=30))
+    assert s.info["conflict"]["clauses"] > 0, (
+        "no clauses were learned, so the append path this test pins never ran")
 
 
 @pytest.mark.parametrize("name,optimum", [("flugpl", 1201500.0),
