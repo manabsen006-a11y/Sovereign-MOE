@@ -435,7 +435,15 @@ def read_mps(path, name: str | None = None) -> Problem:
 
 def write_mps(prob: Problem, path) -> None:
     """Write an MPS file. Used for round-trip tests and for handing a model to
-    a comparator solver during benchmarking."""
+    a comparator solver during benchmarking.
+
+    Every number goes through ``float(...)`` before ``!r``. ``repr`` of a
+    Python float is the shortest string that reads back bit-identical, which
+    is what an exchange format wants -- but ``repr`` of a *numpy* scalar has
+    been ``np.float64(700.0)`` since NumPy 2.0, and this wrote that straight
+    into the file. ``prob.c`` and the matrix values are numpy arrays, so every
+    numeric field was affected and no MPS reader could take the output back.
+    """
     cn = prob.col_names or [f"C{j}" for j in range(prob.n)]
     rn = prob.row_names or [f"R{i}" for i in range(prob.m)]
 
@@ -466,26 +474,26 @@ def write_mps(prob: Problem, path) -> None:
             marker += 1
             intblock = want_int
         if prob.c[j] != 0.0:
-            out.append(f"    {cn[j]:<10s}COST      {prob.c[j]!r:>15s}")
+            out.append(f"    {cn[j]:<10s}COST      {float(prob.c[j])!r:>15s}")
         idx, val = prob.A.col(j)
         for i, v in zip(idx, val):
             lo, hi = prob.row_lb[i], prob.row_ub[i]
             if lo <= -INF and hi >= INF:
                 continue
-            out.append(f"    {cn[j]:<10s}{rn[i]:<10s}{v!r:>15s}")
+            out.append(f"    {cn[j]:<10s}{rn[i]:<10s}{float(v)!r:>15s}")
     if intblock:
         out.append(f"    MARKER{marker:<4d}          'MARKER'                 'INTEND'")
 
     out.append("RHS")
     if prob.obj_offset != 0.0:
-        out.append(f"    RHS       COST      {(-prob.obj_offset)!r:>15s}")
+        out.append(f"    RHS       COST      {float(-prob.obj_offset)!r:>15s}")
     for i in range(prob.m):
         lo, hi = prob.row_lb[i], prob.row_ub[i]
         if lo <= -INF and hi >= INF:
             continue
         b = hi if lo <= -INF else lo
         if b != 0.0:
-            out.append(f"    RHS       {rn[i]:<10s}{b!r:>15s}")
+            out.append(f"    RHS       {rn[i]:<10s}{float(b)!r:>15s}")
 
     rng = [(i, prob.row_ub[i] - prob.row_lb[i]) for i in range(prob.m)
            if prob.row_lb[i] > -INF and prob.row_ub[i] < INF
@@ -493,7 +501,7 @@ def write_mps(prob: Problem, path) -> None:
     if rng:
         out.append("RANGES")
         for i, r in rng:
-            out.append(f"    RNG       {rn[i]:<10s}{r!r:>15s}")
+            out.append(f"    RNG       {rn[i]:<10s}{float(r)!r:>15s}")
 
     out.append("BOUNDS")
     for j in range(prob.n):
@@ -503,14 +511,14 @@ def write_mps(prob: Problem, path) -> None:
         if lo <= -INF and hi >= INF:
             out.append(f" FR BND       {cn[j]}")
         elif lo == hi:
-            out.append(f" FX BND       {cn[j]:<10s}{lo!r:>15s}")
+            out.append(f" FX BND       {cn[j]:<10s}{float(lo)!r:>15s}")
         else:
             if lo <= -INF:
                 out.append(f" MI BND       {cn[j]}")
             elif lo != 0.0:
-                out.append(f" LO BND       {cn[j]:<10s}{lo!r:>15s}")
+                out.append(f" LO BND       {cn[j]:<10s}{float(lo)!r:>15s}")
             if hi < INF:
-                out.append(f" UP BND       {cn[j]:<10s}{hi!r:>15s}")
+                out.append(f" UP BND       {cn[j]:<10s}{float(hi)!r:>15s}")
     out.append("ENDATA")
 
     with open(path, "w", encoding="utf-8") as fh:
