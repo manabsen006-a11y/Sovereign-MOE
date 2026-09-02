@@ -178,6 +178,63 @@ def test_maximisation_dual_bound_is_reported_in_the_users_sense():
         f"not exercising the path it is meant to pin")
 
 
+def test_batched_node_bounds_agree_with_brute_force():
+    """REGRESSION: an integral-looking BNR iterate closed the node it sat in.
+
+    A node is finished when its relaxation *optimum* is integral, because an
+    integral optimum is feasible and nothing below it can beat it. That holds
+    for an exact node LP. A BNR iterate is not an optimum -- it is an
+    unconverged first-order point -- so its looking integral proves nothing,
+    and ``_accept`` rounds before it validates, so it will happily turn such a
+    point into a feasible incumbent. Reading that incumbent as proof closed
+    the node and discarded the subtree holding the real optimum.
+
+    The symptom was the worst kind available: not a crash and not INFEASIBLE,
+    but ``OPTIMAL`` with a plausible near-optimal objective and a dual bound
+    agreeing with it, because the node that would have refuted the bound was
+    never opened. Measured here at 3 wrong answers in 40 models before the
+    fix; the models are small enough to enumerate, so brute force settles it.
+
+    Mixed-sign coefficients and non-zero -- sometimes negative -- lower bounds
+    are what the earlier generators lacked.
+    """
+    rng = np.random.default_rng(0)
+    checked = 0
+    for _ in range(20):
+        n, m = int(rng.integers(3, 6)), int(rng.integers(2, 4))
+        lo = rng.integers(-30, 60, size=n).astype(float)
+        hi = lo + rng.integers(2, 5, size=n).astype(float)
+        A = rng.integers(-3, 4, size=(m, n)).astype(float)
+        ru = ((A @ ((lo + hi) / 2.0)) + rng.integers(0, 6, size=m)).astype(float)
+        c = rng.integers(-5, 6, size=n).astype(float)
+
+        feasible = [np.array(pt) for pt in
+                    itertools.product(*[np.arange(lo[j], hi[j] + 1e-9)
+                                        for j in range(n)])
+                    if np.all(A @ np.array(pt) <= ru + 1e-9)]
+        if not feasible:
+            continue
+        best = min(float(c @ pt) for pt in feasible)
+        checked += 1
+
+        p = Problem(A=SparseMatrix.from_dense(A), c=c,
+                    row_lb=np.full(m, -INF), row_ub=ru,
+                    col_lb=lo.copy(), col_ub=hi.copy(),
+                    kind=np.full(n, VarKind.INTEGER, dtype=np.uint8))
+        s = solve_mip(p, MIPParams(node_solver="bnr", time_limit=30))
+
+        assert s.status == Status.OPTIMAL, (
+            f"batched bounding returned {s.status.name} on a model with "
+            f"{len(feasible)} enumerated feasible points")
+        assert abs(s.objective - best) < 1e-6, (
+            f"batched bounding reported {s.objective} as optimal; brute force "
+            f"over every integer point gives {best}")
+        # and the proof offered must not be stronger than the truth
+        assert not (np.isfinite(s.dual_bound) and s.dual_bound > best + 1e-6), (
+            f"dual bound {s.dual_bound} lies above the true optimum {best}")
+    assert checked >= 10, f"only {checked} models had a feasible point"
+
+
 def test_conflict_clauses_can_be_added_without_symmetry_breaking():
     """REGRESSION: a redundant local import made ``Cut`` local to all of solve_mip.
 

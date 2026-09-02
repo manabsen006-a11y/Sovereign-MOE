@@ -696,7 +696,20 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 got = _accept(np.clip(xv, l, h))
                 if got is not None and got[1] < incumbent:
                     best_x, incumbent = got[0], got[1]
-                if got is not None:
+                # Closing the node here needs this point to be the node's LP
+                # *optimum*: an integral optimum is feasible, so nothing below
+                # it can be better and the subtree is genuinely finished. An
+                # exact node LP delivers that. A BNR iterate does not -- it is
+                # an unconverged first-order point that merely looks integral,
+                # and _accept rounds before it validates, so it will happily
+                # turn that point into a feasible incumbent. Reading the
+                # incumbent as proof discards the subtree holding the real
+                # optimum: a five-variable model came back OPTIMAL at -134
+                # against a true -136, the bound agreeing with the wrong
+                # answer because the node that refuted it was never opened.
+                # When the bound came from BNR, fall through to the exact
+                # re-solve below and decide from a vertex.
+                if got is not None and not use_bnr:
                     continue
 
             # primal heuristic on the node's fractional point
@@ -807,6 +820,17 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         dual_bound = -float("inf")
     if status == Status.OPTIMAL and not frontier:
         dual_bound = incumbent
+
+    if np.isfinite(incumbent):
+        # A dual bound can never exceed an objective actually achieved: the
+        # optimum is at most the incumbent, and the bound is at most the
+        # optimum. The clamp is needed because the gap rule stops the search
+        # with a *non-empty* frontier the moment every remaining node is
+        # prunable -- which is precisely when frontier[0].bound has risen past
+        # the incumbent. The branch above only rewrites the bound when the
+        # frontier emptied, so that exit reported OPTIMAL alongside a bound
+        # above the optimum it had just proved.
+        dual_bound = min(dual_bound, incumbent)
 
     # A MAXIMISE model was negated on the way in and the whole search ran as a
     # minimisation, so every bound above lives in that negated space. Both
