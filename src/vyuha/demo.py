@@ -78,6 +78,14 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     # ---------------------------------------------------------------- 2 ----
     o.head(2, "Solve: our own revised simplex")
     from .lp.simplex import SimplexParams, solve_simplex
+    # Warm the JIT before timing anything. The numba kernels compile on their
+    # first call, so timing that call reports the compiler and not the solver:
+    # on this model the first solve takes ~0.19 s and every one after it
+    # ~0.01 s. Stage 5 divides this number by HiGHS's, so leaving it cold
+    # announced "HiGHS is 101.8x faster here" when the honest figure is nearer
+    # 1.5x -- a sixty-fold overstatement, in the one command meant to present
+    # the project. bench/gpu_bench.py has warmed up before timing all along.
+    solve_simplex(prob.copy(), SimplexParams(sensitivity=True))
     t = time.perf_counter()
     sol = solve_simplex(prob, SimplexParams(sensitivity=True))
     dt = time.perf_counter() - t
@@ -154,6 +162,17 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
             o.kv("large model", f"{big.nnz:,} nonzeros")
             print()
             print(f"    {'model':<14}{'CPU':>10}{'GPU':>10}{'speedup':>10}")
+            # Warm each backend first. The first solve on a device compiles
+            # kernels -- numba for the CPU, NVRTC for the GPU -- and timing
+            # that measures the compiler. Uncorrected it put a 448-nonzero
+            # model at 10.42 s on the CPU against 4.08 s on the GPU, and the
+            # demo then printed "the GPU loses on small models" immediately
+            # under a table showing it winning by 2.56x. Neither number was a
+            # solve.
+            for dev in ("cpu", "gpu"):
+                solve_pdlp(small.copy(), PDLPParams(device=dev, eps_abs=1e-6,
+                                                    eps_rel=1e-6, max_iter=50,
+                                                    time_limit=30))
             for label, mdl in (("small", small), ("large", big)):
                 row = []
                 for dev in ("cpu", "gpu"):
