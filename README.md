@@ -18,26 +18,33 @@ simplex and a GPU first-order method -- validated against **published MIPLIB
 reference values** and an **independent verifier** that recomputes feasibility
 from the original model.
 
+Reproduce with `python -m bench.harness --mode lp --method pdlp --device cpu
+--time-limit 90 --tol 1e-8`. **Every timing in this README was measured on the
+machine described under [Measurement conditions](#measurement-conditions)**;
+quote the ratios rather than the seconds if you are comparing against your own
+hardware.
+
 ```
-VYUHA benchmark  mode=lp  device=cpu  time-limit=90s  tol=1e-8
+VYUHA benchmark  mode=lp  method=pdlp  device=cpu  time-limit=90s  tol=1e-8
 
 instance         rows   cols      nnz status            objective        reference    relerr     time  chk
-10teams           230   2025    12150 OPTIMAL           917.00001              nan       nan    0.29s   ok
-dcmulti           290    548     1315 OPTIMAL           183975.54        183975.54  5.61e-11    2.61s   ok
-flugpl             18     18       46 OPTIMAL           1167185.7        1167185.7  4.29e-09    0.32s   ok
-gr4x6              34     48       96 OPTIMAL              185.55              nan       nan    0.27s   ok
-gt2                29    188      376 OPTIMAL           13460.233        13460.233  3.07e-11    0.04s   ok
-khb05250          101   1350     2700 OPTIMAL            95919464         95919464  7.60e-13    6.62s   ok
-mas76              12    151     1640 OPTIMAL           38893.904              nan       nan   15.87s   ok
-misc07            212    260     8619 OPTIMAL                1415              nan       nan    0.41s   ok
-mod010            146   2655    11203 OPTIMAL           6532.0833          6532.08  5.08e-07    1.50s   ok
-p0201             133    201     1923 OPTIMAL                6875             6875  1.11e-11    0.21s   ok
-qnet1             503   1541     4622 OPTIMAL           14274.103        14274.103  1.12e-10    6.88s   ok
+10teams           230   2025    12150 OPTIMAL           917.00001              nan       nan    0.18s   ok
+dcmulti           290    548     1315 OPTIMAL           183975.54        183975.54  5.61e-11    0.90s   ok
+flugpl             18     18       46 OPTIMAL           1167185.7        1167185.7  4.29e-09    0.10s   ok
+gr4x6              34     48       96 OPTIMAL              185.55              nan       nan    0.09s   ok
+gt2                29    188      376 OPTIMAL           13460.233        13460.233  3.07e-11    0.01s   ok
+khb05250          101   1350     2700 OPTIMAL            95919464         95919464  7.60e-13    2.36s   ok
+mas76              12    151     1640 OPTIMAL           38893.904              nan       nan    5.06s   ok
+misc07            212    260     8619 OPTIMAL                1415              nan       nan    0.13s   ok
+mod010            146   2655    11203 OPTIMAL           6532.0833          6532.08  5.08e-07    0.52s   ok
+p0201             133    201     1923 OPTIMAL                6875             6875  1.11e-11    0.07s   ok
+qnet1             503   1541     4622 OPTIMAL           14274.103        14274.103  1.12e-10    2.36s   ok
 
   status OPTIMAL       11/11
   verifier accepted    11/11
   within 1e-4 of ref   7/7
-  shifted geomean time 1.592s (shift 1s)
+  shifted geomean time 0.700s (shift 1s)
+  total time           11.8s
   worst relative error 5.08e-07 (mod010)
 ```
 
@@ -46,51 +53,77 @@ and considerably faster:
 
 | engine | optimal | verified | shifted geomean | total | worst rel. err |
 |---|---|---|---|---|---|
-| first-order (PDLP) | 11/11 | 11/11 | 1.592 s | 35.0 s | 5.08e-07 |
-| **revised simplex** | 11/11 | 11/11 | **0.513 s** | **14.3 s** | 5.10e-07 |
+| first-order (PDLP) | 11/11 | 11/11 | 0.700 s | 11.8 s | 5.08e-07 |
+| **revised simplex** | 11/11 | 11/11 | **0.245 s** | **5.6 s** | 5.10e-07 |
 
 Per-instance the gap is much wider than the aggregate suggests -- simplex is
-794x faster on mas76, 132x on khb05250, 14x on qnet1 -- while PDLP wins
-decisively on 10teams (0.29 s against 11.8 s), which is highly degenerate. They
+over 500x faster on mas76 (5.06 s against 0.01 s, so the ratio is only
+resolved to the timer), 118x on khb05250, 10x on qnet1 -- while PDLP wins
+decisively on 10teams (0.18 s against 4.91 s), which is highly degenerate. They
 are genuinely complementary, and `method="auto"` picks by size.
 
-MILP is exact where it closes. With exact node LPs the tree is sharp: a 22-item
-knapsack closes in **59 nodes** where the batched first-order bound needed
-**40,211**. On the full MIPLIB set at a 60 s limit, before and after adding
-cutting planes and primal heuristics:
+MILP is exact where it closes. With exact node LPs the tree is sharp: a hard
+22-item knapsack closes in **2,375 nodes and 2.24 s**, where the batched
+first-order bound is still running at the 60 s limit having never reached the
+optimum (see [The revised simplex](#the-revised-simplex) for the full table).
+On the full MIPLIB set at a 60 s limit, before and after adding cutting planes
+and primal heuristics:
 
 ```
-instance   before                     after                        after time
-flugpl     OPTIMAL     1201500        OPTIMAL     1201500              9.04s
-gr4x6      OPTIMAL      202.35        OPTIMAL      202.35              0.55s
-gt2        TIME_LIMIT   (none)        OPTIMAL       21166              1.71s   <-
-khb05250   TIME_LIMIT   (none)        OPTIMAL  1.0694023e+08           7.70s   <-
-mod010     OPTIMAL        6548        OPTIMAL        6548              2.52s
-p0201      OPTIMAL        7615        OPTIMAL        7615             39.65s
-mas76      TIME_LIMIT 40589.44        TIME_LIMIT 40408.48             60.33s
-misc07     TIME_LIMIT     2810        TIME_LIMIT     2810             60.05s
-dcmulti    TIME_LIMIT   (none)        TIME_LIMIT 202598.49  (7.7% off)   60.41s
-qnet1      TIME_LIMIT   (none)        TIME_LIMIT  20627.76 (28.7% off)   60.86s
-10teams    TIME_LIMIT   (none)        TIME_LIMIT   (none)             62.36s
+                                              measured on this tree
+instance   before cuts+heuristics       status        objective     time
+flugpl     OPTIMAL     1201500          OPTIMAL         1201500     9.28s
+gr4x6      OPTIMAL      202.35          OPTIMAL          202.35     0.57s
+gt2        TIME_LIMIT   (none)          TIME_LIMIT       (none)    61.92s   <- see below
+khb05250   TIME_LIMIT   (none)          OPTIMAL   1.0694023e+08     3.49s
+mod010     OPTIMAL        6548          OPTIMAL            6548     1.87s
+p0201      OPTIMAL        7615          OPTIMAL            7615    20.68s
+mas76      TIME_LIMIT 40589.44          TIME_LIMIT   40408.477     60.08s
+misc07     TIME_LIMIT     2810          TIME_LIMIT        2810     60.60s
+dcmulti    TIME_LIMIT   (none)          TIME_LIMIT   202598.49     61.13s  (7.7% off)
+qnet1      TIME_LIMIT   (none)          TIME_LIMIT    20627.76     60.33s (28.7% off)
+10teams    TIME_LIMIT   (none)          TIME_LIMIT      (none)     65.46s
 
-                        before    after
-  status OPTIMAL         4/11      6/11
-  verifier accepted      6/11     10/11
-  no incumbent at all    5/11      1/11     <- the motivating number
-  shifted geomean       31.4s     22.7s
+                        before     now
+  status OPTIMAL         4/11      5/11
+  verifier accepted      6/11      9/11
+  no incumbent at all    5/11      2/11
+  shifted geomean       31.4s     26.1s
 ```
 
 Every proved optimum matches the published value exactly, and the verifier
-rejects nothing. The motivating failure -- five instances returning *no answer
-at all* -- is down to one.
+rejects nothing.
 
-**The cost, stated plainly:** p0201 went from 8.16 s to 39.65 s and flugpl from
-4.32 s to 9.04 s, because cuts made their node LPs more expensive than the
-bound they bought. flugpl is still comfortably solved. **p0201 is now marginal
-at a 60 s limit** -- it came out OPTIMAL at 39.65 s in the run above and
-TIME_LIMIT at 60.5 s on a repeat, finding the optimum 7615 both times but only
-proving it in one. Treat the 39.65 s as one draw from a borderline instance,
-not a reliable figure.
+**gt2 is a live regression, and this table is what found it.** It was published
+as `OPTIMAL 21166 in 1.71s`; it now times out with no incumbent at all.
+Bisected, the break is `caa5fa3` — the commit that added MIR cuts — and it
+reproduces on demand:
+
+```
+  MIR cuts on   TIME_LIMIT  obj=nan     nodes=0  61.29s
+  MIR cuts off  OPTIMAL     obj=21166   nodes=0   0.70s
+```
+
+`nodes=0` in both runs is the tell: gt2 closes at the root, so this is entirely
+inside the root cut loop, which spends the whole time limit and never starts the
+tree. `MIPParams.cut_time_frac` exists to cap exactly that and is not holding
+here. Not yet fixed, and not caused by the soundness work on this branch — every
+commit from `9b74871` through `e94f538` solves gt2 in about 9 s.
+
+It went unnoticed for four commits because this table was not re-run after the
+code beneath it changed, which is the same failure recorded in
+[`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md): a table nobody
+regenerates stops being a measurement and becomes a memory.
+
+The motivating failure -- five instances returning *no answer at all* -- is
+down to two, and one of those two is the gt2 regression above rather than
+anything intrinsic to the instance.
+
+**The cost, stated plainly:** cuts make some node LPs more expensive than the
+bound they buy. p0201 is the clearest case, and it is **marginal at a 60 s
+limit**: 20.68 s in the run above, against 39.65 s and a 60.5 s timeout on
+earlier runs of the same instance, finding the optimum 7615 every time but not
+always proving it. Treat any single figure for it as one draw.
 
 A cost-aware cut rollback was built to fix exactly this and **removed again**:
 it fixed p0201 and flugpl but broke gt2 and khb05250, which cuts were saving.
@@ -237,7 +270,7 @@ checks below all reach for something external.
 
 | check | result |
 |---|---|
-| **HiGHS head-to-head** (`bench/comparator.py`) | 11/11 agree, max relative difference **3.7e-16** |
+| **HiGHS head-to-head** (`bench/comparator.py`) | 11/11 agree, max relative difference **5.6e-16** |
 | Independent verifier | every reported optimum accepted, recomputed in compensated arithmetic |
 | Exact rational arithmetic | forward error **0.0** at cond₁ 1.7e12 |
 | Published MIPLIB optima | every proved optimum matches exactly |
@@ -253,11 +286,11 @@ passed while `node_solver="bnr"` was returning wrong answers. Enumerating every
 integer point of a five-variable model is a weak-looking check that no amount
 of agreement between components can substitute for.
 
-**Speed, stated plainly:** HiGHS solves the same eleven LP relaxations in 0.3 s
-against our 9.8 s — roughly **33× faster**, or 14× excluding the degenerate
-10teams. Matching its answers exactly is the achievement here; matching its
-clock is not yet true, and presolve plus a Forrest–Tomlin update are the two
-reasons why.
+**Speed, stated plainly:** HiGHS solves the same eleven LP relaxations in 0.2 s
+against our 5.4 s — roughly **27× slower on our side**, or 8.6× excluding the
+degenerate 10teams, which alone accounts for 4.63 s of it. Matching its answers
+exactly is the achievement here; matching its clock is not yet true, and
+presolve plus a Forrest–Tomlin update are the two reasons why.
 
 A full requirement-by-requirement conformance audit against the problem
 statement — including what is *not* built — is in the artifact linked from the
@@ -721,6 +754,11 @@ five now have regression tests.
 - **Symmetry breaking is weak.** One inequality per generator rather than full
   lexicographic ordering, so it captures a fraction of what orbitopal fixing
   would. Sound, but nowhere near the `k!` the theory allows.
+- **gt2 regressed when MIR cuts were added and is not fixed.** Published as
+  OPTIMAL in 1.71 s, it now spends the whole 60 s limit in the root cut loop
+  and returns no incumbent; `nodes=0` and disabling MIR restores `OPTIMAL
+  21166` in 0.70 s. Bisected to `caa5fa3`. `MIPParams.cut_time_frac` is meant
+  to cap root-loop time and is not holding on this instance.
 - **`node_solver="bnr"` is the less-trusted path.** It is not the default —
   `"simplex"` is — and it is the only path that ever returned a wrong answer
   (bug 5 above). Those are fixed and pinned by a brute-force sweep, but the
@@ -752,6 +790,32 @@ five now have regression tests.
 - GPU fp64 on a laptop RTX 3050 runs at 1/32 rate; a datacentre card changes the
   crossover point substantially.
 
+## Measurement conditions
+
+Every wall-clock figure in this README came from one machine:
+
+| | |
+|---|---|
+| CPU | Intel Core i5-12450H, 8 physical / 12 logical cores, 2.0 GHz base |
+| RAM | 15.7 GB |
+| GPU | NVIDIA GeForce RTX 3050 Laptop, compute 8.6, 4 GB (fp64 at 1/32 rate) |
+| OS | Windows 11 |
+| Python | 3.12.5, numpy 2.2.6, numba 0.67.0 (12 threads), cupy 14.2.0 |
+
+A laptop, thermally throttled, with no attempt to pin clocks or quiet the
+machine — background load alone has produced 2.3x swings on repeated runs of
+the same instance. **Treat every second in this README as one draw on that
+hardware, and prefer the ratios.** The correctness columns are a different
+matter: objectives and relative errors reproduce bit-for-bit across runs and
+across machines, because the algorithms are deterministic.
+
+Everything is re-runnable rather than recorded: `bench.harness` regenerates the
+LP and MILP tables, `bench.gpu_bench` the kernel tables, `bench.comparator` the
+HiGHS comparison. Where a table names a synthetic instance, the README states
+its generator, size, seed and settings, so the instance can be rebuilt. That
+convention exists because two published tables were found not to reproduce; see
+[`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
+
 ## Layout
 
 ```
@@ -763,6 +827,6 @@ src/vyuha/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        137 tests including regressions for every bug above
+tests/        175 tests including regressions for every bug above
 ui/           local single-page interface
 ```
