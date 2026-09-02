@@ -227,6 +227,13 @@ checks below all reach for something external.
 | Cut validity (brute force) | 58 cuts vs every feasible point, worst slack −1.4e-14 |
 | Conflict clause validity | 40 clauses, worst slack 0.0 |
 | Shadow-price prediction | 239 rows, worst error 3.9e-15 |
+| Whole-solve vs brute force | 450 models × both node solvers, **0 disagreements** |
+| Batched safe bound vs exact simplex | 40 root relaxations, **0 invalid bounds** |
+
+The last two are recent, and they are there because everything above them
+passed while `node_solver="bnr"` was returning wrong answers. Enumerating every
+integer point of a five-variable model is a weak-looking check that no amount
+of agreement between components can substitute for.
 
 **Speed, stated plainly:** HiGHS solves the same eleven LP relaxations in 0.3 s
 against our 9.8 s — roughly **33× faster**, or 14× excluding the degenerate
@@ -479,6 +486,24 @@ Every scale factor is rounded to a **power of two**, so converting a bound out o
 the scaled space is exact in binary floating point and contributes no error to a
 number that must stay valid.
 
+### A valid bound is not a valid search
+
+The argument above is sound, and it was verified rather than assumed: measured
+against the exact simplex, the batched safe bound gave **0 invalid bounds in 40
+root relaxations**. It is also narrower than it looks, and the gap is where this
+solver's worst bug lived.
+
+A rigorous bound makes *pruning* safe. It says nothing about the other decision
+a tree makes on the same iterate — **when a node is finished**. That one needs
+the point to be the node's optimum, which is precisely what an unconverged
+first-order iterate is not. `node_solver="bnr"` closed nodes on integral-looking
+iterates and reported `OPTIMAL` with a wrong objective and a dual bound
+agreeing with it. Four separate routes into that mistake are recorded under
+"Bugs worth recording" below.
+
+So the correct reading of Neumaier–Shcherbina here is narrow: an approximate
+`y` can be trusted to *discard* a subtree, and never to *conclude* one.
+
 ---
 
 ## Numerical robustness
@@ -532,8 +557,9 @@ search), and tree node management (irregular, pointer-chasing).
 
 Not one of these was found by a unit test passing. Each was surfaced by
 something outside the solver's agreement with itself — the independent
-verifier, a published value, or in the last case the runtime objecting to an
-undefined cast. All four now have regression tests.
+verifier, a published value, the runtime objecting to an undefined cast, or
+brute-force enumeration over a model small enough to check exhaustively. All
+five now have regression tests.
 
 1. **Dual unscaling multiplied by the objective scale where it must divide.**
    Every dual was wrong by `obj_scale²`. Residuals still looked converged and
@@ -574,6 +600,68 @@ undefined cast. All four now have regression tests.
    the suite was green, and the warning was the only thing in the room saying
    otherwise.
 
+5. **A node closed by a point that was never its optimum — the same mistake,
+   four times.** This one is recorded as a family rather than an incident,
+   because that is what it turned out to be.
+
+   A branch-and-bound node is finished when its relaxation **optimum** is
+   integral: an integral optimum is feasible, so nothing below it can be
+   better. That reasoning is exact for an exact node LP, and it is worthless
+   for a batched first-order iterate, which is not an optimum and not even
+   necessarily feasible. `node_solver="bnr"` closed nodes on it anyway. Four
+   distinct routes to the same wrong conclusion turned up, each hidden behind
+   the last:
+
+   * The iterate started **outside the node's box** — zero is outside it as
+     soon as a column has a non-zero lower bound. Branching on `x_j = 0` where
+     `lo_j = 57` gives a down-child with `ub = 0 < lb`, empty by construction.
+     Both children die, the node dies, and flugpl was reported **INFEASIBLE**
+     against a published optimum of 1201500.
+   * The iterate looked integral but was LP-infeasible, so `_accept` rejected
+     it and there was no fractional variable left to branch on. The node fell
+     through and was dropped.
+   * `_accept` **rounds before it validates**, so on a fractional vertex it
+     often succeeds and returns a perfectly good incumbent — which says
+     nothing about whether the node is done. Reading that success as "node
+     finished" dropped precisely the nodes whose rounding worked.
+   * The node's exact re-solve returned neither `OPTIMAL` nor `INFEASIBLE`,
+     which is not knowledge about the node, and it was dropped regardless.
+
+   Every route ends the same way. A dropped node takes its subtree with it,
+   the frontier empties, and an empty frontier is read as proof that the search
+   is exhausted — so the run reports `OPTIMAL` with `dual_bound == incumbent`.
+   The failure is not a crash and not an obviously wrong `INFEASIBLE`: it is a
+   plausible near-optimal number with a dual bound agreeing with it, because
+   the node that would have refuted the bound was never opened. A
+   five-variable model came back `OPTIMAL` at −134 against a true −136, in one
+   node.
+
+   A fifth, unrelated in mechanism but found in the same hunt: the **MIR
+   un-shift constant had both signs inverted**, so a cut removed the integer
+   optimum outright. Multiplying by `lo_j = 0` hides it completely, which is
+   why 133 brute-forced cuts over 55 generated instances passed while the code
+   was wrong.
+
+   **What the bound had to do with it: nothing.** The natural suspicion is the
+   Neumaier–Shcherbina correction above, and it is wrong. Tested in isolation
+   against the exact simplex, the batched safe bound produced **0 invalid
+   bounds in 40 root relaxations**. The bound was valid every time; the tree
+   consuming it was not. Separately, the gap rule stops as soon as every
+   remaining node is prunable — which is exactly when the frontier's best bound
+   has risen *past* the incumbent — and the reported `dual_bound` was read off
+   that non-empty frontier, so a run could report a bound above the optimum it
+   had just proved. A dual bound is now clamped to the incumbent, which it can
+   never legitimately exceed.
+
+   Caught by brute force, and by nothing else: the suite was green through all
+   of it. The models are small enough to enumerate every integer point, which
+   is what makes the oracle possible. Measured after: **0 failures over 450
+   models × 2 node solvers**, where one seed's 150 previously gave 41. The
+   throughput cost of re-solving those nodes exactly was nil on the three
+   instances tried — identical node counts on a 22-item knapsack, flugpl and
+   gr4x6 — because the re-solve only fires when an iterate looks integral,
+   which is rare.
+
 ---
 
 ## Known limits
@@ -592,6 +680,13 @@ undefined cast. All four now have regression tests.
 - **Symmetry breaking is weak.** One inequality per generator rather than full
   lexicographic ordering, so it captures a fraction of what orbitopal fixing
   would. Sound, but nowhere near the `k!` the theory allows.
+- **`node_solver="bnr"` is the less-trusted path.** It is not the default —
+  `"simplex"` is — and it is the only path that ever returned a wrong answer
+  (bug 5 above). Those are fixed and pinned by a brute-force sweep, but the
+  asymmetry is the honest summary: the exact node LP came through every sweep
+  clean, and the batched path took four fixes to get there. It also now falls
+  back to an exact re-solve whenever a node's iterate looks integral — free on
+  the instances measured, but a crutch the original design did not have.
 - **Cuts are separated at the root only** and are never rolled back when they
   fail to pay for themselves (see p0201 above). Local cuts in the tree and a
   cost-aware rollback are the next steps.
