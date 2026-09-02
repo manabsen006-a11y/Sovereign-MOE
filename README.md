@@ -171,7 +171,7 @@ python -m bench.harness --mode lp                  # validate against published 
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 165 tests
+python -m pytest tests/               # 183 tests, no skips
 ```
 
 ---
@@ -847,6 +847,6 @@ src/vyuha/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        175 tests including regressions for every bug above
+tests/        183 tests including regressions for every bug above
 ui/           local single-page interface
 ```
