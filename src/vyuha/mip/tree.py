@@ -298,12 +298,38 @@ def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol,
 
     avg_row_nnz = scaled.nnz / max(scaled.m, 1)
 
+    # The last cut set whose own LP actually solved.
+    #
+    # A round that cannot be solved must not reach the tree. Every node
+    # inherits this relaxation, so an unsolvable root LP does not merely cost
+    # the cuts -- it produces a solve that explores no nodes and returns no
+    # answer at all. Measured on gt2: round 6 stalls the simplex for 224,352
+    # iterations on a 119-row model (the same model needs 1,354 from the same
+    # basis under looser bounds, so this is cycling, not difficulty), and it
+    # burned the entire 60 s limit before a single node was explored. Falling
+    # back to round 5's cuts costs some bound and keeps the answer.
+    good = (scaled, node_lp, total)
+
+    def _lp_budget():
+        """Cap one cut-loop LP so it cannot outlive the whole root budget.
+
+        ``cut_time_frac`` documented this intent and the loop did not
+        implement it: the NodeSolver was built with the *full* time limit, so a
+        single stalling LP consumed everything the tree was going to need.
+        """
+        if deadline is None:
+            return params.time_limit
+        return max(0.0, min(params.time_limit, deadline - time.perf_counter()))
+
     for _rnd in range(params.cut_rounds):
         if deadline is not None and time.perf_counter() > deadline:
             break
+        node_lp.params.time_limit = _lp_budget()
         r = node_lp.solve(lo0, hi0)
         if r.status != Status.OPTIMAL or r.x is None:
-            return scaled, node_lp, x, bound, basis, total
+            scaled, node_lp, total = good      # roll back to what solved
+            break
+        good = (scaled, node_lp, total)
         prev = bound
         x, bound, basis = r.x, r.objective, r.basis
 
@@ -336,6 +362,9 @@ def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol,
         if np.isfinite(prev) and bound - prev <= 1e-9 * max(1.0, abs(bound)):
             break                                  # tailing off
 
+    # The tree re-uses this solver for every node, so give it back the full
+    # limit -- the cap above belongs to the root loop alone.
+    node_lp.params.time_limit = params.time_limit
     r = node_lp.solve(lo0, hi0)
     if r.status == Status.OPTIMAL and r.x is not None:
         x, bound, basis = r.x, r.objective, r.basis

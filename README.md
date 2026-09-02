@@ -72,46 +72,56 @@ and primal heuristics:
 ```
                                               measured on this tree
 instance   before cuts+heuristics       status        objective     time
-flugpl     OPTIMAL     1201500          OPTIMAL         1201500     9.28s
-gr4x6      OPTIMAL      202.35          OPTIMAL          202.35     0.57s
-gt2        TIME_LIMIT   (none)          TIME_LIMIT       (none)    61.92s   <- see below
-khb05250   TIME_LIMIT   (none)          OPTIMAL   1.0694023e+08     3.49s
-mod010     OPTIMAL        6548          OPTIMAL            6548     1.87s
-p0201      OPTIMAL        7615          OPTIMAL            7615    20.68s
-mas76      TIME_LIMIT 40589.44          TIME_LIMIT   40408.477     60.08s
-misc07     TIME_LIMIT     2810          TIME_LIMIT        2810     60.60s
-dcmulti    TIME_LIMIT   (none)          TIME_LIMIT   202598.49     61.13s  (7.7% off)
-qnet1      TIME_LIMIT   (none)          TIME_LIMIT    20627.76     60.33s (28.7% off)
-10teams    TIME_LIMIT   (none)          TIME_LIMIT      (none)     65.46s
+flugpl     OPTIMAL     1201500          OPTIMAL         1201500     3.81s
+gr4x6      OPTIMAL      202.35          OPTIMAL          202.35     0.28s
+gt2        TIME_LIMIT   (none)          TIME_LIMIT        21166    60.52s   <- see below
+khb05250   TIME_LIMIT   (none)          OPTIMAL   1.0694023e+08     3.89s
+mod010     OPTIMAL        6548          OPTIMAL            6548     2.38s
+p0201      OPTIMAL        7615          OPTIMAL            7615    21.71s
+mas76      TIME_LIMIT 40589.44          TIME_LIMIT   40408.477     60.25s
+misc07     TIME_LIMIT     2810          TIME_LIMIT        2810     61.30s
+dcmulti    TIME_LIMIT   (none)          TIME_LIMIT   202598.49     60.42s  (7.7% off)
+qnet1      TIME_LIMIT   (none)          TIME_LIMIT    20627.76     60.18s (28.7% off)
+10teams    TIME_LIMIT   (none)          TIME_LIMIT      (none)     63.03s
 
                         before     now
   status OPTIMAL         4/11      5/11
-  verifier accepted      6/11      9/11
-  no incumbent at all    5/11      2/11
-  shifted geomean       31.4s     26.1s
+  verifier accepted      6/11     10/11
+  no incumbent at all    5/11      1/11
+  shifted geomean       31.4s     25.1s
 ```
 
 Every proved optimum matches the published value exactly, and the verifier
 rejects nothing.
 
-**gt2 is a live regression, and this table is what found it.** It was published
-as `OPTIMAL 21166 in 1.71s`; it now times out with no incumbent at all.
-Bisected, the break is `caa5fa3` — the commit that added MIR cuts — and it
-reproduces on demand:
+**gt2 is a regression this table found, now partly repaired.** It was published
+as `OPTIMAL 21166 in 1.71s`. Re-running the table showed it returning *nothing*
+— timing out with no incumbent — and bisection put the break at `caa5fa3`, the
+commit that added MIR cuts. It reproduced on demand, with `nodes=0` either way:
+gt2 closes at the root, so the whole failure lived in the root cut loop.
 
-```
-  MIR cuts on   TIME_LIMIT  obj=nan     nodes=0  61.29s
-  MIR cuts off  OPTIMAL     obj=21166   nodes=0   0.70s
-```
+Two things were wrong there, both now fixed. The loop built its LP solver with
+the **full** time limit, so one stalling relaxation consumed everything the tree
+was going to need -- `cut_time_frac` documented that cap and the loop never
+applied it. And when that LP failed, the cut set that broke it was handed to the
+tree anyway; every node inherits the root relaxation, so an unsolvable one
+yields a search that explores no nodes at all. Cut rounds are now rolled back to
+the last set whose own LP solved.
 
-`nodes=0` in both runs is the tell: gt2 closes at the root, so this is entirely
-inside the root cut loop, which spends the whole time limit and never starts the
-tree. `MIPParams.cut_time_frac` exists to cap exactly that and is not holding
-here. Not yet fixed, and not caused by the soundness work on this branch — every
-commit from `9b74871` through `e94f538` solves gt2 in about 9 s.
+gt2 returns `21166` again -- the published optimum, verifier-accepted -- and the
+set as a whole went from 9/11 to 10/11 verified and 2 instances with no
+incumbent down to 1. flugpl fell from 9.28 s to 3.81 s on the same change.
 
-It went unnoticed for four commits because this table was not re-run after the
-code beneath it changed, which is the same failure recorded in
+**It is still not back to `OPTIMAL`,** and the reason is a separate bug. The
+failing relaxation is not hard: 119 rows, solved in 1,354 iterations from the
+same basis under the root bounds. Under the *propagated* bounds the simplex runs
+**224,352 iterations** and never finishes. That is cycling the anti-degeneracy
+perturbation fails to break, it is independent of cuts, and fixing it is what
+would restore the published result. Recorded under
+[Known limits](#known-limits).
+
+The regression went unnoticed for four commits because this table was not re-run
+after the code beneath it changed — the same failure recorded in
 [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md): a table nobody
 regenerates stops being a measurement and becomes a memory.
 
@@ -754,11 +764,14 @@ five now have regression tests.
 - **Symmetry breaking is weak.** One inequality per generator rather than full
   lexicographic ordering, so it captures a fraction of what orbitopal fixing
   would. Sound, but nowhere near the `k!` the theory allows.
-- **gt2 regressed when MIR cuts were added and is not fixed.** Published as
-  OPTIMAL in 1.71 s, it now spends the whole 60 s limit in the root cut loop
-  and returns no incumbent; `nodes=0` and disabling MIR restores `OPTIMAL
-  21166` in 0.70 s. Bisected to `caa5fa3`. `MIPParams.cut_time_frac` is meant
-  to cap root-loop time and is not holding on this instance.
+- **The simplex can still cycle, and gt2 is where it shows.** On gt2's
+  cut-augmented root relaxation -- 119 rows, solvable in 1,354 iterations from
+  the same basis under the root bounds -- the propagated bounds send it to
+  **224,352 iterations** without finishing. The anti-degeneracy perturbation
+  does not break the stall. The root cut loop now caps and rolls back around
+  it, so gt2 returns its optimum 21166 instead of nothing, but it is no longer
+  *proved* within 60 s where it once was. This is the open bug behind that
+  gap, and it is a simplex problem rather than a cutting one.
 - **`node_solver="bnr"` is the less-trusted path.** It is not the default —
   `"simplex"` is — and it is the only path that ever returned a wrong answer
   (bug 5 above). Those are fixed and pinned by a brute-force sweep, but the

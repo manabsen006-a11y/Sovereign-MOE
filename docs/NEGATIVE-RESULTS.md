@@ -156,11 +156,13 @@ been audited to that standard**, and until they are, the honest status of any
 one of them is "measured once, on an instance that was not kept". The GPU
 kernel timings have since been checked (below), and so have the MIPLIB tables
 -- which turned up a live regression rather than a bad number: gt2 was
-published as OPTIMAL in 1.71 s and now times out with no incumbent, bisected to
-the commit that added MIR cuts. It is recorded under "Known limits" in the
-README because it is an open bug, not a withdrawn measurement. The lesson is
-the same one twice over: a table nobody regenerates stops being a measurement
-and becomes a memory.
+published as OPTIMAL in 1.71 s and had come to return no incumbent at all,
+bisected to the commit that added MIR cuts. The root cut loop has been repaired
+so gt2 returns its optimum again, but it is still not *proved* inside the
+limit, because the underlying cause is the simplex cycling rather than anything
+about cuts. That part is open, and is recorded under "Known limits" in the
+README. The lesson is the same one twice over: a table nobody regenerates stops
+being a measurement and becomes a memory.
 
 ---
 
