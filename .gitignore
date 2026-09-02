@@ -4,3 +4,7 @@ data/instances/
 .pytest_cache/
 ui/_paste.*
 *.egg-info/
+
+# solver output written by `vyuha solve --out`
+*.sol.json
+gt2.json
