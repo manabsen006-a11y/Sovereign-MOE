@@ -5,11 +5,12 @@ in the order a sceptical reviewer asks about it:
 
     1. what the model is, and how nasty its numbers are
     2. solve it, exactly, with our own simplex
-    3. what a planner actually reads off the answer -- shadow prices and ranging
-    4. is the answer right? checked by a verifier that shares no code with the solver
-    5. is it right by an outside standard? checked against HiGHS
-    6. does the GPU path do anything? measured, with the crossover shown honestly
-    7. beyond LP: a convex QP whose answer no vertex method could reach
+    3. the arithmetic behind that answer, recomputed in front of you
+    4. what a planner actually reads off it -- shadow prices and ranging
+    5. is the answer right? checked by a verifier that shares no code with the solver
+    6. is it right by an outside standard? checked against HiGHS
+    7. does the GPU path do anything? measured, with the crossover shown honestly
+    8. beyond LP: a convex QP whose answer no vertex method could reach
 
 Every stage is independently guarded: a stage that cannot run says so and the
 demo continues. Nothing here should ever be the reason a live demo stops.
@@ -102,7 +103,70 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     o.note("imported or vendored. tools/check_provenance.py enforces it in CI.")
 
     # ---------------------------------------------------------------- 3 ----
-    o.head(3, "What a planner reads: shadow prices and ranging")
+    o.head(3, "The arithmetic, shown rather than asserted")
+    npd = max(2, size // 3)
+    x = sol.x
+    nz = np.flatnonzero(np.abs(x) > 1e-9)
+    act = prob.A.matvec(x)
+
+    print(f"    the blend it chose -- tonnes of component i into product j")
+    hdr = "".join(f"{'P' + str(j):>10}" for j in range(npd))
+    print(f"      {'comp':<6}{hdr}{'used':>10}{'avail':>10}{'slack':>10}")
+    shown = 0
+    for i in range(size):
+        row = [float(x[i * npd + j]) for j in range(npd)]
+        used = sum(row)
+        if used <= 1e-9:
+            continue
+        shown += 1
+        if shown > 6:
+            continue
+        cells = "".join(f"{v:>10.2f}" if v > 1e-9 else f"{'-':>10}" for v in row)
+        cap = float(prob.row_ub[i])
+        print(f"      C{i:<5d}{cells}{used:>10.2f}{cap:>10.2f}{cap - used:>10.2f}")
+    more = sum(1 for i in range(size)
+               if sum(float(x[i * npd + j]) for j in range(npd)) > 1e-9) - 6
+    if more > 0:
+        print(f"      ... {more} more components used")
+
+    print()
+    print("    the objective, recomputed term by term from that table")
+    total = 0.0
+    for k, j in enumerate(nz):
+        j = int(j)
+        term = float(prob.c[j]) * float(x[j])
+        total += term
+        if k < 4:
+            print(f"      x[C{j // npd},P{j % npd}]{x[j]:>10.3f} t  x "
+                  f"{prob.c[j]:>9.3f} /t = {term:>15,.3f}")
+    print(f"      {'... ' + str(nz.size - 4) + ' more terms':<38}{'':>15}")
+    print(f"      {'sum of all ' + str(nz.size) + ' terms':<38}{total:>15,.3f}")
+    print(f"      {'what the solver reported':<38}{sol.objective:>15,.3f}")
+    print(f"      {'difference':<38}{abs(total - sol.objective):>15.2e}")
+
+    # Only the first `size` rows are AVAIL_i, where row index == component
+    # index; the demand and quality rows below them do not have that mapping,
+    # so restricting here keeps the term-by-term expansion honest.
+    tight = [i for i in range(min(size, prob.m))
+             if np.isfinite(prob.row_ub[i])
+             and abs(act[i] - prob.row_ub[i]) < 1e-7]
+    if tight:
+        i = tight[0]
+        name = (prob.row_names or [f"R{i}"])[i]
+        parts = [f"x[C{i},P{j}]={x[i * npd + j]:.2f}" for j in range(npd)
+                 if x[i * npd + j] > 1e-9]
+        print()
+        print(f"    a constraint that binds, checked term by term")
+        print(f"      {name}:  " + " + ".join(parts))
+        print(f"      {'':>{len(name) + 2}}= {act[i]:.6f}  <=  "
+              f"{prob.row_ub[i]:.6f}   slack {prob.row_ub[i] - act[i]:.2e}")
+        o.note("")
+        o.note("Every number above is computed from the solution vector the")
+        o.note("solver returned, not stored alongside it. The engine is the")
+        o.note("same one `vyuha solve model.mps` runs on any MPS or LP file.")
+
+    # ---------------------------------------------------------------- 4 ----
+    o.head(4, "What a planner reads: shadow prices and ranging")
     if sol.sensitivity is None:
         o.note("(sensitivity unavailable)")
     else:
@@ -112,8 +176,8 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
         o.note("A shadow price is only worth anything if it predicts the objective.")
         o.note("Across 12 models and 239 binding rows the worst error is 3.9e-15.")
 
-    # ---------------------------------------------------------------- 4 ----
-    o.head(4, "Is it right? An independent check")
+    # ---------------------------------------------------------------- 5 ----
+    o.head(5, "Is it right? An independent check")
     try:
         sys.path.insert(0, ".")
         from bench.verify import verify
@@ -127,8 +191,8 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     except Exception as e:                    # never stop the demo
         o.note(f"(verifier unavailable: {type(e).__name__})")
 
-    # ---------------------------------------------------------------- 5 ----
-    o.head(5, "Right by an outside standard? HiGHS on the same model")
+    # ---------------------------------------------------------------- 6 ----
+    o.head(6, "Right by an outside standard? HiGHS on the same model")
     try:
         from bench.comparator import solve_with_highs
         got, dt_h, msg = solve_with_highs(prob, time_limit=30.0)
@@ -147,8 +211,8 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     except Exception as e:
         o.note(f"(comparator unavailable: {type(e).__name__}: {str(e)[:60]})")
 
-    # ---------------------------------------------------------------- 6 ----
-    o.head(6, "Does the GPU earn its place? Measured, both ways")
+    # ---------------------------------------------------------------- 7 ----
+    o.head(7, "Does the GPU earn its place? Measured, both ways")
     try:
         from .core.backend import GPU_ERROR, gpu_available
         if not gpu_available():
@@ -191,8 +255,8 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     except Exception as e:
         o.note(f"(GPU stage unavailable: {type(e).__name__}: {str(e)[:60]})")
 
-    # ---------------------------------------------------------------- 7 ----
-    o.head(7, "Beyond LP: a convex quadratic, and proof it is not a vertex")
+    # ---------------------------------------------------------------- 8 ----
+    o.head(8, "Beyond LP: a convex quadratic, and proof it is not a vertex")
     try:
         import numpy as _np
         from .core.problem import Problem as _P, VarKind as _VK
