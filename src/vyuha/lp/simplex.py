@@ -953,4 +953,4 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
     sol.info = {**B.stats(), "algorithm": method,
                 "perturbed": S.perturbed,
                 "primal_infeasibility": S.primal_infeasibility()}
-    return sol
+    return sol.drop_objective_if_unsolved()

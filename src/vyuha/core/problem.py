@@ -286,6 +286,25 @@ class Solution:
     sensitivity: object = None
     """Cost and RHS ranging, when it was requested and the solve was optimal."""
 
+    def drop_objective_if_unsolved(self) -> "Solution":
+        """Erase an objective that no feasible point stands behind.
+
+        A solver that stops without a solution still holds a last iterate, and
+        ``cᵀx`` on it is finite and entirely plausible: on a blending model
+        made infeasible by one over-tightened demand row it came back at the
+        *feasible* model's optimum to twelve digits, printed directly beneath
+        the word INFEASIBLE. ``nan`` is the honest value, and it is already
+        what the branch-and-bound paths return when they finish with no
+        incumbent -- this keeps the LP and QP exits consistent with them.
+
+        ``Status.has_solution`` is the test, not ``OPTIMAL``: an iteration or
+        time limit stops with a real point that is worth reporting.
+        """
+        if not self.status.has_solution:
+            self.objective = float("nan")
+            self.dual_bound = float("nan")
+        return self
+
     @property
     def gap(self) -> float:
         """Relative MIP gap, |primal - dual| / max(1, |primal|)."""

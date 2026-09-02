@@ -261,7 +261,7 @@ def solve_qp(prob: Problem, params: QPParams | None = None) -> Solution:
     sol.dual_bound = obj
     sol.info = {"lambda_max": lam_max, "lambda_min": lam_min,
                 "tau": tau, "sigma": sigma, "primal_residual": pres_orig}
-    return sol
+    return sol.drop_objective_if_unsolved()
 
 
 def _kkt(p, x, y):

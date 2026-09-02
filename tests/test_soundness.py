@@ -268,3 +268,72 @@ def test_published_milp_optima_are_reached(name, optimum):
     if s.status != Status.OPTIMAL:
         pytest.skip(f"{name} not proved optimal within the limit")
     assert abs(s.objective - optimum) <= 1e-6 * max(1.0, abs(optimum))
+
+
+# --------------------------------------------------------------------------- #
+# 4. an objective attached to a model that has no feasible points              #
+# --------------------------------------------------------------------------- #
+
+
+def _infeasible_blend():
+    """Two rows that cannot both hold: use at most 10, produce at least 40."""
+    A = SparseMatrix.from_dense(np.array([[1.0, 1.0], [1.0, 1.0]]))
+    return Problem(A=A, c=np.array([700.0, 600.0]),
+                   row_lb=np.array([-INF, 40.0]),
+                   row_ub=np.array([10.0, INF]),
+                   col_lb=np.zeros(2), col_ub=np.full(2, INF),
+                   sense=ObjSense.MAXIMISE, name="infeasible_blend",
+                   row_names=["AVAIL", "DEM"], col_names=["X0", "X1"])
+
+
+def test_infeasible_lp_reports_no_objective():
+    """REGRESSION: an infeasible exit carried the last iterate's cost.
+
+    The simplex assembles its answer after the loops finish, unconditionally:
+    ``obj = c @ x`` on whatever point the basis holds. Phase 1 ends on a point
+    that is optimal for the *infeasibility* it was minimising, not for ``c``,
+    and pricing it out gives a finite, plausible, entirely meaningless number.
+
+    It was not merely ugly. Perturbing one demand row of the demo blend past
+    the total component availability made the model infeasible, and the solve
+    then reported the objective of the *feasible* model it came from, to
+    twelve digits, beside the word INFEASIBLE -- a number a planner would read
+    as the answer. The branch-and-bound paths already return ``nan`` when they
+    end with no incumbent; this pins the LP and QP exits to the same contract.
+    """
+    from vyuha.lp.simplex import SimplexParams, solve_simplex
+
+    s = solve_simplex(_infeasible_blend(), SimplexParams())
+    assert s.status == Status.INFEASIBLE
+    assert np.isnan(s.objective), (
+        f"infeasible solve reported objective {s.objective!r}")
+    assert np.isnan(s.dual_bound)
+
+
+def test_a_feasible_solve_still_reports_its_objective():
+    """The guard keys on Status.has_solution, so it must not blank a real one."""
+    from vyuha.lp.simplex import SimplexParams, solve_simplex
+
+    p = _infeasible_blend()
+    p.row_ub[0] = 100.0                      # AVAIL now covers DEM
+    s = solve_simplex(p, SimplexParams())
+    assert s.status == Status.OPTIMAL
+    assert abs(s.objective - 70000.0) < 1e-6   # 100 t of X0 at 700
+    assert np.isfinite(s.dual_bound)
+
+
+def test_infeasible_solve_writes_valid_json(tmp_path):
+    """The CLI must not emit a bare NaN: JSON.parse in the UI rejects it."""
+    import json
+
+    from vyuha.cli import main
+    from vyuha.io import write_mps
+
+    model = tmp_path / "infeasible.mps"
+    out = tmp_path / "sol.json"
+    write_mps(_infeasible_blend(), str(model))
+    main(["solve", str(model), "--out", str(out)])
+
+    text = out.read_text(encoding="utf-8")
+    assert "NaN" not in text, "bare NaN in the payload is not valid JSON"
+    assert json.loads(text)["objective"] is None

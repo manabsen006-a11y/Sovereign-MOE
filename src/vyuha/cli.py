@@ -151,7 +151,7 @@ def cmd_solve(a):
 
     print()
     print(f"  status      {sol.status.name}")
-    if sol.x is not None:
+    if np.isfinite(sol.objective):
         print(f"  objective   {sol.objective:.12g}")
     if np.isfinite(sol.dual_bound) and sol.nodes:
         print(f"  dual bound  {sol.dual_bound:.12g}")
@@ -174,7 +174,8 @@ def cmd_solve(a):
         payload = {
             "model": prob.name,
             "status": sol.status.name,
-            "objective": sol.objective,
+            "objective": (sol.objective if np.isfinite(sol.objective)
+                          else None),
             "dual_bound": sol.dual_bound if np.isfinite(sol.dual_bound) else None,
             "time": dt,
             "method": sol.method,

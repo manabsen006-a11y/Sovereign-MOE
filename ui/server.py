@@ -274,7 +274,8 @@ async def api_solve(request: Request):
             results.append({
                 "device": dev,
                 "status": sol.status.name,
-                "objective": None if sol.x is None else float(sol.objective),
+                "objective": (float(sol.objective)
+                              if np.isfinite(sol.objective) else None),
                 "dual_bound": (float(sol.dual_bound)
                                if np.isfinite(sol.dual_bound) and sol.nodes else None),
                 "nodes": int(sol.nodes),

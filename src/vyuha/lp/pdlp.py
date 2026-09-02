@@ -491,7 +491,7 @@ def solve_pdlp(prob: Problem, params: PDLPParams | None = None) -> Solution:
     sol.dual_bound = obj
     sol.work_units = float(k)
     sol.info = info
-    return sol
+    return sol.drop_objective_if_unsolved()
 
 
 def _unscaled_kkt(bk, orig: Problem, work: Problem, sc, x_s, y_s):
