@@ -214,9 +214,10 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     # ---------------------------------------------------------------- 7 ----
     o.head(7, "Does the GPU earn its place? Measured, both ways")
     try:
-        from .core.backend import GPU_ERROR, gpu_available
-        if not gpu_available():
-            o.note(f"(no GPU on this machine: {GPU_ERROR})")
+        from .core.backend import gpu_selftest
+        ok, gpu_err = gpu_selftest()
+        if not ok:
+            o.note(f"(no usable GPU on this machine: {gpu_err})")
         else:
             from .lp.pdlp import PDLPParams, solve_pdlp
             from bench.gpu_bench import make_lp

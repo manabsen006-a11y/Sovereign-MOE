@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-from .core.backend import GPU_ERROR, gpu_available
+from .core.backend import GPU_ERROR, gpu_available, gpu_selftest
 from .core.problem import ObjSense, Problem, Solution, Status
 from .core.tolerances import INF
 from .io import read_model
@@ -220,21 +220,34 @@ def cmd_demo(a):
     return run(size=a.size)
 
 
+def _cuda_ver(v: int) -> str:
+    """CUDA reports 12040 for 12.4."""
+    return f"{v // 1000}.{(v % 1000) // 10}"
+
+
 def cmd_devices(a):
     from .core._jit import HAVE_NUMBA, NUMBA_THREADS
     print("  CPU")
     print(f"    numba JIT       {'yes' if HAVE_NUMBA else 'NO (slow fallback)'}")
     print(f"    threads         {NUMBA_THREADS}")
     print("  GPU")
-    if gpu_available():
-        import cupy as cp
-        p = cp.cuda.runtime.getDeviceProperties(0)
-        free, total = cp.cuda.runtime.memGetInfo()
-        print(f"    device          {p['name'].decode()}")
-        print(f"    memory          {free//2**20} MB free of {total//2**20} MB")
-        print(f"    compute cap     {p['major']}.{p['minor']}")
-    else:
+    if not gpu_available():
         print(f"    unavailable     {GPU_ERROR}")
+        return 0
+
+    import cupy as cp
+    p = cp.cuda.runtime.getDeviceProperties(0)
+    free, total = cp.cuda.runtime.memGetInfo()
+    print(f"    device          {p['name'].decode()}")
+    print(f"    memory          {free//2**20} MB free of {total//2**20} MB")
+    print(f"    compute cap     {p['major']}.{p['minor']}")
+    print(f"    driver/runtime  {_cuda_ver(cp.cuda.runtime.driverGetVersion())}"
+          f" / {_cuda_ver(cp.cuda.runtime.runtimeGetVersion())}")
+    # The kernels are compiled by NVRTC and linked by the driver at run time,
+    # so "CuPy imported" and "the kernels work" are separate facts. Report the
+    # second one, because that is the one a solve depends on.
+    ok, err = gpu_selftest()
+    print(f"    kernels         {'compiled and verified' if ok else 'FAILED: ' + str(err)}")
     return 0
 
 

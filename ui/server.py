@@ -26,7 +26,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "src"))
 
-from vyuha.core.backend import GPU_ERROR, gpu_available          # noqa: E402
+from vyuha.core.backend import (GPU_ERROR, gpu_available,      # noqa: E402
+                                gpu_selftest)
 from vyuha.core.problem import ObjSense, Status, VarKind         # noqa: E402
 from vyuha.io import read_model                                  # noqa: E402
 from vyuha.models import TEMPLATES                               # noqa: E402
@@ -212,6 +213,12 @@ def hw():
     if gpu_available():
         import cupy as cp
         out["name"] = cp.cuda.runtime.getDeviceProperties(0)["name"].decode()
+        # A device that CuPy can see but whose kernels will not build is worse
+        # than no device: the page would offer a GPU run that dies mid-solve.
+        ok, err = gpu_selftest()
+        out["gpu"] = ok
+        if not ok:
+            out["error"] = err
     else:
         out["error"] = GPU_ERROR
     return out
@@ -258,7 +265,7 @@ async def api_solve(request: Request):
 
         devices = ({"both": ["cpu", "gpu"], "cpu": ["cpu"], "gpu": ["gpu"]}
                    [body.get("device", "both")])
-        if "gpu" in devices and not gpu_available():
+        if "gpu" in devices and not gpu_selftest()[0]:
             devices = [d for d in devices if d != "gpu"] or ["cpu"]
 
         tl = float(body.get("time_limit", 30))

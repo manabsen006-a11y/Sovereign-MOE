@@ -149,6 +149,12 @@ pip install -e .            # numpy + numba
 pip install cupy-cuda12x[ctk]   # optional, for the GPU path
 ```
 
+The `[ctk]` extra pulls the CUDA libraries in as wheels, so the GPU path needs
+only an NVIDIA driver -- no system CUDA Toolkit, and no `CUDA_PATH`. Run
+`python -m vyuha.cli devices` to confirm; it reports the driver and runtime
+versions and whether the CUDA kernels actually compiled, which is the fact a
+solve depends on.
+
 ```bash
 python -m vyuha.cli demo                         # the whole story, end to end
 python -m vyuha.cli devices                      # what hardware is usable
@@ -171,7 +177,7 @@ python -m bench.harness --mode lp                  # validate against published 
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 183 tests, no skips
+python -m pytest tests/               # 203 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -820,6 +826,7 @@ Every wall-clock figure in this README came from one machine:
 | RAM | 15.7 GB |
 | GPU | NVIDIA GeForce RTX 3050 Laptop, compute 8.6, 4 GB (fp64 at 1/32 rate) |
 | OS | Windows 11 |
+| CUDA | driver 12.4 (552.27), runtime 12.9 from the `[ctk]` wheels; no system toolkit |
 | Python | 3.12.5, numpy 2.2.6, numba 0.67.0 (12 threads), cupy 14.2.0 |
 
 A laptop, thermally throttled, with no attempt to pin clocks or quiet the
@@ -847,6 +854,6 @@ src/vyuha/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        183 tests including regressions for every bug above
+tests/        203 tests including regressions for every bug above
 ui/           local single-page interface
 ```

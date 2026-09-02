@@ -55,23 +55,46 @@ NVIDIA, *CUDA C++ Programming Guide* -- warp shuffle semantics. The fixed
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
-__all__ = ["Backend", "get_backend", "gpu_available", "GPU_ERROR"]
+__all__ = ["Backend", "get_backend", "gpu_available", "gpu_selftest",
+           "GPU_ERROR"]
 
 GPU_ERROR: str | None = None
 
-try:  # pragma: no cover - environment dependent
-    import cupy as _cp
-    _cp.zeros(1)                      # force context creation now, not later
-    _HAVE_CUPY = True
-except Exception as _e:  # pragma: no cover
-    _cp = None
-    _HAVE_CUPY = False
-    GPU_ERROR = f"{type(_e).__name__}: {_e}"
+# CuPy's Windows start-up warns "CUDA path could not be detected" whenever
+# CUDA_PATH is unset. That is a guess, not a diagnosis. The ``cupy-cuda12x``
+# wheel takes nvrtc, cudart and cuBLAS from the ``nvidia-*-cu12`` wheels
+# installed beside it and never needs a system CUDA Toolkit, so on a machine
+# with only the driver the warning fires while every kernel below compiles and
+# runs. Setting CUDA_PATH to silence it would point CuPy's DLL search at a
+# directory that does not exist. A real load failure still surfaces, as the
+# exception caught here and recorded in ``GPU_ERROR``; only the speculation is
+# suppressed.
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=UserWarning,
+                            message="CUDA path could not be detected")
+    try:  # pragma: no cover - environment dependent
+        import cupy as _cp
+        _cp.zeros(1)                  # force context creation now, not later
+        _HAVE_CUPY = True
+    except Exception as _e:  # pragma: no cover
+        _cp = None
+        _HAVE_CUPY = False
+        GPU_ERROR = f"{type(_e).__name__}: {_e}"
 
 
 def gpu_available() -> bool:
+    """True when CuPy imported and a device context was created.
+
+    This is the cheap half of the question. It does not prove the kernels
+    below will build: NVRTC compiles them at run time and the *driver* links
+    the result, so a driver older than the runtime the wheels ship, a missing
+    nvrtc, or an unsupported architecture all fail later, not here. See
+    :func:`gpu_selftest`.
+    """
     return _HAVE_CUPY
 
 
@@ -297,6 +320,16 @@ class Backend:
     # -- transfer ----------------------------------------------------------- #
 
     def to_device(self, a, dtype=None):
+        """Move ``a`` to this device.
+
+        On the CPU backend this is a no-op for an array that already has the
+        right dtype and layout: ``ascontiguousarray`` returns the *caller's*
+        array, not a copy. That is deliberate -- the CPU path would otherwise
+        copy every operand of every transfer -- but it means an in-place write
+        to the result writes through to the caller. Everything in the solve
+        path treats these as read-only operands or writes only into buffers it
+        allocated itself; copy first if you need to do otherwise.
+        """
         dt = self.dtype if dtype is None else np.dtype(dtype)
         if self.device == "cpu":
             return np.ascontiguousarray(a, dtype=dt)
@@ -451,8 +484,59 @@ class Backend:
         return f"Backend({self.device}, {self.dtype.name})"
 
 
+_SELFTEST: tuple[bool, str | None] | None = None
+
+
+def gpu_selftest() -> tuple[bool, str | None]:
+    """Build the kernels and check one known answer. Result is cached.
+
+    ``gpu_available`` only proves CuPy loaded. Everything after that -- NVRTC
+    compiling ``_CUDA_SRC``, the driver linking it for this architecture, the
+    launch, the warp-shuffle reduction, the copy back -- can still fail, and
+    without this it fails in the middle of a solve. Paying 0.3 s once to turn
+    that into a fallback decision is worth it; CuPy caches the compiled module
+    on disk, so later runs cost milliseconds.
+
+    Returns ``(ok, error)``, where ``error`` is ``None`` when ``ok``.
+    """
+    global _SELFTEST
+    if _SELFTEST is not None:
+        return _SELFTEST
+    if not _HAVE_CUPY:
+        _SELFTEST = (False, GPU_ERROR)
+        return _SELFTEST
+    try:  # pragma: no cover - environment dependent
+        # [[1, 0, 2], [0, 3, 0]] @ [1, 2, 3] = [7, 6]. Two rows of unequal
+        # length, so the shuffle reduction has to handle a partial warp.
+        bk = Backend("gpu")
+        rp = bk.pointer(np.array([0, 2, 3], dtype=np.int64))
+        ri = bk.index(np.array([0, 2, 1], dtype=np.int32))
+        rx = bk.to_device(np.array([1.0, 2.0, 3.0]))
+        x = bk.to_device(np.array([1.0, 2.0, 3.0]))
+        y = bk.zeros(2)
+        bk.spmv(rp, ri, rx, x, y, 2)
+        bk.sync()
+        got = bk.to_host(y)
+        if np.array_equal(got, np.array([7.0, 6.0])):
+            _SELFTEST = (True, None)
+        else:
+            _SELFTEST = (False, f"spmv returned {got.tolist()}, expected [7.0, 6.0]")
+    except Exception as e:  # pragma: no cover
+        _SELFTEST = (False, f"{type(e).__name__}: {e}")
+    return _SELFTEST
+
+
 def get_backend(device: str = "auto", dtype=np.float64) -> Backend:
-    """``'auto'`` uses the GPU when one is usable and falls back silently."""
+    """``'auto'`` uses the GPU when one is usable and falls back silently.
+
+    Usable means the kernels compile and give the right answer, not merely
+    that CuPy imported -- otherwise ``auto`` picks a GPU that cannot run
+    anything and the failure lands somewhere far from its cause.
+    """
     if device == "auto":
-        device = "gpu" if _HAVE_CUPY else "cpu"
+        device = "gpu" if gpu_selftest()[0] else "cpu"
+    elif device == "gpu":
+        ok, err = gpu_selftest()
+        if not ok:
+            raise RuntimeError(f"GPU backend unavailable ({err})")
     return Backend(device, dtype)

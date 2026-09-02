@@ -21,7 +21,7 @@ try:
 except Exception:
     pass
 
-from vyuha.core.backend import GPU_ERROR, get_backend, gpu_available
+from vyuha.core.backend import get_backend, gpu_selftest
 from vyuha.core.problem import Problem
 from vyuha.core.sparse import SparseMatrix
 from vyuha.core.tolerances import INF
@@ -47,9 +47,10 @@ def bench_pdlp(sizes, max_iter, eps):
     print("=" * 78)
     print("PDLP  -  first-order LP, CPU vs GPU")
     print("=" * 78)
-    devices = ["cpu", "gpu"] if gpu_available() else ["cpu"]
-    if not gpu_available():
-        print(f"  (no GPU: {GPU_ERROR})")
+    ok, err = gpu_selftest()
+    devices = ["cpu", "gpu"] if ok else ["cpu"]
+    if not ok:
+        print(f"  (no usable GPU: {err})")
 
     for m, n, k in sizes:
         p = make_lp(m, n, k, seed=m)
@@ -84,7 +85,7 @@ def bench_batch(m, n, k, batches):
     print(f"  {'K':>5} {'device':>7} {'K x SpMV':>12} {'SpMM':>12} {'speedup':>9} "
           f"{'GFLOP/s':>9}")
 
-    devices = ["cpu", "gpu"] if gpu_available() else ["cpu"]
+    devices = ["cpu", "gpu"] if gpu_selftest()[0] else ["cpu"]
     rng = np.random.default_rng(0)
     Xh = rng.standard_normal((n, max(batches)))
 
@@ -127,7 +128,7 @@ def bench_kernels(m, n, k):
     print("=" * 78)
     p = make_lp(m, n, k, seed=99)
     A = p.A
-    for dev in (["cpu", "gpu"] if gpu_available() else ["cpu"]):
+    for dev in (["cpu", "gpu"] if gpu_selftest()[0] else ["cpu"]):
         bk = get_backend(dev)
         rp, ri, rx = bk.pointer(A.rp), bk.index(A.ri), bk.to_device(A.rx)
         cp_, ci_, cx_ = bk.pointer(A.cp), bk.index(A.ci), bk.to_device(A.cx)
