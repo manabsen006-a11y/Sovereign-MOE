@@ -60,7 +60,7 @@ def fetch_one(name, dest_dir=DATA_DIR, timeout=60):
     if os.path.exists(out) and os.path.getsize(out) > 0:
         return out, "cached"
     url = MIPLIB_URL.format(name)
-    req = urllib.request.Request(url, headers={"User-Agent": "vyuha-bench/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "sovopt-bench/0.1"})
     with urllib.request.urlopen(req, timeout=timeout, context=_context()) as r:
         blob = r.read()
     text = gzip.decompress(blob).decode("utf-8", errors="replace")

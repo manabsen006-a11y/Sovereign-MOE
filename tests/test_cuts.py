@@ -11,13 +11,13 @@ import itertools
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status, VarKind
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import DEFAULT, INF
-from vyuha.lp.simplex import NodeSolver, SimplexParams
-from vyuha.mip.cuts import (Cut, CutPool, append_cuts, generate_cover,
+from sovopt.core.problem import ObjSense, Problem, Status, VarKind
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import DEFAULT, INF
+from sovopt.lp.simplex import NodeSolver, SimplexParams
+from sovopt.mip.cuts import (Cut, CutPool, append_cuts, generate_cover,
                             generate_gomory)
-from vyuha.numerics.scaling import scale_problem
+from sovopt.numerics.scaling import scale_problem
 
 
 def small_mip(seed=0, n=8, m=5, ub=3):
@@ -206,7 +206,7 @@ def test_pool_rejects_unviolated_cuts():
 
 def test_cuts_improve_the_root_bound_and_keep_the_optimum():
     """Cuts must raise the bound without changing the answer."""
-    from vyuha.mip.tree import MIPParams, solve_mip
+    from sovopt.mip.tree import MIPParams, solve_mip
 
     p = small_mip(seed=11, n=9, m=6, ub=3)
     without = solve_mip(p, MIPParams(device="cpu", time_limit=60, cut_rounds=0))
@@ -232,7 +232,7 @@ def test_mir_cuts_never_remove_an_integer_feasible_point():
     cut derived without one is not valid. Those rows are skipped, and this sweep
     is what proves it.
     """
-    from vyuha.mip.cuts import generate_mir
+    from sovopt.mip.cuts import generate_mir
 
     checked_instances = 0
     checked_cuts = 0
@@ -268,7 +268,7 @@ def test_mir_cuts_never_remove_an_integer_feasible_point():
 
 def test_mir_skips_rows_with_a_free_variable():
     """No finite bound to complement against means no valid shift."""
-    from vyuha.mip.cuts import generate_mir
+    from sovopt.mip.cuts import generate_mir
 
     A = SparseMatrix.from_dense(np.array([[1.0, 1.0]]))
     p = Problem(A=A, c=np.array([1.0, 1.0]), row_lb=np.array([-INF]),

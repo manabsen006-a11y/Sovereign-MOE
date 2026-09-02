@@ -12,12 +12,12 @@ import itertools
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.lp.simplex import NodeSolver, SimplexParams
-from vyuha.mip.conflict import ConflictAnalyzer, farkas_value
-from vyuha.mip.tree import MIPParams, solve_mip
+from sovopt.core.problem import ObjSense, Problem, Status
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.lp.simplex import NodeSolver, SimplexParams
+from sovopt.mip.conflict import ConflictAnalyzer, farkas_value
+from sovopt.mip.tree import MIPParams, solve_mip
 
 
 def binary_mip(seed=0, n=9, m=5):

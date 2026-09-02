@@ -102,7 +102,7 @@ def _num(tok: str, lineno: int, line: str) -> float:
 
 
 def read_mps(path, name: str | None = None) -> Problem:
-    """Parse an MPS file into a :class:`~vyuha.core.problem.Problem`."""
+    """Parse an MPS file into a :class:`~sovopt.core.problem.Problem`."""
     if name is None:
         base = os.path.basename(str(path))
         for suf in (".gz", ".bz2", ".xz", ".lzma"):

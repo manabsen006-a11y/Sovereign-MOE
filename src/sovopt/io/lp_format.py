@@ -18,7 +18,7 @@ want to state a small model by hand or eyeball what a generator produced:
     End
 
 Supporting it costs one module and no change to any solver path -- the result is
-an ordinary :class:`~vyuha.core.problem.Problem`, indistinguishable from one that
+an ordinary :class:`~sovopt.core.problem.Problem`, indistinguishable from one that
 came out of the MPS reader. The test suite asserts exactly that: the same model
 written both ways must parse to the same matrix, bounds, costs and senses.
 
@@ -171,7 +171,7 @@ def _norm_op(op):
 
 
 def read_lp(path, name: str | None = None) -> Problem:
-    """Parse a CPLEX LP file into a :class:`~vyuha.core.problem.Problem`."""
+    """Parse a CPLEX LP file into a :class:`~sovopt.core.problem.Problem`."""
     if name is None:
         base = os.path.basename(str(path))
         for suf in (".gz", ".bz2", ".xz"):

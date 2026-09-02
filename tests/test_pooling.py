@@ -10,14 +10,14 @@ one is the failure this whole module exists to prevent.
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.globalopt.bilinear import (BilinearProblem, BilinearTerm,
+from sovopt.core.problem import ObjSense, Problem, Status
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.globalopt.bilinear import (BilinearProblem, BilinearTerm,
                                       build_relaxation, mccormick_rows)
-from vyuha.globalopt.spatial import SpatialParams, solve_global
-from vyuha.lp.simplex import SimplexParams, solve_simplex
-from vyuha.models import haverly
+from sovopt.globalopt.spatial import SpatialParams, solve_global
+from sovopt.lp.simplex import SimplexParams, solve_simplex
+from sovopt.models import haverly
 
 P_INDEX = 6
 

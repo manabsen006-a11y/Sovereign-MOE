@@ -231,7 +231,7 @@ def unit_scheduling(n_units: int = 5, n_periods: int = 10,
     ordinary situation in a refinery -- parallel trains, identical tanks -- and
     it makes the model **symmetric**: any relabelling of the units maps a
     schedule to an equally good one, so a plain branch-and-bound re-derives the
-    same plan ``n_units!`` times. See :mod:`vyuha.mip.symmetry`.
+    same plan ``n_units!`` times. See :mod:`sovopt.mip.symmetry`.
     """
     rng = np.random.default_rng(seed)
     nu, T = n_units, n_periods

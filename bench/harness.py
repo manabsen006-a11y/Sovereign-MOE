@@ -35,8 +35,8 @@ except Exception:
 
 from bench.fetch import DATA_DIR, read_reference
 from bench.verify import verify
-from vyuha.core.problem import Status, VarKind
-from vyuha.io.mps import read_mps
+from sovopt.core.problem import Status, VarKind
+from sovopt.io.mps import read_mps
 
 
 def shifted_geomean(values, shift):
@@ -48,7 +48,7 @@ def shifted_geomean(values, shift):
 
 def run(mode, paths, time_limit, device, tol, gap, verbose=False,
         method=None):
-    from vyuha.cli import solve
+    from sovopt.cli import solve
 
     rows = []
     print(f"{'instance':<14} {'rows':>6} {'cols':>6} {'nnz':>8} "
@@ -156,7 +156,7 @@ def main(argv=None):
         print(f"no instances in {a.dir}; run:  python -m bench.fetch --set small")
         return 1
 
-    print(f"VYUHA benchmark  mode={a.mode}  method={a.method or 'auto'}  "
+    print(f"SOVOPT benchmark  mode={a.mode}  method={a.method or 'auto'}  "
           f"device={a.device}  time-limit={a.time_limit}s  tol={a.tol:g}")
     print()
     run(a.mode, paths, a.time_limit, a.device, a.tol, a.gap, a.verbose,

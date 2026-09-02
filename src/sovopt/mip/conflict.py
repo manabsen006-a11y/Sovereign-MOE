@@ -16,7 +16,7 @@ Neumaier-Shcherbina bound with a **zero objective** gives, for every feasible
               + sum_j (d_j>0 ? d_j*l_j : d_j*u_j),      d = -Aᵀy
 
 so ``L(y) > 0`` is a contradiction: the node is empty. This is the same
-arithmetic as :mod:`vyuha.mip.safebound`, reused with ``c = 0``, and it holds
+arithmetic as :mod:`sovopt.mip.safebound`, reused with ``c = 0``, and it holds
 for *any* ``y`` -- the dual ray out of an infeasible LP is simply a good one.
 
 Why the reason set is cheap to shrink

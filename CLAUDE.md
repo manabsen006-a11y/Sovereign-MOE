@@ -1,4 +1,4 @@
-# VYUHA — Sovereign Optimization Engine
+# SOVOPT — Sovereign Optimization Engine
 
 SIH 2026 · PS 26119 · Mangalore Refinery and Petrochemicals Ltd (MRPL)
 
@@ -29,12 +29,12 @@ Therefore, in this repository:
 - `numba` — JIT compilation. A compiler, not an algorithm.
 - `cupy` — GPU arrays and elementwise kernels. Vendor math, not a solver.
 - `scipy.sparse` — **only** inside `bench/` and `tests/` for constructing or
-  cross-checking test data. Never inside `src/vyuha/`.
+  cross-checking test data. Never inside `src/sovopt/`.
 - `scipy.optimize.linprog` — **only** inside `bench/comparator.py`, and only to
   run HiGHS as an external *comparator*. The problem statement requires that
   results be "compared against at least one established commercial or
   open-source solver", so a comparator is mandatory, not optional. It is
-  quarantined to that one file, it never touches `src/vyuha/`, and
+  quarantined to that one file, it never touches `src/sovopt/`, and
   `tools/check_provenance.py` still bans it everywhere the engine lives. Using a
   solver to *check* our numbers is the opposite of building on one.
 
@@ -50,7 +50,7 @@ solver's source. You cannot un-read it, and the claim is then gone.
 ## Layout
 
 ```
-src/vyuha/
+src/sovopt/
   core/      sparse structures, JIT shim, problem/solution types
   io/        MPS / LP / QPS readers and writers
   numerics/  scaling, Markowitz LU, hypersparse FTRAN/BTRAN, refinement
@@ -78,7 +78,7 @@ ui/          thin CLI and a minimal local interface
 ## Commands
 
 ```bash
-python -m vyuha.cli solve model.mps          # solve an instance
+python -m sovopt.cli solve model.mps          # solve an instance
 python -m bench.harness --set netlib         # run a benchmark set
 python -m bench.verify model.mps sol.json    # independent feasibility check
 python -m pytest tests/                      # unit tests

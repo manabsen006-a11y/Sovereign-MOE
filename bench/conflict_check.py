@@ -2,8 +2,8 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time, numpy as np
-from vyuha.io.mps import read_mps
-from vyuha.mip.tree import solve_mip, MIPParams
+from sovopt.io.mps import read_mps
+from sovopt.mip.tree import solve_mip, MIPParams
 from bench.verify import verify
 from bench.fetch import read_reference
 

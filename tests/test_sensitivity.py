@@ -10,11 +10,11 @@ amount, then perturb outside it and confirm the prediction stops holding.
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.lp.simplex import SimplexParams, solve_simplex
-from vyuha.models import blending, production_planning
+from sovopt.core.problem import ObjSense, Problem, Status
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.lp.simplex import SimplexParams, solve_simplex
+from sovopt.models import blending, production_planning
 
 
 def toy():

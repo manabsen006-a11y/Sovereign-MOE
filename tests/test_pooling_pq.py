@@ -9,12 +9,12 @@ q bound (or the RLT rows are not doing their job).
 import numpy as np
 import pytest
 
-from vyuha.core.problem import Status
-from vyuha.globalopt.bilinear import build_relaxation
-from vyuha.globalopt.spatial import SpatialParams, solve_global
-from vyuha.lp.simplex import SimplexParams, solve_simplex
-from vyuha.models import haverly, haverly_pq, random_pooling
-from vyuha.models.pooling_pq import PQIndex, PoolingData, pooling_pq
+from sovopt.core.problem import Status
+from sovopt.globalopt.bilinear import build_relaxation
+from sovopt.globalopt.spatial import SpatialParams, solve_global
+from sovopt.lp.simplex import SimplexParams, solve_simplex
+from sovopt.models import haverly, haverly_pq, random_pooling
+from sovopt.models.pooling_pq import PQIndex, PoolingData, pooling_pq
 
 PUBLISHED = {1: 400.0, 2: 600.0, 3: 750.0}
 

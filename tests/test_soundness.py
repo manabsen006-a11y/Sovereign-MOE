@@ -18,11 +18,11 @@ import os
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status, VarKind
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.mip.cuts import generate_mir
-from vyuha.mip.tree import MIPParams, solve_mip
+from sovopt.core.problem import ObjSense, Problem, Status, VarKind
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.mip.cuts import generate_mir
+from sovopt.mip.tree import MIPParams, solve_mip
 
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "data", "instances")
@@ -104,7 +104,7 @@ def test_batched_node_relaxation_does_not_drop_nodes_unproven():
     path = os.path.join(DATA, "flugpl.mps")
     if not os.path.exists(path):
         pytest.skip("benchmark instances not fetched")
-    from vyuha.io import read_model
+    from sovopt.io import read_model
 
     prob = read_model(path)
     for node_solver in ("simplex", "bnr"):
@@ -262,7 +262,7 @@ def test_published_milp_optima_are_reached(name, optimum):
     path = os.path.join(DATA, f"{name}.mps")
     if not os.path.exists(path):
         pytest.skip("benchmark instances not fetched")
-    from vyuha.io import read_model
+    from sovopt.io import read_model
 
     s = solve_mip(read_model(path), MIPParams(time_limit=120))
     if s.status != Status.OPTIMAL:
@@ -301,7 +301,7 @@ def test_infeasible_lp_reports_no_objective():
     as the answer. The branch-and-bound paths already return ``nan`` when they
     end with no incumbent; this pins the LP and QP exits to the same contract.
     """
-    from vyuha.lp.simplex import SimplexParams, solve_simplex
+    from sovopt.lp.simplex import SimplexParams, solve_simplex
 
     s = solve_simplex(_infeasible_blend(), SimplexParams())
     assert s.status == Status.INFEASIBLE
@@ -312,7 +312,7 @@ def test_infeasible_lp_reports_no_objective():
 
 def test_a_feasible_solve_still_reports_its_objective():
     """The guard keys on Status.has_solution, so it must not blank a real one."""
-    from vyuha.lp.simplex import SimplexParams, solve_simplex
+    from sovopt.lp.simplex import SimplexParams, solve_simplex
 
     p = _infeasible_blend()
     p.row_ub[0] = 100.0                      # AVAIL now covers DEM
@@ -326,8 +326,8 @@ def test_infeasible_solve_writes_valid_json(tmp_path):
     """The CLI must not emit a bare NaN: JSON.parse in the UI rejects it."""
     import json
 
-    from vyuha.cli import main
-    from vyuha.io import write_mps
+    from sovopt.cli import main
+    from sovopt.io import write_mps
 
     model = tmp_path / "infeasible.mps"
     out = tmp_path / "sol.json"

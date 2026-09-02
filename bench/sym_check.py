@@ -11,14 +11,14 @@ try:
 except Exception:
     pass
 
-from vyuha.core.problem import Problem
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.io.mps import read_mps
-from vyuha.mip.symmetry import (breaking_constraints, detect_symmetry,
+from sovopt.core.problem import Problem
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.io.mps import read_mps
+from sovopt.mip.symmetry import (breaking_constraints, detect_symmetry,
                                 verify_permutation)
-from vyuha.models import unit_scheduling
-from vyuha.numerics.scaling import scale_problem
+from sovopt.models import unit_scheduling
+from sovopt.numerics.scaling import scale_problem
 
 
 def identical_items(n=8):

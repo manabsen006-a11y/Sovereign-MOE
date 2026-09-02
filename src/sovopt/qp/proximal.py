@@ -27,7 +27,7 @@ the primal step. It converges for convex ``Q`` provided
 which is the only substantive difference from the LP loop -- the step size must
 now also pay for the curvature. ``L`` is estimated by power iteration on ``Q``.
 
-Nothing in :mod:`vyuha.lp.pdlp`, the simplex, or the branch-and-bound tree is
+Nothing in :mod:`sovopt.lp.pdlp`, the simplex, or the branch-and-bound tree is
 touched by this file. Those paths still *refuse* a quadratic objective rather
 than silently dropping it, which is the correct behaviour for engines that
 genuinely cannot optimise one.
@@ -35,7 +35,7 @@ genuinely cannot optimise one.
 Honest limits
 -------------
 * **Convex only.** ``Q`` must be positive semi-definite; a non-convex quadratic
-  needs spatial branch-and-bound, which lives in :mod:`vyuha.globalopt`.
+  needs spatial branch-and-bound, which lives in :mod:`sovopt.globalopt`.
 * First-order accuracy. This reaches ~1e-8 on well-scaled problems, not the
   1e-12 the simplex reaches on an LP, and it returns no basis -- so no
   sensitivity ranging.
@@ -160,7 +160,7 @@ def solve_qp(prob: Problem, params: QPParams | None = None) -> Solution:
         raise NotConvexError(
             f"Q has an eigenvalue near {lam_min:.3e}; this method solves convex "
             f"QP only. A non-convex quadratic needs spatial branch-and-bound "
-            f"(vyuha.globalopt).")
+            f"(sovopt.globalopt).")
 
     c = scaled.c
     rl, ru = scaled.row_lb, scaled.row_ub

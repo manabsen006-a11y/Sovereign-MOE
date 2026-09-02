@@ -27,7 +27,7 @@ Why the bounds are still rigorous
 ---------------------------------
 Batched PDHG does not converge in the few dozen iterations a node deserves, so
 its dual iterate is not dual feasible and its dual objective is not a bound.
-:mod:`vyuha.mip.safebound` fixes this: the Neumaier-Shcherbina correction turns
+:mod:`sovopt.mip.safebound` fixes this: the Neumaier-Shcherbina correction turns
 *any* dual vector into a valid lower bound. Unconverged iterates therefore prune
 soundly -- a weak ``y`` simply gives a weak bound, never a wrong one.
 
@@ -45,7 +45,7 @@ Exactness of the scaled bound
 -----------------------------
 Bounds are computed in the scaled space and divided by the objective scale
 factor. Because every scale factor is rounded to a power of two
-(:mod:`vyuha.numerics.scaling`), that division is exact in binary floating point
+(:mod:`sovopt.numerics.scaling`), that division is exact in binary floating point
 -- the scaling contributes no error at all to a bound that must stay valid.
 
 Provenance

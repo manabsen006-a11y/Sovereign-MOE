@@ -1,6 +1,6 @@
 """Branch-and-bound driven by batched node relaxation.
 
-The search loop here is deliberately shaped around :mod:`vyuha.mip.bnr`. A
+The search loop here is deliberately shaped around :mod:`sovopt.mip.bnr`. A
 conventional tree pops one node, solves its LP, branches, and repeats -- a
 strictly serial dependence that no amount of hardware helps with. This one pops
 a *slab* of nodes, bounds them all in a single batched sparse product, and only
@@ -18,11 +18,11 @@ compromises:
   and the pseudocost table fills in much faster than one branch at a time.
 
 The bounds come from an unconverged first-order method, and are made rigorous by
-the Neumaier-Shcherbina correction in :mod:`vyuha.mip.safebound`. A weak bound
+the Neumaier-Shcherbina correction in :mod:`sovopt.mip.safebound`. A weak bound
 costs search effort; it never causes a wrong answer.
 
 Everything runs in the scaled space. Integer columns are pinned to a scale
-factor of 1 (see :mod:`vyuha.numerics.scaling`), so branching bounds are
+factor of 1 (see :mod:`sovopt.numerics.scaling`), so branching bounds are
 identical in both spaces and no rounding is introduced by the change of
 variables.
 

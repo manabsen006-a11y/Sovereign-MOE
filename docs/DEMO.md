@@ -4,7 +4,7 @@ One command carries the whole story. Everything else here is for answering
 follow-up questions without improvising.
 
 ```bash
-python -m vyuha.cli demo
+python -m sovopt.cli demo
 ```
 
 Seven stages, ~90 seconds, each guarded so a stage that cannot run on the day
@@ -30,7 +30,7 @@ stops.
 ## If you are asked to show something specific
 
 ```bash
-python -m vyuha.cli solve model.mps --sensitivity
+python -m sovopt.cli solve model.mps --sensitivity
 ```
 Shadow prices and cost/RHS ranging. Reads `.mps` and `.lp`, plain or
 `.gz`/`.bz2`/`.xz`.
@@ -64,7 +64,7 @@ Browser interface — upload a model, solve, read the solution.
 
 **"Is this really from scratch?"**
 `python tools/check_provenance.py` — it fails the build on any import of a
-solver library, and on any LU/Cholesky library, across all of `src/vyuha/`. The
+solver library, and on any LU/Cholesky library, across all of `src/sovopt/`. The
 one exception is `bench/comparator.py`, which runs HiGHS as the comparator the
 PS requires; it is quarantined to that file and never touches the engine.
 
@@ -99,7 +99,7 @@ itself.
 ## Before you present
 
 ```bash
-python -m vyuha.cli demo
+python -m sovopt.cli demo
 ```
 
 Run it once on the actual machine. Stage 6 needs CuPy and a GPU; without one it

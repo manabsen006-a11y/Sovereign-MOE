@@ -241,7 +241,7 @@ def propagate(A, row_lb, row_ub, col_lb, col_ub, is_int,
               inplace: bool = False) -> PropagationResult:
     """Tighten variable bounds until nothing changes.
 
-    ``A`` is a :class:`~vyuha.core.sparse.SparseMatrix`. Returns the tightened
+    ``A`` is a :class:`~sovopt.core.sparse.SparseMatrix`. Returns the tightened
     bounds; the input arrays are left alone unless ``inplace``.
     """
     lo = col_lb if inplace else np.array(col_lb, dtype=VAL, copy=True)

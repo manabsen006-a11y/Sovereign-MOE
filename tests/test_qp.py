@@ -11,10 +11,10 @@ vertex, because that is exactly what the simplex could never have produced.
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status, VarKind
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.qp import NotConvexError, solve_qp
+from sovopt.core.problem import ObjSense, Problem, Status, VarKind
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.qp import NotConvexError, solve_qp
 
 TOL = 1e-6
 
@@ -124,14 +124,14 @@ def test_indefinite_q_is_refused_not_mis_solved():
 
 def test_simplex_still_refuses_a_quadratic_objective():
     """The LP engines must keep refusing rather than dropping Q silently."""
-    from vyuha.lp.simplex import solve_simplex
+    from sovopt.lp.simplex import solve_simplex
     with pytest.raises(NotImplementedError):
         solve_simplex(qp([[1, 0], [0, 1]], [-1, -2], [[1, 1]], [-INF], [100.],
                          [0, 0], [10, 10]))
 
 
 def test_miqp_is_refused():
-    from vyuha.cli import solve
+    from sovopt.cli import solve
     p = qp([[1, 0], [0, 1]], [-1, -2], [[1, 1]], [-INF], [100.], [0, 0], [10, 10])
     p.kind = np.full(2, VarKind.INTEGER)
     with pytest.raises(NotImplementedError, match="MIQP"):
@@ -139,7 +139,7 @@ def test_miqp_is_refused():
 
 
 def test_dispatcher_routes_a_convex_qp_to_the_qp_solver():
-    from vyuha.cli import solve
+    from sovopt.cli import solve
     s = solve(qp([[1, 0], [0, 1]], [-1, -2], [[1, 1]], [-INF], [100.],
                  [0, 0], [10, 10]))
     assert s.status == Status.OPTIMAL

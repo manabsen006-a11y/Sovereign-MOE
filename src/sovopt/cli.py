@@ -1,13 +1,13 @@
 """Command line interface.
 
-    vyuha demo                              end-to-end LP showcase
-    vyuha info    model.mps|model.lp        model statistics and a numerical health check
-    vyuha solve   model.mps|model.lp        solve; --sensitivity for shadow prices
-    vyuha verify  model.mps solution.json   independent feasibility check
-    vyuha devices                           what hardware this build can use
+    sovopt demo                              end-to-end LP showcase
+    sovopt info    model.mps|model.lp        model statistics and a numerical health check
+    sovopt solve   model.mps|model.lp        solve; --sensitivity for shadow prices
+    sovopt verify  model.mps solution.json   independent feasibility check
+    sovopt devices                           what hardware this build can use
 
 The problem statement asks for an API or command line, not a GUI, so this is the
-primary surface. ``vyuha.solve()`` is the library equivalent.
+primary surface. ``sovopt.solve()`` is the library equivalent.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
     nothing downstream could detect it.
 
     Refused, specifically: a non-convex ``Q`` (needs spatial branch-and-bound,
-    :mod:`vyuha.globalopt`) and any MIQP (needs a QP solved at every node).
+    :mod:`sovopt.globalopt`) and any MIQP (needs a QP solved at every node).
     """
     from .lp.pdlp import PDLPParams, solve_pdlp
     from .lp.simplex import SimplexParams, solve_simplex
@@ -253,8 +253,8 @@ def cmd_devices(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        prog="vyuha",
-        description="VYUHA - sovereign GPU-accelerated optimization engine")
+        prog="sovopt",
+        description="SOVOPT - sovereign GPU-accelerated optimization engine")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("info", help="model statistics and numerical health")

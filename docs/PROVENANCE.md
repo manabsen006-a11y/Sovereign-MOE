@@ -17,7 +17,7 @@ library. This document is the evidence for that claim.
    `numpy` (dense arrays), `numba` (JIT), `cupy` (GPU arrays). The CUDA kernels
    in `core/backend.py` are hand-written; no vendor sparse solver is called.
 5. `scipy` may appear only in `tests/` and `bench/` for constructing or
-   cross-checking test data, never inside `src/vyuha/`.
+   cross-checking test data, never inside `src/sovopt/`.
 
 ## Citation index
 
@@ -48,5 +48,5 @@ operation rather than a sequential one.
 
 ## Verification
 
-`tools/check_provenance.py` fails if any module under `src/vyuha/` implementing
+`tools/check_provenance.py` fails if any module under `src/sovopt/` implementing
 an algorithm lacks a `References` section, and greps for forbidden imports.

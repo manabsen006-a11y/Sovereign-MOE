@@ -1,4 +1,4 @@
-"""End-to-end LP showcase: ``python -m vyuha.cli demo``.
+"""End-to-end LP showcase: ``python -m sovopt.cli demo``.
 
 One command that walks the whole linear-programming story on a refinery model,
 in the order a sceptical reviewer asks about it:
@@ -57,7 +57,7 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     o = _Out()
     print()
     print("  " + "=" * o.W)
-    print("  VYUHA - sovereign optimization engine")
+    print("  SOVOPT - sovereign optimization engine")
     print("  SIH 2026 / PS 26119 / MRPL      linear programming, end to end")
     print("  " + "=" * o.W)
 
@@ -163,7 +163,7 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
         o.note("")
         o.note("Every number above is computed from the solution vector the")
         o.note("solver returned, not stored alongside it. The engine is the")
-        o.note("same one `vyuha solve model.mps` runs on any MPS or LP file.")
+        o.note("same one `sovopt solve model.mps` runs on any MPS or LP file.")
 
     # ---------------------------------------------------------------- 4 ----
     o.head(4, "What a planner reads: shadow prices and ranging")
@@ -200,7 +200,7 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
             o.note(f"(HiGHS did not solve: {msg})")
         else:
             rel = abs(sol.objective - got[0]) / max(1.0, abs(got[0]))
-            o.kv("VYUHA", f"{sol.objective:.12g}   ({dt:.3f} s)")
+            o.kv("SOVOPT", f"{sol.objective:.12g}   ({dt:.3f} s)")
             o.kv("HiGHS", f"{got[0]:.12g}   ({dt_h:.3f} s)")
             o.kv("relative difference", f"{rel:.2e}")
             o.note("")

@@ -1,4 +1,4 @@
-# VYUHA
+# SOVOPT
 
 **A sovereign GPU-accelerated optimization engine — LP / MILP, built from mathematical foundations.**
 
@@ -25,7 +25,7 @@ quote the ratios rather than the seconds if you are comparing against your own
 hardware.
 
 ```
-VYUHA benchmark  mode=lp  method=pdlp  device=cpu  time-limit=90s  tol=1e-8
+SOVOPT benchmark  mode=lp  method=pdlp  device=cpu  time-limit=90s  tol=1e-8
 
 instance         rows   cols      nnz status            objective        reference    relerr     time  chk
 10teams           230   2025    12150 OPTIMAL           917.00001              nan       nan    0.18s   ok
@@ -151,17 +151,17 @@ pip install cupy-cuda12x[ctk]   # optional, for the GPU path
 
 The `[ctk]` extra pulls the CUDA libraries in as wheels, so the GPU path needs
 only an NVIDIA driver -- no system CUDA Toolkit, and no `CUDA_PATH`. Run
-`python -m vyuha.cli devices` to confirm; it reports the driver and runtime
+`python -m sovopt.cli devices` to confirm; it reports the driver and runtime
 versions and whether the CUDA kernels actually compiled, which is the fact a
 solve depends on.
 
 ```bash
-python -m vyuha.cli demo                         # the whole story, end to end
-python -m vyuha.cli devices                      # what hardware is usable
-python -m vyuha.cli info   model.lp              # stats + numerical health
-python -m vyuha.cli solve  model.mps --device gpu --out sol.json
-python -m vyuha.cli solve  model.mps --sensitivity     # shadow prices + ranging
-python -m vyuha.cli verify model.mps sol.json    # independent check
+python -m sovopt.cli demo                         # the whole story, end to end
+python -m sovopt.cli devices                      # what hardware is usable
+python -m sovopt.cli info   model.lp              # stats + numerical health
+python -m sovopt.cli solve  model.mps --device gpu --out sol.json
+python -m sovopt.cli solve  model.mps --sensitivity     # shadow prices + ranging
+python -m sovopt.cli verify model.mps sol.json    # independent check
 python -m ui.server                              # http://127.0.0.1:8000
 ```
 
@@ -517,7 +517,7 @@ but the variable bounds. Conventional solvers still process nodes one at a time,
 which is right for a CPU and wrong for a GPU: one node's sparse product cannot
 fill the device.
 
-VYUHA pops a *slab* of nodes and bounds them all in one sparse-times-dense
+SOVOPT pops a *slab* of nodes and bounds them all in one sparse-times-dense
 product. Reproduce with `python -m bench.gpu_bench --skip-pdlp`, which builds
 the instance deterministically — 20,000 × 30,000, 239,952 nonzeros, `seed=1234`
 — on an RTX 3050 Laptop:
@@ -795,7 +795,7 @@ five now have regression tests.
 - **Cuts are separated at the root only** and are never rolled back when they
   fail to pay for themselves (see p0201 above). Local cuts in the tree and a
   cost-aware rollback are the next steps.
-- **QP is convex-only, and first-order.** `vyuha.qp` solves a convex quadratic
+- **QP is convex-only, and first-order.** `sovopt.qp` solves a convex quadratic
   by proximal PDHG (Condat–Vũ), validated against six hand-derived optima
   including one whose answer is *not* a vertex — the case a simplex provably
   cannot reach. What it does not do: a non-convex `Q` (needs spatial
@@ -846,7 +846,7 @@ convention exists because two published tables were found not to reproduce; see
 ## Layout
 
 ```
-src/vyuha/
+src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer
   numerics/   scaling, LU, hypersparse solves, refinement

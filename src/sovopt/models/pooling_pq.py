@@ -3,7 +3,7 @@
 Three ways to write the same physical network, in increasing relaxation
 strength:
 
-**p-formulation** -- the natural one, used by :func:`vyuha.models.pooling.haverly`.
+**p-formulation** -- the natural one, used by :func:`sovopt.models.pooling.haverly`.
 The unknowns are pool *qualities*, and the products are quality times flow. It
 is the easiest to read and the weakest to relax.
 

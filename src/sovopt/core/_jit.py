@@ -45,7 +45,7 @@ prange = _prange
 
 # Disable the on-disk compile cache when the source tree is read-only or when a
 # benchmark run wants cold-compile timings to be honest.
-_CACHE = os.environ.get("VYUHA_JIT_CACHE", "1") != "0"
+_CACHE = os.environ.get("SOVOPT_JIT_CACHE", "1") != "0"
 
 
 def jit_kernel(parallel: bool = False, fastmath: bool = False, inline: str = "never"):

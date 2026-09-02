@@ -14,7 +14,7 @@ margin.
 
 Representation
 --------------
-A bilinear problem is an ordinary :class:`~vyuha.core.problem.Problem` over an
+A bilinear problem is an ordinary :class:`~sovopt.core.problem.Problem` over an
 *extended* variable vector, together with a list of product definitions
 
     w_t = x_t * y_t

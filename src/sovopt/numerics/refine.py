@@ -124,7 +124,7 @@ def refine_solve(factor, rp, ri, rx, b, x0=None, max_iter: int = 5,
                  tol: float = 1e-14, transpose: bool = False) -> RefineResult:
     """Solve ``B x = b`` (or ``Bᵀ x = b``) with iterative refinement.
 
-    ``factor`` is an :class:`~vyuha.numerics.lu.LUFactor`; ``rp/ri/rx`` are the
+    ``factor`` is an :class:`~sovopt.numerics.lu.LUFactor`; ``rp/ri/rx`` are the
     CSR arrays of the *same* matrix the factor was built from -- for the
     transposed solve, pass the CSC arrays instead, which are the CSR arrays of
     ``Bᵀ``.

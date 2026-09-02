@@ -11,11 +11,11 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from vyuha.core.sparse import SparseMatrix
-from vyuha.numerics.lu import lu_factor, LUSingular
-from vyuha.numerics.refine import (compensated_residual, estimate_condition,
+from sovopt.core.sparse import SparseMatrix
+from sovopt.numerics.lu import lu_factor, LUSingular
+from sovopt.numerics.refine import (compensated_residual, estimate_condition,
                                    refine_solve)
-from vyuha.numerics.scaling import compute_scaling
+from sovopt.numerics.scaling import compute_scaling
 
 
 def _exact_solve(B, b):
@@ -212,8 +212,8 @@ def test_scale_factors_are_exact_powers_of_two():
 
 def test_integer_columns_are_never_scaled():
     """Scaling an integer column would destroy integrality of x' = x / c."""
-    from vyuha.core.problem import Problem, VarKind
-    from vyuha.numerics.scaling import scale_problem
+    from sovopt.core.problem import Problem, VarKind
+    from sovopt.numerics.scaling import scale_problem
 
     B, _ = _random_sparse(40, 4, seed=8, spread=4)
     A = SparseMatrix.from_dense(B)

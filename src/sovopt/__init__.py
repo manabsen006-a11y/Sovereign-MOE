@@ -1,4 +1,4 @@
-"""VYUHA — a sovereign optimization engine.
+"""SOVOPT — a sovereign optimization engine.
 
 LP / MILP / QP solver core built from mathematical foundations.
 SIH 2026 · PS 26119 · MRPL.

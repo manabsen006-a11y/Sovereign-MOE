@@ -5,6 +5,6 @@ data/instances/
 ui/_paste.*
 *.egg-info/
 
-# solver output written by `vyuha solve --out`
+# solver output written by `sovopt solve --out`
 *.sol.json
 gt2.json

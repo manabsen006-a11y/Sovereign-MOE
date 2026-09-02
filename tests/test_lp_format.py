@@ -10,12 +10,12 @@ import os
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Status, VarKind
-from vyuha.core.tolerances import INF
-from vyuha.io import read_model
-from vyuha.io.lp_format import LPFormatError, read_lp
-from vyuha.io.mps import read_mps
-from vyuha.lp.simplex import SimplexParams, solve_simplex
+from sovopt.core.problem import ObjSense, Status, VarKind
+from sovopt.core.tolerances import INF
+from sovopt.io import read_model
+from sovopt.io.lp_format import LPFormatError, read_lp
+from sovopt.io.mps import read_mps
+from sovopt.lp.simplex import SimplexParams, solve_simplex
 
 FIX = os.path.join(os.path.dirname(__file__), "fixtures")
 

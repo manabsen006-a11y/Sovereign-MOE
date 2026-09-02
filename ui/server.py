@@ -26,17 +26,17 @@ from fastapi.responses import HTMLResponse, JSONResponse
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "src"))
 
-from vyuha.core.backend import (GPU_ERROR, gpu_available,      # noqa: E402
+from sovopt.core.backend import (GPU_ERROR, gpu_available,      # noqa: E402
                                 gpu_selftest)
-from vyuha.core.problem import ObjSense, Status, VarKind         # noqa: E402
-from vyuha.io import read_model                                  # noqa: E402
-from vyuha.models import TEMPLATES                               # noqa: E402
-from vyuha.numerics.scaling import compute_scaling               # noqa: E402
+from sovopt.core.problem import ObjSense, Status, VarKind         # noqa: E402
+from sovopt.io import read_model                                  # noqa: E402
+from sovopt.models import TEMPLATES                               # noqa: E402
+from sovopt.numerics.scaling import compute_scaling               # noqa: E402
 
-app = FastAPI(title="VYUHA")
+app = FastAPI(title="SOVOPT")
 
 PAGE = """<!doctype html>
-<html><head><meta charset="utf-8"><title>VYUHA</title>
+<html><head><meta charset="utf-8"><title>SOVOPT</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{--bg:#0e1418;--panel:#151f25;--line:#243139;--ink:#dbe4e8;--dim:#8496a0;
@@ -208,7 +208,7 @@ def index():
 
 @app.get("/api/hw")
 def hw():
-    from vyuha.core._jit import NUMBA_THREADS
+    from sovopt.core._jit import NUMBA_THREADS
     out = {"gpu": gpu_available(), "threads": NUMBA_THREADS, "name": ""}
     if gpu_available():
         import cupy as cp
@@ -258,7 +258,7 @@ def _build(body):
 async def api_solve(request: Request):
     body = await request.json()
     try:
-        from vyuha.cli import solve
+        from sovopt.cli import solve
 
         prob = _build(body)
         sc = compute_scaling(prob.A, method="auto")
@@ -313,7 +313,7 @@ async def api_solve(request: Request):
 
 def main():
     import uvicorn
-    print("VYUHA interface on http://127.0.0.1:8000")
+    print("SOVOPT interface on http://127.0.0.1:8000")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
 
 

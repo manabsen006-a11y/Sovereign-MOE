@@ -12,12 +12,12 @@ import os
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status, VarKind
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.io.mps import read_mps
-from vyuha.lp.basis import AT_LOWER, AT_UPPER, BASIC, FIXED, FREE
-from vyuha.lp.simplex import SimplexParams, solve_simplex
+from sovopt.core.problem import ObjSense, Problem, Status, VarKind
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.io.mps import read_mps
+from sovopt.lp.basis import AT_LOWER, AT_UPPER, BASIC, FIXED, FREE
+from sovopt.lp.simplex import SimplexParams, solve_simplex
 
 FIX = os.path.join(os.path.dirname(__file__), "fixtures")
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

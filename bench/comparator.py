@@ -6,7 +6,7 @@ the repository permitted to invoke one, and it invokes it purely as a
 **comparator**: HiGHS, reached through ``scipy.optimize.linprog``, solves the
 same instances independently and its answers are checked against ours.
 
-Nothing here is imported by ``src/vyuha``. ``tools/check_provenance.py`` still
+Nothing here is imported by ``src/sovopt``. ``tools/check_provenance.py`` still
 bans ``scipy.optimize`` everywhere the engine lives, and the ban is what makes
 this file meaningful -- using a solver to *check* our numbers is the opposite of
 building on one.
@@ -37,10 +37,10 @@ try:
 except Exception:
     pass
 
-from vyuha.core.problem import Status, VarKind          # noqa: E402
-from vyuha.core.tolerances import INF                    # noqa: E402
-from vyuha.io.mps import read_mps                        # noqa: E402
-from vyuha.lp.simplex import SimplexParams, solve_simplex  # noqa: E402
+from sovopt.core.problem import Status, VarKind          # noqa: E402
+from sovopt.core.tolerances import INF                    # noqa: E402
+from sovopt.io.mps import read_mps                        # noqa: E402
+from sovopt.lp.simplex import SimplexParams, solve_simplex  # noqa: E402
 
 
 def solve_with_highs(prob, time_limit=60.0):
@@ -100,11 +100,11 @@ def main(argv=None):
         print("no instances; run: python -m bench.fetch --set small")
         return 1
 
-    print("VYUHA vs HiGHS (via scipy.optimize.linprog) -- LP relaxations")
-    print("HiGHS is run as an independent comparator; nothing in src/vyuha uses it.")
+    print("SOVOPT vs HiGHS (via scipy.optimize.linprog) -- LP relaxations")
+    print("HiGHS is run as an independent comparator; nothing in src/sovopt uses it.")
     print()
-    print(f"{'instance':<12} {'vyuha obj':>16} {'HiGHS obj':>16} {'rel diff':>10} "
-          f"{'vyuha':>8} {'HiGHS':>8} {'verdict':>9}")
+    print(f"{'instance':<12} {'sovopt obj':>16} {'HiGHS obj':>16} {'rel diff':>10} "
+          f"{'sovopt':>8} {'HiGHS':>8} {'verdict':>9}")
     print("-" * 86)
 
     agree = disagree = failed = 0
@@ -142,7 +142,7 @@ def main(argv=None):
         print(f"  !! DISAGREEMENTS: {disagree}")
     if failed:
         print(f"  skipped (one side did not solve): {failed}")
-    print(f"  total time      vyuha {tv:.1f}s   HiGHS {th:.1f}s")
+    print(f"  total time      sovopt {tv:.1f}s   HiGHS {th:.1f}s")
     return 0 if disagree == 0 else 1
 
 

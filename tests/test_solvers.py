@@ -8,13 +8,13 @@ having both.
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status, VarKind
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.lp.pdlp import PDLPParams, solve_pdlp
-from vyuha.mip.safebound import safe_dual_bound
-from vyuha.mip.tree import MIPParams, solve_mip
-from vyuha.numerics.scaling import scale_problem
+from sovopt.core.problem import ObjSense, Problem, Status, VarKind
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.lp.pdlp import PDLPParams, solve_pdlp
+from sovopt.mip.safebound import safe_dual_bound
+from sovopt.mip.tree import MIPParams, solve_mip
+from sovopt.numerics.scaling import scale_problem
 
 
 def toy_lp():
@@ -56,7 +56,7 @@ def test_pdlp_solves_toy_lp(device):
 
 
 def test_pdlp_matches_known_mps_optimum():
-    from vyuha.io.mps import read_mps
+    from sovopt.io.mps import read_mps
     import os
     path = os.path.join(os.path.dirname(__file__), "fixtures", "testprob.mps")
     s = solve_pdlp(read_mps(path), PDLPParams(device="cpu"))
@@ -234,7 +234,7 @@ def test_mip_detects_infeasibility():
 
 
 def test_integer_solution_is_actually_integral():
-    from vyuha.models import unit_scheduling
+    from sovopt.models import unit_scheduling
     p = unit_scheduling(n_units=3, n_periods=5, seed=0)
     s = solve_mip(p, MIPParams(device="cpu", time_limit=90))
     if s.x is None:
@@ -254,8 +254,8 @@ def test_mip_incumbent_is_feasible_in_the_original_space():
     original model at the verifier's own tolerance.
     """
     from bench.verify import verify
-    from vyuha.core.sparse import SparseMatrix
-    from vyuha.mip.tree import MIPParams, solve_mip
+    from sovopt.core.sparse import SparseMatrix
+    from sovopt.mip.tree import MIPParams, solve_mip
 
     rng = np.random.default_rng(17)
     m, n = 18, 24
@@ -299,10 +299,10 @@ def test_quadratic_objective_is_never_silently_dropped():
     (x-2, y-2), the row x+y <= 1.5 is active with multiplier 1.25, so
     x = y = 2 - 1.25 = 0.75.
     """
-    from vyuha.cli import solve
-    from vyuha.core.sparse import SparseMatrix
-    from vyuha.lp.simplex import solve_simplex
-    from vyuha.mip.tree import solve_mip
+    from sovopt.cli import solve
+    from sovopt.core.sparse import SparseMatrix
+    from sovopt.lp.simplex import solve_simplex
+    from sovopt.mip.tree import solve_mip
 
     A = SparseMatrix.from_dense(np.array([[1.0, 1.0]]))
     Q = SparseMatrix.from_dense(np.eye(2))
@@ -325,7 +325,7 @@ def test_quadratic_objective_is_never_silently_dropped():
             fn(qp)
 
     # a non-convex Q has no QP path either, and must not fall through to an LP
-    from vyuha.qp import NotConvexError
+    from sovopt.qp import NotConvexError
     nonconvex = qp.copy()
     nonconvex.Q = SparseMatrix.from_dense(np.diag([1.0, -1.0]))
     with pytest.raises((NotImplementedError, NotConvexError)):

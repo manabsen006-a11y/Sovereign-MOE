@@ -1,7 +1,7 @@
 """Fail the build if the clean-room policy is broken.
 
 Two checks:
-  1. no forbidden solver or factorisation import appears under src/vyuha/
+  1. no forbidden solver or factorisation import appears under src/sovopt/
   2. every algorithm module carries a References section naming its sources
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "src", "vyuha")
+SRC = os.path.join(ROOT, "src", "sovopt")
 
 FORBIDDEN = [
     r"\bscipy\.optimize\b", r"\bfrom scipy import optimize\b",

@@ -12,10 +12,10 @@ whatever it looked like.
 
 import numpy as np
 
-from vyuha.core.problem import ObjSense, Problem, VarKind
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.io import read_model, write_mps
+from sovopt.core.problem import ObjSense, Problem, VarKind
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.io import read_model, write_mps
 
 
 def _model():

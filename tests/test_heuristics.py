@@ -9,11 +9,11 @@ whatever comes back is genuinely feasible for the original model.
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status, VarKind
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.lp.simplex import NodeSolver, SimplexParams
-from vyuha.mip.heuristics import (feasibility_jump, feasibility_pump,
+from sovopt.core.problem import ObjSense, Problem, Status, VarKind
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.lp.simplex import NodeSolver, SimplexParams
+from sovopt.mip.heuristics import (feasibility_jump, feasibility_pump,
                                   fix_and_propagate)
 
 
@@ -139,7 +139,7 @@ def test_feasibility_jump_beats_naive_rounding_on_equalities():
 
 def test_feasibility_pump_output_is_always_feasible():
     p = set_cover_mip(3)
-    from vyuha.numerics.scaling import scale_problem
+    from sovopt.numerics.scaling import scale_problem
     scaled, sc = scale_problem(p, method="pdlp")
     node = NodeSolver(scaled, SimplexParams())
 
@@ -169,7 +169,7 @@ def test_feasibility_pump_output_is_always_feasible():
 
 
 def test_heuristics_help_the_tree_find_an_incumbent():
-    from vyuha.mip.tree import MIPParams, solve_mip
+    from sovopt.mip.tree import MIPParams, solve_mip
 
     p = set_cover_mip(7, n=45, m=25)
     with_h = solve_mip(p, MIPParams(device="cpu", time_limit=30,

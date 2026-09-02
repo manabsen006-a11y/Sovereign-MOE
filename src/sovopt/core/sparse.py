@@ -14,7 +14,7 @@ atomics from every product we need:
 
 The batched forms ``A @ X`` and ``Aᵀ @ Y`` for a block of ``k`` right-hand sides
 turn the same sweep into a sparse-times-dense product (SpMM). That is the
-primitive the batched node relaxation in ``vyuha.mip.bnr`` is built on: every
+primitive the batched node relaxation in ``sovopt.mip.bnr`` is built on: every
 node of a branch-and-bound tree shares the same ``A`` and differs only in its
 variable bounds, so an entire frontier of nodes can be advanced in one SpMM
 instead of ``k`` separate SpMVs.
@@ -27,7 +27,7 @@ Davis, *Direct Methods for Sparse Linear Systems*, SIAM 2006 -- transpose by
   counting sort, Ch. 2.
 Merrill & Garland, "Merge-based parallel sparse matrix-vector multiplication",
   SC'16 -- row-split vs merge-based load balancing (we use row-split; merge-based
-  is the GPU path in ``vyuha.lp.pdlp_gpu``).
+  is the GPU path in ``sovopt.lp.pdlp_gpu``).
 """
 
 from __future__ import annotations

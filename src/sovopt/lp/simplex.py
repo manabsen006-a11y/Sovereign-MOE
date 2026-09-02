@@ -1,7 +1,7 @@
 """Revised simplex: bounded-variable primal and dual.
 
 This is the exact LP engine. Unlike the first-order method in
-:mod:`vyuha.lp.pdlp` it terminates with a **basis**, which is what makes duals,
+:mod:`sovopt.lp.pdlp` it terminates with a **basis**, which is what makes duals,
 reduced costs, sensitivity ranging and warm-started branch-and-bound possible at
 all. A first-order method can tell you the optimal value; only a basis tells you
 which constraints are binding and what a marginal unit of each is worth.
@@ -437,7 +437,7 @@ class _Simplex:
 
         Set by the dual simplex at the moment its ratio test fails, and by the
         phase-1 primal when it stalls with infeasibility remaining. It is what
-        :mod:`vyuha.mip.conflict` analyses to learn why a node was empty."""
+        :mod:`sovopt.mip.conflict` analyses to learn why a node was empty."""
 
     # -- bookkeeping -------------------------------------------------------- #
 
@@ -850,7 +850,7 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
                   warm_basis=None) -> Solution:
     """Solve an LP exactly with the revised simplex.
 
-    Returns a :class:`~vyuha.core.problem.Solution` carrying the primal point,
+    Returns a :class:`~sovopt.core.problem.Solution` carrying the primal point,
     row duals, reduced costs and the final basis status vector, so the result
     can be used to warm-start a later solve.
     """

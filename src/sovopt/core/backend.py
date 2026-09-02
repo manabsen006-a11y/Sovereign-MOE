@@ -14,7 +14,7 @@ math is vendor arithmetic, but a sparse solver kernel is the substance of the
 work. Writing our own removes the argument entirely.
 
 *Practical*: the kernels we actually need are not the ones a general library
-optimises for. The batched node relaxation in ``vyuha.mip.bnr`` needs an SpMM
+optimises for. The batched node relaxation in ``sovopt.mip.bnr`` needs an SpMM
 where the *same* matrix multiplies a block of right-hand sides, with the block
 laid out so that consecutive threads read consecutive nodes. That memory layout
 is the entire performance argument, and it is not what a generic SpMM gives you.

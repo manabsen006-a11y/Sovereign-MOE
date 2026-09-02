@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vyuha"
+name = "sovopt"
 version = "0.1.0"
 description = "Sovereign GPU-accelerated LP/MILP/QP optimization engine (SIH 2026 PS 26119, MRPL)"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ gpu = ["cupy-cuda12x"]
 dev = ["pytest>=7", "scipy>=1.10"]
 
 [project.scripts]
-vyuha = "vyuha.cli:main"
+sovopt = "sovopt.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

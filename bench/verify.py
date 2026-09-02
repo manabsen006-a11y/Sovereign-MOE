@@ -10,7 +10,7 @@ with equal confidence. Every performance number in this project is expected to
 pass through here before it is quoted.
 
 Row activities are accumulated with the compensated dot product from
-:mod:`vyuha.numerics.refine`, so the verdict does not itself dissolve into
+:mod:`sovopt.numerics.refine`, so the verdict does not itself dissolve into
 rounding error on a badly scaled model -- which is precisely where a solver is
 most likely to be wrong.
 
@@ -26,10 +26,10 @@ import sys
 
 import numpy as np
 
-from vyuha.core.problem import ObjSense, VarKind
-from vyuha.core.tolerances import INF
-from vyuha.io.mps import read_mps
-from vyuha.numerics.refine import compensated_residual
+from sovopt.core.problem import ObjSense, VarKind
+from sovopt.core.tolerances import INF
+from sovopt.io.mps import read_mps
+from sovopt.numerics.refine import compensated_residual
 
 
 class Verdict:

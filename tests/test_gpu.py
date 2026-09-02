@@ -1,6 +1,6 @@
 """GPU backend tests.
 
-The GPU kernels in ``vyuha.core.backend`` are hand-written CUDA, so nothing
+The GPU kernels in ``sovopt.core.backend`` are hand-written CUDA, so nothing
 outside this file ever checks them against a reference. Every test here states
 the same claim in a different place: *the GPU computes what the CPU computes*.
 A speedup is not a result if the two devices disagree.
@@ -14,10 +14,10 @@ fact about the environment and not a defect in the code under test.
 import numpy as np
 import pytest
 
-from vyuha.core.backend import Backend, get_backend, gpu_selftest
-from vyuha.core.problem import Problem
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
+from sovopt.core.backend import Backend, get_backend, gpu_selftest
+from sovopt.core.problem import Problem
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
 
 _OK, _WHY = gpu_selftest()
 pytestmark = pytest.mark.skipif(not _OK, reason=f"no usable GPU: {_WHY}")
@@ -64,7 +64,7 @@ def test_import_emits_no_cuda_path_warning():
     import sys
 
     r = subprocess.run(
-        [sys.executable, "-c", "import vyuha.core.backend"],
+        [sys.executable, "-c", "import sovopt.core.backend"],
         capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stderr
     assert "CUDA path" not in r.stderr, r.stderr
@@ -254,7 +254,7 @@ def test_reductions_match_cpu():
 
 def test_pdlp_cpu_and_gpu_reach_the_same_optimum():
     """The claim the benchmark rests on, as a test rather than a printout."""
-    from vyuha.lp.pdlp import PDLPParams, solve_pdlp
+    from sovopt.lp.pdlp import PDLPParams, solve_pdlp
 
     rng = np.random.default_rng(11)
     m, n = 300, 400

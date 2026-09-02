@@ -21,11 +21,11 @@ try:
 except Exception:
     pass
 
-from vyuha.core.backend import get_backend, gpu_selftest
-from vyuha.core.problem import Problem
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.lp.pdlp import PDLPParams, solve_pdlp
+from sovopt.core.backend import get_backend, gpu_selftest
+from sovopt.core.problem import Problem
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.lp.pdlp import PDLPParams, solve_pdlp
 
 
 def make_lp(m, n, nnz_per_col, seed=0):

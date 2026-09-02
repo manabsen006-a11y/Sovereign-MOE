@@ -17,11 +17,11 @@ try:
 except Exception:
     pass
 
-from vyuha.core.problem import Status
-from vyuha.globalopt.bilinear import build_relaxation
-from vyuha.globalopt.spatial import SpatialParams, solve_global
-from vyuha.lp.simplex import SimplexParams, solve_simplex
-from vyuha.models import random_pooling
+from sovopt.core.problem import Status
+from sovopt.globalopt.bilinear import build_relaxation
+from sovopt.globalopt.spatial import SpatialParams, solve_global
+from sovopt.lp.simplex import SimplexParams, solve_simplex
+from sovopt.models import random_pooling
 
 
 def root_bound(bp):

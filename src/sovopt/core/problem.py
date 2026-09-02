@@ -17,7 +17,7 @@ MPS ``RANGES`` rows uniformly with no structural change to ``A``:
     range : both finite
 
 The simplex adds logical (slack) variables later to reach the computational
-form ``[A | -I] [x; s] = 0`` with ``rl ≤ s ≤ ru``; see ``vyuha.lp.simplex``.
+form ``[A | -I] [x; s] = 0`` with ``rl ≤ s ≤ ru``; see ``sovopt.lp.simplex``.
 Keeping that step out of the model means presolve, propagation and the
 first-order methods all see the same object.
 

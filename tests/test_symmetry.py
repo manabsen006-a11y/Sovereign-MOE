@@ -10,15 +10,15 @@ automorphism, or that adding the derived constraints leaves the optimum intact.
 import numpy as np
 import pytest
 
-from vyuha.core.problem import ObjSense, Problem, Status
-from vyuha.core.sparse import SparseMatrix
-from vyuha.core.tolerances import INF
-from vyuha.mip.symmetry import (breaking_constraints, detect_symmetry,
+from sovopt.core.problem import ObjSense, Problem, Status
+from sovopt.core.sparse import SparseMatrix
+from sovopt.core.tolerances import INF
+from sovopt.mip.symmetry import (breaking_constraints, detect_symmetry,
                                 find_generators, orbits_from, refine_colours,
                                 verify_permutation)
-from vyuha.mip.tree import MIPParams, solve_mip
-from vyuha.models import unit_scheduling
-from vyuha.numerics.scaling import scale_problem
+from sovopt.mip.tree import MIPParams, solve_mip
+from sovopt.models import unit_scheduling
+from sovopt.numerics.scaling import scale_problem
 
 
 def identical_items(n=8, cap=3.0):
