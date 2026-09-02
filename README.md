@@ -1,4 +1,4 @@
-# VYUHA
+# SOVOPT
 
 **A sovereign GPU-accelerated optimization engine — LP / MILP, built from mathematical foundations.**
 
