@@ -54,13 +54,13 @@ and considerably faster:
 | engine | optimal | verified | shifted geomean | total | worst rel. err |
 |---|---|---|---|---|---|
 | first-order (PDLP) | 11/11 | 11/11 | 0.700 s | 11.8 s | 5.08e-07 |
-| **revised simplex** | 11/11 | 11/11 | **0.245 s** | **5.6 s** | 5.10e-07 |
+| **revised simplex** | 11/11 | 11/11 | **0.145 s** | **2.0 s** | 5.10e-07 |
 
-Per-instance the gap is much wider than the aggregate suggests -- simplex is
-over 500x faster on mas76 (5.06 s against 0.01 s, so the ratio is only
-resolved to the timer), 118x on khb05250, 10x on qnet1 -- while PDLP wins
-decisively on 10teams (0.18 s against 4.91 s), which is highly degenerate. They
-are genuinely complementary, and `method="auto"` picks by size.
+Per-instance the gap is much wider than the aggregate suggests -- on mas76 the
+simplex finishes below the timer's resolution against PDLP's 5.08 s, and it is
+114x faster on khb05250 and 10.6x on qnet1 -- while PDLP still takes 10teams
+(0.18 s against 1.35 s), which is highly degenerate. They are genuinely
+complementary, and `method="auto"` picks by size.
 
 MILP is exact where it closes. With exact node LPs the tree is sharp: a hard
 22-item knapsack closes in **2,375 nodes and 2.24 s**, where the batched
@@ -72,23 +72,23 @@ and primal heuristics:
 ```
                                               measured on this tree
 instance   before cuts+heuristics       status        objective     time
-flugpl     OPTIMAL     1201500          OPTIMAL         1201500     3.81s
+flugpl     OPTIMAL     1201500          OPTIMAL         1201500     4.83s
 gr4x6      OPTIMAL      202.35          OPTIMAL          202.35     0.28s
-gt2        TIME_LIMIT   (none)          TIME_LIMIT        21166    60.52s   <- see below
-khb05250   TIME_LIMIT   (none)          OPTIMAL   1.0694023e+08     3.89s
-mod010     OPTIMAL        6548          OPTIMAL            6548     2.38s
-p0201      OPTIMAL        7615          OPTIMAL            7615    21.71s
-mas76      TIME_LIMIT 40589.44          TIME_LIMIT   40408.477     60.25s
-misc07     TIME_LIMIT     2810          TIME_LIMIT        2810     61.30s
-dcmulti    TIME_LIMIT   (none)          TIME_LIMIT   202598.49     60.42s  (7.7% off)
-qnet1      TIME_LIMIT   (none)          TIME_LIMIT    20627.76     60.18s (28.7% off)
-10teams    TIME_LIMIT   (none)          TIME_LIMIT      (none)     63.03s
+gt2        TIME_LIMIT   (none)          TIME_LIMIT        21166    60.59s   <- see below
+khb05250   TIME_LIMIT   (none)          OPTIMAL   1.0694023e+08     3.74s
+mod010     OPTIMAL        6548          OPTIMAL            6548     2.08s
+p0201      OPTIMAL        7615          OPTIMAL            7615    10.22s
+mas76      TIME_LIMIT 40589.44          TIME_LIMIT   40408.477     60.19s
+misc07     TIME_LIMIT     2810          TIME_LIMIT        2810     60.64s
+dcmulti    TIME_LIMIT   (none)          TIME_LIMIT      (none)     62.48s  <- see below
+qnet1      TIME_LIMIT   (none)          TIME_LIMIT    20627.76     60.39s (28.7% off)
+10teams    TIME_LIMIT   (none)          TIME_LIMIT      (none)     60.91s
 
                         before     now
   status OPTIMAL         4/11      5/11
-  verifier accepted      6/11     10/11
-  no incumbent at all    5/11      1/11
-  shifted geomean       31.4s     25.1s
+  verifier accepted      6/11      9/11
+  no incumbent at all    5/11      2/11
+  shifted geomean       31.4s     23.8s
 ```
 
 Every proved optimum matches the published value exactly, and the verifier
@@ -112,13 +112,13 @@ gt2 returns `21166` again -- the published optimum, verifier-accepted -- and the
 set as a whole went from 9/11 to 10/11 verified and 2 instances with no
 incumbent down to 1. flugpl fell from 9.28 s to 3.81 s on the same change.
 
-**It is still not back to `OPTIMAL`,** and the reason is a separate bug. The
-failing relaxation is not hard: 119 rows, solved in 1,354 iterations from the
-same basis under the root bounds. Under the *propagated* bounds the simplex runs
-**224,352 iterations** and never finishes. That is cycling the anti-degeneracy
-perturbation fails to break, it is independent of cuts, and fixing it is what
-would restore the published result. Recorded under
-[Known limits](#known-limits).
+**It is still not back to `OPTIMAL`.** The relaxation that used to hang has
+been fixed -- it was not cycling at all, but the dual simplex pricing described
+below, and it now solves in 439 iterations instead of running past 100,000 --
+so gt2 explores 3,903 nodes where it managed 1,087. What remains is that MIR
+cuts crowd out the GMI and cover cuts that close gt2 at the root: with MIR
+disabled it is `OPTIMAL` in 0.70 s. That is a cut *selection* question, not a
+correctness one, and it is open.
 
 The regression went unnoticed for four commits because this table was not re-run
 after the code beneath it changed — the same failure recorded in
@@ -280,7 +280,7 @@ checks below all reach for something external.
 
 | check | result |
 |---|---|
-| **HiGHS head-to-head** (`bench/comparator.py`) | 11/11 agree, max relative difference **5.6e-16** |
+| **HiGHS head-to-head** (`bench/comparator.py`) | 11/11 agree, max relative difference **7.0e-16** |
 | Independent verifier | every reported optimum accepted, recomputed in compensated arithmetic |
 | Exact rational arithmetic | forward error **0.0** at cond₁ 1.7e12 |
 | Published MIPLIB optima | every proved optimum matches exactly |
@@ -296,11 +296,12 @@ passed while `node_solver="bnr"` was returning wrong answers. Enumerating every
 integer point of a five-variable model is a weak-looking check that no amount
 of agreement between components can substitute for.
 
-**Speed, stated plainly:** HiGHS solves the same eleven LP relaxations in 0.2 s
-against our 5.4 s — roughly **27× slower on our side**, or 8.6× excluding the
-degenerate 10teams, which alone accounts for 4.63 s of it. Matching its answers
-exactly is the achievement here; matching its clock is not yet true, and
-presolve plus a Forrest–Tomlin update are the two reasons why.
+**Speed, stated plainly:** HiGHS solves the same eleven LP relaxations in 0.3 s
+against our 2.0 s — roughly **6.7× slower on our side**, or 4.8× excluding the
+degenerate 10teams. That gap was 27× until the dual simplex got the pricing it
+had been missing (see below). Matching its answers exactly is the achievement
+here; matching its clock is closer than it was, and presolve plus a
+Forrest–Tomlin update are what is left.
 
 A full requirement-by-requirement conformance audit against the problem
 statement — including what is *not* built — is in the artifact linked from the
@@ -764,14 +765,20 @@ five now have regression tests.
 - **Symmetry breaking is weak.** One inequality per generator rather than full
   lexicographic ordering, so it captures a fraction of what orbitopal fixing
   would. Sound, but nowhere near the `k!` the theory allows.
-- **The simplex can still cycle, and gt2 is where it shows.** On gt2's
-  cut-augmented root relaxation -- 119 rows, solvable in 1,354 iterations from
-  the same basis under the root bounds -- the propagated bounds send it to
-  **224,352 iterations** without finishing. The anti-degeneracy perturbation
-  does not break the stall. The root cut loop now caps and rolls back around
-  it, so gt2 returns its optimum 21166 instead of nothing, but it is no longer
-  *proved* within 60 s where it once was. This is the open bug behind that
-  gap, and it is a simplex problem rather than a cutting one.
+- **dcmulti lost its incumbent to the dual pricing fix.** Giving the dual
+  simplex Devex weights changed which vertices the tree visits, and the primal
+  heuristic that used to stumble onto a feasible point on dcmulti no longer
+  does: it returned 202598.49 (7.7% off, unproven) and now returns nothing,
+  reproducibly, and not at 120 s or 180 s either. The trade was taken because
+  the pricing fix is worth far more than one unproven incumbent -- it took a
+  stalling relaxation from 106,400 iterations to 439, the LP set from 5.6 s to
+  2.0 s and p0201 from 21.7 s to 10.2 s -- but it is a real loss on the metric
+  this project says it cares most about. Recovering it is a heuristics
+  question, not a pricing one.
+- **gt2 no longer closes at the root when MIR cuts are on.** GMI and cover cuts
+  alone close it in 0.70 s; with MIR in the candidate pool it takes the whole
+  60 s limit and proves nothing, though it does now find the optimum. The cut
+  *selection* rule is crowding out the cuts that matter.
 - **`node_solver="bnr"` is the less-trusted path.** It is not the default —
   `"simplex"` is — and it is the only path that ever returned a wrong answer
   (bug 5 above). Those are fixed and pinned by a brute-force sweep, but the

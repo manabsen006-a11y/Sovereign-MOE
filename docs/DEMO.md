@@ -39,14 +39,14 @@ Shadow prices and cost/RHS ranging. Reads `.mps` and `.lp`, plain or
 python -m bench.harness --mode lp
 ```
 11 MIPLIB instances against published reference values. 11/11 optimal, 11/11
-verifier-accepted; shifted geomean 0.245 s on the simplex path, 0.700 s on
+verifier-accepted; shifted geomean 0.145 s on the simplex path, 0.700 s on
 PDLP. Add `--mode mip` for the MILP set, where gt2 is a known regression (see
 README, Known limits).
 
 ```bash
 python -m bench.comparator
 ```
-Head-to-head with HiGHS. Agrees 11/11 to 5.6e-16.
+Head-to-head with HiGHS. Agrees 11/11 to 7.0e-16.
 
 ```bash
 python -m pytest tests/ -q
@@ -70,7 +70,7 @@ PS requires; it is quarantined to that file and never touches the engine.
 
 **"How does it compare to CPLEX/Xpress?"**
 Not tested against either — no licence. Against HiGHS it is correct on 11/11 and
-roughly 27× slower on the LP set (8.6× excluding the degenerate 10teams). The gap is presolve and a Forrest–Tomlin basis
+roughly 6.7× slower on the LP set (4.8× excluding the degenerate 10teams). The gap is presolve and a Forrest–Tomlin basis
 update, both named in the roadmap. Say the number; it is more credible than
 dodging it.
 

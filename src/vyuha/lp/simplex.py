@@ -48,6 +48,15 @@ largest reduced cost. Dantzig's rule is scale-dependent and takes far more
 iterations; Devex approximates steepest-edge pricing at a fraction of the cost by
 maintaining weights against a reference framework, resetting when they drift.
 
+The **dual** loop prices its leaving row the same way, which it did not always
+do. ``_worst_infeasible`` has always scored rows as ``violation**2 / weight``,
+the steepest-edge form, but nothing maintained the weights: they stayed at 1 and
+the rule silently collapsed to Dantzig's. The cost of that is not subtle. On one
+119-row relaxation the dual loop ran past 100,000 iterations without finishing,
+with no degeneracy to blame -- not one pivot in 100,000 took a step below the
+feasibility tolerance, and the mean step was 2.4e2. It was choosing badly, every
+iteration. With the weights maintained the same solve takes 439 iterations.
+
 References
 ----------
 Dantzig, *Linear Programming and Extensions*, Princeton 1963.
@@ -354,6 +363,34 @@ def _worst_infeasible(zB, basic, lower, upper, weight, feas_tol):
 
 
 @jit_kernel()
+def _dual_devex_update(weight, alpha, r, pivot, floor):
+    """Dual Devex reference weights after pivoting on row ``r``.
+
+    ``_worst_infeasible`` already scores rows as ``v**2 / weight[i]``, which is
+    the dual steepest-edge form -- it just had nothing maintaining the weights,
+    so every weight stayed at 1 and the rule collapsed to Dantzig's: pick the
+    largest violation. That is as bad in the dual as it is in the primal, and
+    the primal loop has had Devex weights all along.
+
+    The reference-framework update, with ``alpha = B^-1 A_q`` and the pivot
+    ``alpha[r]``: a row's weight can only grow, and the pivot row's is rescaled
+    by the square of the pivot. Approximating steepest edge this way costs one
+    pass over ``m`` per iteration and no extra solve.
+    """
+    m = weight.shape[0]
+    wr = weight[r]
+    inv = 1.0 / pivot
+    for i in range(m):
+        if i != r:
+            a = alpha[i] * inv
+            cand = a * a * wr
+            if cand > weight[i]:
+                weight[i] = cand
+    nw = wr * inv * inv
+    weight[r] = nw if nw > floor else floor
+
+
+@jit_kernel()
 def _phase1_costs(zB, basic, lower, upper, feas_tol, out):
     """Composite phase-1 cost: push each infeasible basic towards feasibility."""
     m = zB.shape[0]
@@ -619,6 +656,16 @@ def _dual_loop(S: _Simplex):
             S.maybe_refactorize(force=True)
             S.iters += 1
             continue
+
+        # Price the next leaving row properly. Without this the weights stay
+        # at 1 and _worst_infeasible degenerates to "largest violation", which
+        # on gt2's cut-augmented relaxation took the dual loop past 100,000
+        # iterations on 119 rows -- with no degeneracy at all to blame: not one
+        # pivot in 100,000 had a step below the feasibility tolerance, and the
+        # mean step was 2.4e2. It was simply choosing badly, every time.
+        _dual_devex_update(S.dual_weight, S.alpha, r, S.alpha[r], 1.0)
+        if S.dual_weight[r] > p.devex_reset:
+            S.dual_weight[:] = 1.0
 
         S.zB -= S.alpha * theta
         zq = B.nonbasic_value(q) + theta
