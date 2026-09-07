@@ -277,3 +277,49 @@ def test_mir_skips_rows_with_a_free_variable():
                 kind=np.ones(2, dtype=np.uint8), name="freevar")
     assert generate_mir(p, np.array([0.5, 0.5]), p.integer_mask,
                         p.col_lb, p.col_ub) == []
+
+
+# --------------------------------------------------------------------------- #
+# selection strength                                                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_gt2_root_closes_under_the_orthogonality_floor():
+    """REGRESSION: an orthogonality floor of 0.05 cost gt2 its root closure.
+
+    The greedy selection rejects a candidate that lies within
+    ``min_orthogonality`` of any cut already chosen. At 0.05 that discards
+    anything within about three degrees of an earlier pick -- which reads as
+    reasonable, because near-parallel cuts are usually redundant. They are
+    redundant in *direction* and not in *depth*: two cuts a couple of degrees
+    apart can sit at very different distances from the relaxation optimum, and
+    the greedy order does not find the deeper one first.
+
+    gt2's root is closed by exactly such a fan. With the floor at 0.05 the root
+    bound stalls at 21155.00 against an optimum of 21166 and the model is never
+    proved; at 0.001 the root reaches the optimum exactly.
+
+    This pins the outcome rather than the tolerance, so a future selection rule
+    that closes the root some other way still passes.
+    """
+    import os
+
+    from sovopt.io import read_model
+    from sovopt.mip.tree import MIPParams, solve_mip
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "data", "instances", "gt2.mps")
+    if not os.path.exists(path):
+        pytest.skip("benchmark instances not fetched")
+
+    prob = read_model(path)
+    sol = solve_mip(prob, MIPParams(time_limit=120))
+
+    assert sol.status == Status.OPTIMAL
+    assert abs(sol.objective - 21166.0) < 1e-6
+
+    lp_relaxation = 13460.233
+    root = lp_relaxation + sol.info["root_cut_bound_gain"]
+    assert root > 21166.0 - 1.0, (
+        f"root bound {root:.2f} leaves a gap to the optimum 21166; the cut "
+        f"selection is discarding the cuts that close it")

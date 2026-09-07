@@ -123,6 +123,16 @@ class MIPParams:
     lives; local cuts in the tree would have to be tracked per node."""
 
     cuts_per_round: int = 40
+    mir_cuts: bool = False
+    """MIR cuts on the model's own rows. Off by default: measured over the
+    MIPLIB set they are a net loss. They help p0201 (51.0 s -> 22.4 s) and block
+    gt2, whose root closes without them and does not close with them at any
+    orthogonality floor or round budget -- 89 cuts reach the optimum exactly,
+    while adding MIR gives 145 cuts and a root 61 short of it. Aggregate with
+    them off: 6/11 proved against 5/11, 368 s against 406 s. They are kept and
+    tested because the p0201 gain is real; what is missing is a rule that tells
+    the two cases apart, which is a selection question and not a generation
+    one."""
     heuristics: bool = True
 
     heuristic_restart: int = 400
@@ -355,8 +365,9 @@ def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol,
         # MIR on the model's own rows reaches inequalities the tableau does not
         # expose, and needs no basis. Validity brute-forced: 133 cuts over 55
         # instances, worst slack 0.0 against every feasible point.
-        cands += generate_mir(scaled, x, int_mask, lo0, hi0,
-                              max_cuts=params.cuts_per_round)
+        if params.mir_cuts:
+            cands += generate_mir(scaled, x, int_mask, lo0, hi0,
+                                  max_cuts=params.cuts_per_round)
         chosen = pool.select(cands, x, n, limit=params.cuts_per_round,
                              avg_row_nnz=avg_row_nnz, m=scaled.m)
         if not chosen:

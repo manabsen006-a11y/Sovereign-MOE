@@ -96,6 +96,67 @@ below a few hundred rows there is no hypersparsity to lose, so a cap keyed to
 
 ---
 
+## Objective-parallelism cut scoring (attempted, reverted)
+
+**Idea.** Cuts are ranked by efficacy, the Euclidean distance from the
+relaxation optimum to the cut:
+
+```
+efficacy = violation / ||a||
+```
+
+That is a *normalised* violation, so it mechanically rewards a sparse cut -- a
+small `||a||` inflates the ratio however little the cut moves the bound. On gt2
+this looked like exactly the problem: MIR cuts have median density 0.085
+against GMI's 0.32, win the ranking, and leave a root bound 70 units *worse*
+than GMI alone.
+
+The textbook remedy is to score on efficacy and objective parallelism together
+(Wesselmann & Suhl, *Implementing cutting plane management and selection
+techniques*, Paderborn, 2012), since a cut only lifts the bound insofar as it
+opposes the objective:
+
+```
+score = efficacy * (1 + w * |c.a| / (||c|| ||a||))
+```
+
+**The hypothesis measured true.** Objective parallelism of selected cuts on
+gt2 separates the families cleanly -- GMI median 0.181, MIR median 0.084, and
+MIR's single best cut (0.186) barely reaches GMI's median.
+
+**Why it was reverted anyway.** The response to `w` is not monotonic, and not
+close to it. Root gap on gt2, optimum 21166:
+
+| w | 0.0 | 0.5 | 1.0 | 2.0 | 4.0 |
+|---|---|---|---|---|---|
+| root gap | 84.4 | 17.8 | 127.3 | 82.8 | 112.9 |
+
+These runs are deterministic, so that is not noise -- it is the greedy
+selection trajectory swinging on small perturbations. Any `w` chosen from this
+table is fitted to one instance's chaos. Over the full set `w = 1` measured as
+a wash against `w = 0`: 5/11 proved either way, 405.8 s against 404.9 s, one
+instance better (misc07's incumbent reaching the true optimum 2810) and one
+worse (khb05250 7.4 s -> 8.2 s).
+
+A change that does not fix the instance it was written for, and that cannot be
+told apart from its own baseline on the rest of the set, has not earned the
+knob it adds.
+
+**What was wrong instead.** The efficacy ranking was never the problem. gt2 was
+losing its root closure to the *orthogonality floor* -- 0.05 rejects any cut
+within 3 degrees of one already chosen, and gt2's root is closed by a fan of
+near-parallel cuts of very different depths. Lowering the floor to 0.001 closes
+gt2 at the root exactly (21166.00, 86 cuts, 5.6 s). The efficacy floor was
+checked in the same sweep and is not implicated: 1e-4 through 1e-8 all close it
+once the orthogonality floor is right.
+
+Worth recording as a habit: the measurement that confirmed the hypothesis
+(parallelism really does separate the families) and the measurement that
+decided the change (does it help?) were different measurements, and only the
+second one mattered.
+
+---
+
 ## The 22-item knapsack table (published, withdrawn)
 
 Not a failed optimisation — a failed *measurement*. It is the first published

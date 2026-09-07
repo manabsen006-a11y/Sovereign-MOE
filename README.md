@@ -781,10 +781,13 @@ five now have regression tests.
   2.0 s and p0201 from 21.7 s to 10.2 s -- but it is a real loss on the metric
   this project says it cares most about. Recovering it is a heuristics
   question, not a pricing one.
-- **gt2 no longer closes at the root when MIR cuts are on.** GMI and cover cuts
-  alone close it in 0.70 s; with MIR in the candidate pool it takes the whole
-  60 s limit and proves nothing, though it does now find the optimum. The cut
-  *selection* rule is crowding out the cuts that matter.
+- **MIR cuts are off by default; they are a net loss on the set.** They help
+  p0201 (51.0 s -> 22.4 s) and block gt2, whose root closes exactly without
+  them (89 cuts, bound 21166.00) and does not close with them at any
+  orthogonality floor or round budget (145 cuts, bound 61 short). Aggregate
+  with them off: 6/11 proved against 5/11, 368 s against 406 s. Enable with
+  `MIPParams(mir_cuts=True)`. What is missing is a rule that separates the two
+  cases; that is a selection question, not a generation one.
 - **`node_solver="bnr"` is the less-trusted path.** It is not the default —
   `"simplex"` is — and it is the only path that ever returned a wrong answer
   (bug 5 above). Those are fixed and pinned by a brute-force sweep, but the
