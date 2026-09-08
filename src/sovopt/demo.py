@@ -77,7 +77,7 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     o.note("scaling and iterative refinement exist, not decoration.")
 
     # ---------------------------------------------------------------- 2 ----
-    o.head(2, "Solve: our own revised simplex")
+    o.head(2, "Solve: two engines of our own, agreeing")
     from .lp.simplex import SimplexParams, solve_simplex
     # Warm the JIT before timing anything. The numba kernels compile on their
     # first call, so timing that call reports the compiler and not the solver:
@@ -98,6 +98,28 @@ def run(size: int = 14, gpu_nnz: int = 400_000, quiet_gpu: bool = False) -> int:
     if sol.basis_status is not None:
         from .lp.basis import BASIC
         o.kv("basis", f"{int((sol.basis_status == BASIC).sum())} basic variables")
+    # The second engine, on the same model. The problem statement names an
+    # interior-point method beside the revised simplex, and the two are built
+    # from different mathematics -- one walks vertices, the other follows the
+    # central path and never touches a vertex until the end. Landing on the
+    # same number is a stronger claim than either makes alone: it is a check
+    # neither engine could perform on itself.
+    try:
+        from .lp.ipm import IPMParams, solve_ipm
+        solve_ipm(prob.copy(), IPMParams())        # warm the JIT before timing
+        t = time.perf_counter()
+        ip = solve_ipm(prob.copy(), IPMParams())
+        dt_ip = time.perf_counter() - t
+        o.note("")
+        o.kv("interior point", f"{ip.status.name}   {ip.objective:.10g}")
+        o.kv("iterations", f"{ip.iterations} against the simplex's "
+                           f"{sol.iterations:,}")
+        o.kv("time", f"{dt_ip:.3f} s")
+        o.kv("the two agree to", f"{abs(sol.objective - ip.objective):.2e}")
+    except Exception as e:                          # noqa: BLE001
+        o.note(f"(interior-point stage unavailable: {type(e).__name__}: "
+               f"{str(e)[:60]})")
+
     o.note("")
     o.note("Built from mathematical foundations: no solver library is linked,")
     o.note("imported or vendored. tools/check_provenance.py enforces it in CI.")

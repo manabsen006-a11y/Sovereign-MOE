@@ -7,7 +7,7 @@ follow-up questions without improvising.
 python -m sovopt.cli demo
 ```
 
-Seven stages, ~90 seconds, each guarded so a stage that cannot run on the day
+Eight stages, ~90 seconds, each guarded so a stage that cannot run on the day
 says so and the demo keeps going. Nothing in it can be the reason the demo
 stops.
 
@@ -17,13 +17,14 @@ stops.
 
 | # | Stage | The claim it backs |
 |---|-------|--------------------|
-| 1 | Refinery blending model | Real industrial structure, not a toy. Coefficient ratio 4.7e10 → 3.6e3 after Curtis–Reid |
-| 2 | Revised simplex | Built from mathematical foundations — the PS's hard constraint |
-| 3 | Shadow prices + ranging | What a planner actually reads. Worst error 3.9e-15 across 239 binding rows |
-| 4 | Independent verifier | Correct by a check that shares no code with the solver |
-| 5 | HiGHS head-to-head | Correct by an outside standard — the PS requires a comparator |
-| 6 | CPU vs GPU | The GPU claim, measured both ways, crossover shown |
-| 7 | Convex QP | Beyond LP — an optimum no vertex method can reach |
+| 1 | Refinery blending model | Real industrial structure, not a toy. Coefficient ratio 6.9e8 → 2.4e2 after Curtis–Reid |
+| 2 | Revised simplex **and interior point** | Built from mathematical foundations — the PS's hard constraint. Two engines from different mathematics agreeing to 2.3e-10 is a check neither can perform on itself |
+| 3 | The arithmetic, shown | The blend, term by term, summed back to the objective the solver reported — not asserted, displayed |
+| 4 | Shadow prices + ranging | What a planner actually reads. Worst error 3.9e-15 across 239 binding rows |
+| 5 | Independent verifier | Correct by a check that shares no code with the solver |
+| 6 | HiGHS head-to-head | Correct by an outside standard — the PS requires a comparator |
+| 7 | CPU vs GPU | The GPU claim, measured both ways, crossover shown |
+| 8 | Convex QP | Beyond LP — an optimum no vertex method can reach |
 
 ---
 
@@ -39,9 +40,18 @@ Shadow prices and cost/RHS ranging. Reads `.mps` and `.lp`, plain or
 python -m bench.harness --mode lp
 ```
 11 MIPLIB instances against published reference values. 11/11 optimal, 11/11
-verifier-accepted; shifted geomean 0.145 s on the simplex path, 0.700 s on
-PDLP. Add `--mode mip` for the MILP set, where gt2 is a known regression (see
-README, Known limits).
+verifier-accepted on all three engines; shifted geomean 0.140 s on the interior
+point, 0.258 s on the simplex, 1.496 s on PDLP, measured together. `--method ipm` or
+`--method simplex` forces one. Add `--mode mip` for the MILP set: 6/11 proved
+at a 60 s limit, 10/11 verifier-accepted, and every proved optimum matches the
+published value exactly.
+
+```bash
+python -m bench.scale --mode lp
+```
+How far the engines actually go, on refinery models rather than random
+matrices. Largest solved and verified: 2,080 x 102,400 with 1.02M nonzeros in
+3.65 s. See README, Scale.
 
 ```bash
 python -m bench.comparator

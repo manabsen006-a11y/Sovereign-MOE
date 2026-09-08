@@ -28,23 +28,23 @@ hardware.
 SOVOPT benchmark  mode=lp  method=pdlp  device=cpu  time-limit=90s  tol=1e-8
 
 instance         rows   cols      nnz status            objective        reference    relerr     time  chk
-10teams           230   2025    12150 OPTIMAL           917.00001              nan       nan    0.18s   ok
-dcmulti           290    548     1315 OPTIMAL           183975.54        183975.54  5.61e-11    0.90s   ok
-flugpl             18     18       46 OPTIMAL           1167185.7        1167185.7  4.29e-09    0.10s   ok
-gr4x6              34     48       96 OPTIMAL              185.55              nan       nan    0.09s   ok
-gt2                29    188      376 OPTIMAL           13460.233        13460.233  3.07e-11    0.01s   ok
-khb05250          101   1350     2700 OPTIMAL            95919464         95919464  7.60e-13    2.36s   ok
-mas76              12    151     1640 OPTIMAL           38893.904              nan       nan    5.06s   ok
-misc07            212    260     8619 OPTIMAL                1415              nan       nan    0.13s   ok
-mod010            146   2655    11203 OPTIMAL           6532.0833          6532.08  5.08e-07    0.52s   ok
-p0201             133    201     1923 OPTIMAL                6875             6875  1.11e-11    0.07s   ok
-qnet1             503   1541     4622 OPTIMAL           14274.103        14274.103  1.12e-10    2.36s   ok
+10teams           230   2025    12150 OPTIMAL           917.00001              nan       nan    0.61s   ok
+dcmulti           290    548     1315 OPTIMAL           183975.54        183975.54  5.61e-11    2.67s   ok
+flugpl             18     18       46 OPTIMAL           1167185.7        1167185.7  4.29e-09    0.34s   ok
+gr4x6              34     48       96 OPTIMAL              185.55              nan       nan    0.29s   ok
+gt2                29    188      376 OPTIMAL           13460.233        13460.233  3.07e-11    0.04s   ok
+khb05250          101   1350     2700 OPTIMAL            95919464         95919464  7.60e-13    6.90s   ok
+mas76              12    151     1640 OPTIMAL           38893.904              nan       nan   16.28s   ok
+misc07            212    260     8619 OPTIMAL                1415              nan       nan    0.45s   ok
+mod010            146   2655    11203 OPTIMAL           6532.0833          6532.08  5.08e-07    1.52s   ok
+p0201             133    201     1923 OPTIMAL                6875             6875  1.11e-11    0.16s   ok
+qnet1             503   1541     4622 OPTIMAL           14274.103        14274.103  1.12e-10    2.83s   ok
 
   status OPTIMAL       11/11
   verifier accepted    11/11
   within 1e-4 of ref   7/7
-  shifted geomean time 0.700s (shift 1s)
-  total time           11.8s
+  shifted geomean time 1.496s (shift 1s)
+  total time           32.1s
   worst relative error 5.08e-07 (mod010)
 ```
 
@@ -53,9 +53,18 @@ considerably faster:
 
 | engine | optimal | verified | shifted geomean | total | worst rel. err |
 |---|---|---|---|---|---|
-| first-order (PDLP) | 11/11 | 11/11 | 0.700 s | 11.8 s | 5.08e-07 |
-| **revised simplex** | 11/11 | 11/11 | **0.145 s** | 2.0 s | 5.10e-07 |
-| **interior point** | 11/11 | 11/11 | 0.148 s | **1.8 s** | 5.10e-07 |
+| first-order (PDLP) | 11/11 | 11/11 | 1.496 s | 32.1 s | 5.08e-07 |
+| revised simplex | 11/11 | 11/11 | 0.258 s | 3.9 s | 5.10e-07 |
+| **interior point** | 11/11 | 11/11 | **0.140 s** | **1.6 s** | 5.10e-07 |
+
+All four rows above -- the PDLP listing and these three -- were re-measured
+back to back at this commit, so they are comparable with each other and *not*
+with figures recorded earlier in this README: the same commands on this machine
+now run about twice the seconds they did in the sitting those were taken in,
+while every objective matches to the digit and the HiGHS ratio below reproduces
+exactly. **Read the ratios, not the seconds.** The one ratio that genuinely
+moved is the interior point's: it was at parity with the simplex until it was
+given a fill-reducing ordering, and is now about 1.8x faster on this set.
 
 Three engines agreeing to the published value on every instance is the point of
 having three. They fail differently: the simplex is exact but walks vertices and
@@ -213,7 +222,7 @@ python -m bench.harness --mode lp --method ipm      # the interior-point engine
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 243 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 247 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -340,9 +349,11 @@ passed while `node_solver="bnr"` was returning wrong answers. Enumerating every
 integer point of a five-variable model is a weak-looking check that no amount
 of agreement between components can substitute for.
 
-**Speed, stated plainly:** HiGHS solves the same eleven LP relaxations in 0.3 s
-against our 2.0 s — roughly **6.7× slower on our side**, or 4.8× excluding the
-degenerate 10teams. That gap was 27× until the dual simplex got the pricing it
+**Speed, stated plainly:** HiGHS solves the same eleven LP relaxations in 0.4 s
+against our 2.7 s — roughly **6.7× slower on our side**, or 4.8× excluding the
+degenerate 10teams. (That ratio is the durable part: re-measured at this commit
+it came back 6.75×, with both sides scaled by the same machine-state factor
+discussed under [Status](#status).) That gap was 27× until the dual simplex got the pricing it
 had been missing (see below). Matching its answers exactly is the achievement
 here; matching its clock is closer than it was, and presolve plus a
 Forrest–Tomlin update are what is left.
@@ -795,9 +806,11 @@ five now have regression tests.
 
 ## Known limits
 
-- **No crossover** from a first-order point to a basis, so the PDLP path still
-  cannot hand over to the simplex on large models. The two engines are chosen
-  between, not composed.
+- **No crossover** from a first-order point to a basis, so neither PDLP nor the
+  interior point can hand over to the simplex on large models, and neither can
+  answer a ranging question. The three engines are chosen between, not
+  composed -- which is why `plan k=8` is solved by PDLP in 45.6 s and there is
+  still no basis for it.
 - **Product-form update, not Forrest–Tomlin.** Fill grows linearly in the number
   of etas, forcing a refactorisation every 60 pivots. This is the main reason
   10teams takes 18k iterations and 12 s.
@@ -899,7 +912,7 @@ five now have regression tests.
   in the interior point. Recorded in
   [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
 - **The interior-point method returns no basis and no certificate.** It solves
-  all 11 instances to the published value at a 0.148 s shifted geomean, but it
+  all 11 instances to the published value at a 0.140 s shifted geomean, but it
   cannot warm-start a simplex, cannot answer a ranging question, and detects
   infeasibility by *stagnation* rather than by a Farkas certificate -- so it
   reports `INFEASIBLE_OR_UNBOUNDED` where the simplex reports `INFEASIBLE`.
@@ -986,14 +999,17 @@ Four things the table says that an aggregate would hide:
   between iterations and, now, before each factorisation -- but a factorisation
   already running cannot be interrupted, and a 120 s limit was measured
   overrunning to 210 s on `plan k=8`.
-* **The simplex hands back a point the verifier rejects when it times out.** At
-  `plan k=8` and `k=16` it returned `TIME_LIMIT` with an objective of 0 and a
-  point that fails the independent verifier -- a phase-1 iterate that never
-  reached feasibility. `Status.TIME_LIMIT` reports `has_solution`, so a caller
-  is invited to use it. The interior point now withholds `x` when the point
-  fails the feasibility cap; the simplex does not. That is an open soundness
-  wart, not a wrong answer, and it is recorded rather than fixed because fixing
-  it means re-validating every path that reads a timed-out LP.
+* **A timed-out solve no longer hands back a point the verifier rejects.**
+  This table is what found it: at `plan k=8` and `k=16` the simplex returned
+  `TIME_LIMIT` with an objective of 0 and a phase-1 iterate that had never
+  reached feasibility, and `Status.TIME_LIMIT` reports `has_solution`, so a
+  caller was invited to use it. Both engines now withhold `x` when the point
+  misses the feasibility cap **on the unscaled model** -- the yardstick the
+  independent verifier uses -- so those rows report no solution instead of a
+  wrong one. A phase-2 timeout is feasible and keeps its point, which is the
+  case worth reporting; `INFEASIBLE` and `UNBOUNDED` keep their last iterate
+  too, since they already report `has_solution` false and the iterate is worth
+  having for diagnostics.
 
 ### MILP, 120 s limit
 
@@ -1051,6 +1067,6 @@ src/sovopt/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        243 tests including regressions for every bug above
+tests/        247 tests including regressions for every bug above
 ui/           local single-page interface
 ```

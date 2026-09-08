@@ -942,6 +942,23 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
         y = -y
         d = -d
 
+    # A phase-1 iterate that never reached feasibility is not a solution, and
+    # both TIME_LIMIT and ITERATION_LIMIT report ``has_solution`` -- so handing
+    # the point back invites a caller to use it. Measured on a 15,360-row
+    # planning model at a 120 s limit: the run returned TIME_LIMIT with an
+    # objective of 0 and a point the independent verifier rejected outright.
+    # The test is on the *unscaled* model, which is the yardstick the verifier
+    # uses; a phase-2 timeout is feasible and keeps its point, which is the
+    # case worth reporting.
+    # Only the statuses that *claim* a solution: INFEASIBLE and UNBOUNDED
+    # already report has_solution False, and their last iterate is worth
+    # keeping for diagnostics and for the JSON report.
+    if x is not None and Status(status).has_solution and status != Status.OPTIMAL:
+        row_v, col_v, _ = prob.violation(x)
+        if max(row_v, col_v) > max(params.feas_tol, 1e-6):
+            x = None
+            obj = float("nan")
+
     sol = Solution(status=status, x=x, objective=obj, y=y, reduced_costs=d,
                    basis_status=B.status.copy(), iterations=S.iters,
                    time=time.perf_counter() - t0,
