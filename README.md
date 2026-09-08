@@ -72,29 +72,38 @@ and primal heuristics:
 ```
                                               measured on this tree
 instance   before cuts+heuristics       status        objective     time
-flugpl     OPTIMAL     1201500          OPTIMAL         1201500     4.83s
-gr4x6      OPTIMAL      202.35          OPTIMAL          202.35     0.28s
-gt2        TIME_LIMIT   (none)          TIME_LIMIT        21166    60.59s   <- see below
-khb05250   TIME_LIMIT   (none)          OPTIMAL   1.0694023e+08     3.74s
-mod010     OPTIMAL        6548          OPTIMAL            6548     2.08s
-p0201      OPTIMAL        7615          OPTIMAL            7615    10.22s
-mas76      TIME_LIMIT 40589.44          TIME_LIMIT   40408.477     60.19s
-misc07     TIME_LIMIT     2810          TIME_LIMIT        2810     60.64s
-dcmulti    TIME_LIMIT   (none)          TIME_LIMIT      (none)     62.48s  <- see below
-qnet1      TIME_LIMIT   (none)          TIME_LIMIT    20627.76     60.39s (28.7% off)
-10teams    TIME_LIMIT   (none)          TIME_LIMIT      (none)     60.91s
+flugpl     OPTIMAL     1201500          OPTIMAL         1201500     4.50s
+gr4x6      OPTIMAL      202.35          OPTIMAL          202.35     0.65s
+gt2        TIME_LIMIT   (none)          OPTIMAL           21166     6.40s   <- see below
+khb05250   TIME_LIMIT   (none)          OPTIMAL   1.0694023e+08     4.34s
+mod010     OPTIMAL        6548          OPTIMAL            6548     3.60s
+p0201      OPTIMAL        7615          OPTIMAL            7615    11.93s
+mas76      TIME_LIMIT 40589.44          TIME_LIMIT   40589.436     60.27s   <- see below
+misc07     TIME_LIMIT     2810          TIME_LIMIT        2810     60.30s
+dcmulti    TIME_LIMIT   (none)          TIME_LIMIT     189263.2    60.98s  (0.58% off)
+qnet1      TIME_LIMIT   (none)          TIME_LIMIT    20627.76     60.52s (28.7% off)
+10teams    TIME_LIMIT   (none)          TIME_LIMIT      (none)     60.76s
 
                         before     now
-  status OPTIMAL         4/11      5/11
-  verifier accepted      6/11      9/11
-  no incumbent at all    5/11      2/11
-  shifted geomean       31.4s     23.8s
+  status OPTIMAL         4/11      6/11
+  verifier accepted      6/11     10/11
+  no incumbent at all    5/11      1/11
+  shifted geomean       31.4s     20.2s
 ```
 
 Every proved optimum matches the published value exactly, and the verifier
 rejects nothing.
 
-**gt2 is a regression this table found, now partly repaired.** It was published
+**Two rows moved for reasons that are not cuts, and are recorded here rather
+than smoothed over.** dcmulti now returns an incumbent 0.58% off where the
+previous table had none, and mas76's incumbent went the other way -- 40589.436
+against the 40408.477 recorded before, and mas76 is a minimisation, so that is
+a *worse* answer than the one this table used to report. Both are
+identical under all three MIR settings, so neither comes from the rule
+described below; they are heuristic drift from the dual pricing and
+heuristic-restart changes, and mas76 is the open one.
+
+**gt2 is a regression this table found, now repaired.** It was published
 as `OPTIMAL 21166 in 1.71s`. Re-running the table showed it returning *nothing*
 — timing out with no incumbent — and bisection put the break at `caa5fa3`, the
 commit that added MIR cuts. It reproduced on demand, with `nodes=0` either way:
@@ -112,13 +121,17 @@ gt2 returns `21166` again -- the published optimum, verifier-accepted -- and the
 set as a whole went from 9/11 to 10/11 verified and 2 instances with no
 incumbent down to 1. flugpl fell from 9.28 s to 3.81 s on the same change.
 
-**It is still not back to `OPTIMAL`.** The relaxation that used to hang has
-been fixed -- it was not cycling at all, but the dual simplex pricing described
-below, and it now solves in 439 iterations instead of running past 100,000 --
-so gt2 explores 3,903 nodes where it managed 1,087. What remains is that MIR
-cuts crowd out the GMI and cover cuts that close gt2 at the root: with MIR
-disabled it is `OPTIMAL` in 0.70 s. That is a cut *selection* question, not a
-correctness one, and it is open.
+**It is back to `OPTIMAL`, in 6.40 s.** The relaxation that used to hang was
+never cycling -- it was the dual simplex pricing described below, and it now
+solves in 439 iterations instead of running past 100,000. What remained after
+that was cut *selection*, and it took two fixes. MIR cuts crowd out the GMI and
+cover cuts that close gt2's root; and the orthogonality floor was rejecting the
+fan of near-parallel cuts the closure actually needs, stalling the root at
+21155.00 against an optimum of 21166. The floor is fixed, and MIR is no longer
+one setting for the whole set -- it is decided per model by running the root
+cut loop both ways, which is described under [Known limits](#known-limits).
+gt2 takes the branch that leaves MIR out, closes its root at 21166.00 exactly,
+and proves the model.
 
 The regression went unnoticed for four commits because this table was not re-run
 after the code beneath it changed — the same failure recorded in
@@ -126,14 +139,17 @@ after the code beneath it changed — the same failure recorded in
 regenerates stops being a measurement and becomes a memory.
 
 The motivating failure -- five instances returning *no answer at all* -- is
-down to two, and one of those two is the gt2 regression above rather than
-anything intrinsic to the instance.
+down to one, 10teams. gt2 and dcmulti were the last two to recover: gt2 is
+proved outright now, and dcmulti returns a feasible point again, which the
+entry under [Known limits](#known-limits) records without claiming credit for.
 
 **The cost, stated plainly:** cuts make some node LPs more expensive than the
-bound they buy. p0201 is the clearest case, and it is **marginal at a 60 s
-limit**: 20.68 s in the run above, against 39.65 s and a 60.5 s timeout on
-earlier runs of the same instance, finding the optimum 7615 every time but not
-always proving it. Treat any single figure for it as one draw.
+bound they buy. p0201 is the clearest case, and it used to be **marginal at a
+60 s limit**: 11.93 s in the run above, against 20.68 s, 39.65 s and a 60.5 s
+timeout on earlier runs of the same instance, finding the optimum 7615 every
+time but not always proving it. Most of that spread was the MIR question below
+-- forcing MIR off in the same sweep costs it 52.17 s -- but it is one draw
+either way, and should be read as one.
 
 A cost-aware cut rollback was built to fix exactly this and **removed again**:
 it fixed p0201 and flugpl but broke gt2 and khb05250, which cuts were saving.
@@ -177,7 +193,7 @@ python -m bench.harness --mode lp                  # validate against published 
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 203 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 207 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -771,23 +787,46 @@ five now have regression tests.
 - **Symmetry breaking is weak.** One inequality per generator rather than full
   lexicographic ordering, so it captures a fraction of what orbitopal fixing
   would. Sound, but nowhere near the `k!` the theory allows.
-- **dcmulti lost its incumbent to the dual pricing fix.** Giving the dual
-  simplex Devex weights changed which vertices the tree visits, and the primal
-  heuristic that used to stumble onto a feasible point on dcmulti no longer
-  does: it returned 202598.49 (7.7% off, unproven) and now returns nothing,
-  reproducibly, and not at 120 s or 180 s either. The trade was taken because
-  the pricing fix is worth far more than one unproven incumbent -- it took a
-  stalling relaxation from 106,400 iterations to 439, the LP set from 5.6 s to
-  2.0 s and p0201 from 21.7 s to 10.2 s -- but it is a real loss on the metric
-  this project says it cares most about. Recovering it is a heuristics
-  question, not a pricing one.
-- **MIR cuts are off by default; they are a net loss on the set.** They help
-  p0201 (51.0 s -> 22.4 s) and block gt2, whose root closes exactly without
-  them (89 cuts, bound 21166.00) and does not close with them at any
-  orthogonality floor or round budget (145 cuts, bound 61 short). Aggregate
-  with them off: 6/11 proved against 5/11, 368 s against 406 s. Enable with
-  `MIPParams(mir_cuts=True)`. What is missing is a rule that separates the two
-  cases; that is a selection question, not a generation one.
+- **dcmulti's incumbent was lost to the dual pricing fix, and has come back
+  unexplained.** Giving the dual simplex Devex weights changed which vertices
+  the tree visits, and the primal heuristic that used to stumble onto a
+  feasible point on dcmulti stopped doing so: it returned 202598.49 (7.7% off,
+  unproven), then nothing at all, reproducibly, at 60 s, 120 s and 180 s. The
+  trade was taken anyway, because the pricing fix took a stalling relaxation
+  from 106,400 iterations to 439 and the LP set from 5.6 s to 2.0 s. As of the
+  table above it returns 189263.2 -- 0.58% off, verifier-accepted -- under all
+  three MIR settings, so the recovery is not the cut rule and it has **not been
+  bisected to a commit**. An unexplained recovery deserves no more trust than
+  an unexplained regression, so it is recorded rather than claimed. dcmulti is
+  still not proved inside the limit.
+- **MIR cuts are decided per model, not set once for the set.** They are worth
+  a factor of four on p0201 and cost gt2 its root closure outright, and no
+  structural property separates the two: both sit under the small-basis
+  exemption, both see MIR displace GMI cuts, and MIR is the *sparser* family in
+  both. What does separate them is the root bound itself, and it is available
+  before a single node is explored -- p0201 closes to 7185.00 with MIR against
+  7054.62 without, gt2 to 21166.00 without against 21104.83 with. So the
+  default (`mir_cuts=None`) runs the root cut loop both ways and keeps the
+  stronger bound, splitting the same cut-time budget between the two attempts
+  rather than doubling it; `True` or `False` forces one loop, and every
+  solution reports which way it went in `info["root_mir_cuts"]`. Measured over
+  the set at a 60 s limit:
+
+  |                  | MIR off | MIR on  | decided per model |
+  |---|---|---|---|
+  | status OPTIMAL   | 6/11    | 5/11    | **6/11**   |
+  | gt2              | 5.62s   | timeout | 6.40s      |
+  | p0201            | 52.17s  | 11.82s  | 11.93s     |
+  | shifted geomean  | 22.39s  | 23.90s  | **20.19s** |
+
+  **What it costs:** a second root cut loop on every model, which is why gt2
+  takes 6.40 s here against 5.62 s with MIR simply forced off. It buys p0201's
+  40 s, and a geomean better than either fixed setting -- the point being that
+  neither fixed setting can win both rows, and this is the first rule in this
+  repository that does. It is still only a root-bound race: it says nothing
+  about which family will pay off deeper in the tree, and a model whose root
+  MIR helps but whose tree it slows would be chosen wrongly. No instance in
+  this set behaves that way; that is evidence, not a proof.
 - **`node_solver="bnr"` is the less-trusted path.** It is not the default —
   `"simplex"` is — and it is the only path that ever returned a wrong answer
   (bug 5 above). Those are fixed and pinned by a brute-force sweep, but the
@@ -857,6 +896,6 @@ src/sovopt/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        203 tests including regressions for every bug above
+tests/        207 tests including regressions for every bug above
 ui/           local single-page interface
 ```

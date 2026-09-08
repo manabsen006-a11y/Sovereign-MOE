@@ -77,6 +77,20 @@ what is unknown at the moment the decision has to be made.
   gt2, khb05250, mod010 and flugpl were never collected, so this is a
   hypothesis and not a result.
 
+**Outcome: the third one worked, in a form that needs no threshold.** The
+threshold was never found and is not needed. `MIPParams.mir_cuts=None`, now the
+default, runs the root cut loop with MIR off and with MIR on and keeps whichever
+reached the stronger bound -- a race rather than a cut-off, so nothing has to be
+calibrated and nothing has to be priced. It is the gain-only rule with the one
+degree of freedom removed. Root bounds: p0201 7054.62 without MIR against
+7185.00 with, gt2 21166.00 without against 21104.83 with. Over the set at 60 s
+it proves 6/11 at a 20.19 s shifted geomean, against 6/11 at 22.39 s with MIR
+forced off and 5/11 at 23.90 s forced on -- the first rule here that wins both
+gt2 and p0201 instead of trading one for the other. It costs a second root cut
+loop on every model. What it still does not do is price fill against tree size;
+it sidesteps that question rather than answering it, and a model whose root MIR
+helps but whose tree MIR slows would be chosen wrongly.
+
 **What is in the code instead.** The density filter in
 `CutPool.support_limit`, keyed to the basis size `m`. It catches the
 pathological case (near-dense cuts on a model large enough for hypersparsity to
@@ -219,11 +233,13 @@ kernel timings have since been checked (below), and so have the MIPLIB tables
 -- which turned up a live regression rather than a bad number: gt2 was
 published as OPTIMAL in 1.71 s and had come to return no incumbent at all,
 bisected to the commit that added MIR cuts. The root cut loop has been repaired
-so gt2 returns its optimum again, but it is still not *proved* inside the
-limit, because the underlying cause is the simplex cycling rather than anything
-about cuts. That part is open, and is recorded under "Known limits" in the
-README. The lesson is the same one twice over: a table nobody regenerates stops
-being a measurement and becomes a memory.
+and gt2 is now proved again, in 6.40 s. The diagnosis in this paragraph was
+itself wrong for a while: the relaxation was never cycling, it was dual simplex
+pricing, and once that was fixed what remained was cut selection -- an
+orthogonality floor rejecting the fan of near-parallel cuts that closes the
+root, and MIR crowding out the GMI and cover cuts that do the closing. Both are
+fixed, the second by the rule recorded above. The lesson is the same one twice
+over: a table nobody regenerates stops being a measurement and becomes a memory.
 
 ---
 

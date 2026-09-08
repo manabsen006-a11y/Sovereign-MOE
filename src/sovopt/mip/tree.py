@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import heapq
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -123,16 +123,34 @@ class MIPParams:
     lives; local cuts in the tree would have to be tracked per node."""
 
     cuts_per_round: int = 40
-    mir_cuts: bool = False
-    """MIR cuts on the model's own rows. Off by default: measured over the
-    MIPLIB set they are a net loss. They help p0201 (51.0 s -> 22.4 s) and block
-    gt2, whose root closes without them and does not close with them at any
-    orthogonality floor or round budget -- 89 cuts reach the optimum exactly,
-    while adding MIR gives 145 cuts and a root 61 short of it. Aggregate with
-    them off: 6/11 proved against 5/11, 368 s against 406 s. They are kept and
-    tested because the p0201 gain is real; what is missing is a rule that tells
-    the two cases apart, which is a selection question and not a generation
-    one."""
+    mir_cuts: bool | None = None
+    """MIR cuts on the model's own rows. ``None`` decides per model.
+
+    They are worth roughly a factor of four on p0201 and cost gt2 its root
+    closure entirely, and no structural property separates the two: both sit
+    under the small-basis exemption, both see MIR displace some GMI cuts, and
+    MIR is the *sparser* family in both. What does separate them is the
+    quantity actually being optimised, and it is visible at the root before a
+    single node is explored:
+
+        p0201   root 7054.62 without MIR,  7185.00 with   -> take them
+        gt2     root 21166.00 without,    21104.83 with   -> leave them
+
+    So ``None`` runs the root cut loop both ways and keeps the stronger
+    bound, splitting the same cut-time budget between the two attempts
+    rather than doubling it. ``True`` or ``False`` forces it and runs one
+    loop. Either way the solution reports which way it went, in
+    ``info["root_mir_cuts"]``.
+
+    This is the gain-only rule docs/NEGATIVE-RESULTS.md identified as the
+    stable quantity after the fill-priced rollback failed, with the one
+    degree of freedom removed: a race rather than a threshold, so there is
+    nothing to calibrate. It compares bounds, which are comparable, and
+    never tries to price a cost against a tree size that is not yet known.
+    What it does not do is look past the root -- a model whose root MIR
+    helps but whose tree MIR slows would be chosen wrongly, and nothing
+    here would notice.
+    """
     heuristics: bool = True
 
     heuristic_restart: int = 400
@@ -460,6 +478,10 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     root_basis = None
     n_cuts = 0
     cut_gain = 0.0
+    # Which way the root cut loop went, or None if it never ran. The choice is
+    # automatic by default, so a run that did not report it could not be
+    # reproduced from its parameters alone.
+    mir_used: bool | None = None
     if use_bnr:
         root_cfg = engine.cfg.iters
         engine.cfg.iters = params.root_iters
@@ -481,9 +503,42 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
 
         if params.cut_rounds > 0:
             before = root_bound
-            scaled, node_lp, cx, cb, cbasis, n_cuts = _root_cut_loop(
-                scaled, node_lp, lo0, hi0, int_mask, params, tol,
-                deadline=t0 + params.cut_time_frac * params.time_limit)
+            trials = ([False, True] if params.mir_cuts is None
+                      else [bool(params.mir_cuts)])
+            # The cut budget as an instant, not a duration. Each attempt takes
+            # an even share of what is *left* at the moment it starts, rather
+            # than a slice carved off the limit in advance: root setup runs
+            # before this and spends real time, and a fixed slice charges the
+            # first attempt for it. A 2 s symmetry pass against a 20 s limit
+            # would leave attempt 0 no rounds at all and hand the decision to
+            # attempt 1 by forfeit -- on gt2, exactly the wrong answer. It also
+            # returns what an attempt does not use: both close in under a
+            # second here, so the second gets nearly the whole budget.
+            cut_end = t0 + params.cut_time_frac * params.time_limit
+            best = None
+            for k, use_mir in enumerate(trials):
+                # Every attempt cuts the uncut model -- append_cuts copies, so
+                # `scaled` is still what the previous attempt was handed. The
+                # solver is built per attempt so the one handed on to the tree
+                # belongs to the attempt that won it, instead of being left
+                # warm-started and re-timed by the attempt that lost.
+                lp_try = (node_lp if len(trials) == 1 else
+                          NodeSolver(scaled, SimplexParams(
+                              time_limit=params.time_limit,
+                              feas_tol=tol.primal_feas,
+                              opt_tol=tol.dual_feas)))
+                now = time.perf_counter()
+                out = _root_cut_loop(
+                    scaled, lp_try, lo0, hi0, int_mask,
+                    replace(params, mir_cuts=use_mir), tol,
+                    deadline=now + max(0.0, cut_end - now) / (len(trials) - k))
+                # Higher is stronger: this is the scaled minimisation bound and
+                # both attempts cut the same relaxation, so the two are
+                # directly comparable. A NaN or -inf attempt loses, which `>`
+                # gives for free.
+                if best is None or out[3] > best[3]:
+                    best, mir_used = out, use_mir
+            scaled, node_lp, cx, cb, cbasis, n_cuts = best
             if cx is not None:
                 root_x, root_basis = cx, cbasis
                 root_bound = cb / sc.obj
@@ -967,6 +1022,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         out.info = (engine.stats() if engine is not None else node_lp.stats())
         out.info["node_solver"] = params.node_solver
         out.info["root_cuts"] = n_cuts
+        out.info["root_mir_cuts"] = mir_used
         out.info["heuristics"] = heur.summary()
         out.info["nodes_infeasible"] = node_infeasible
         out.info["undecided_nodes"] = undecided
@@ -987,6 +1043,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     if sym_info is not None:
         sol.info["symmetry"] = sym_info.summary()
     sol.info["root_cut_bound_gain"] = cut_gain
+    sol.info["root_mir_cuts"] = mir_used
     sol.info["heuristics"] = heur.summary()
     sol.info["warm_start_hit_rate"] = warm_hits / max(warm_tries, 1)
     sol.info["nodes_infeasible"] = node_infeasible

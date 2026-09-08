@@ -323,3 +323,56 @@ def test_gt2_root_closes_under_the_orthogonality_floor():
     assert root > 21166.0 - 1.0, (
         f"root bound {root:.2f} leaves a gap to the optimum 21166; the cut "
         f"selection is discarding the cuts that close it")
+
+
+@pytest.mark.parametrize("seed,expect_mir", [(15, True), (27, False)])
+def test_automatic_mir_keeps_whichever_root_bound_is_stronger(seed, expect_mir):
+    """``mir_cuts=None`` runs the cut loop both ways and keeps the better bound.
+
+    Both directions are pinned deliberately. A rule exercised only where MIR
+    wins would pass against an implementation that simply keeps the last
+    attempt -- and the case the rule exists for is the other one: on gt2, MIR
+    costs the root its closure, and keeping the last attempt would lose it.
+    ``seed=27`` is that case in miniature and runs in a second.
+
+    The bound is compared through ``root_cut_bound_gain`` rather than the
+    objective, because all three runs must reach the same objective. A cut
+    selection rule is allowed to change how fast an answer arrives; it is never
+    allowed to change the answer.
+    """
+    from sovopt.mip.tree import MIPParams, solve_mip
+
+    p = small_knapsack(seed=seed)
+    runs = {mir: solve_mip(p.copy(), MIPParams(device="cpu", time_limit=30,
+                                               mir_cuts=mir))
+            for mir in (False, True, None)}
+    gain = {k: v.info["root_cut_bound_gain"] for k, v in runs.items()}
+
+    # the seed is only worth testing if the two settings actually differ
+    assert gain[expect_mir] > gain[not expect_mir] + 1e-6
+
+    assert runs[None].info["root_mir_cuts"] is expect_mir
+    assert gain[None] == pytest.approx(gain[expect_mir], abs=1e-6)
+
+    # a forced run reports the setting it ran under, so any result can be
+    # reproduced from what it reports
+    assert runs[True].info["root_mir_cuts"] is True
+    assert runs[False].info["root_mir_cuts"] is False
+
+    for r in runs.values():
+        assert r.status == Status.OPTIMAL
+        assert r.objective == pytest.approx(runs[False].objective, abs=1e-6)
+
+
+def test_no_cut_loop_reports_no_mir_decision():
+    """With cuts off there is no decision to report, and None says so.
+
+    ``False`` would be a lie here -- it would read as "the loop ran and chose
+    against MIR" when no loop ran at all.
+    """
+    from sovopt.mip.tree import MIPParams, solve_mip
+
+    sol = solve_mip(small_knapsack(seed=15),
+                    MIPParams(device="cpu", time_limit=30, cut_rounds=0))
+    assert sol.status == Status.OPTIMAL
+    assert sol.info["root_mir_cuts"] is None
