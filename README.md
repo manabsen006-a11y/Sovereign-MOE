@@ -94,14 +94,22 @@ qnet1      TIME_LIMIT   (none)          TIME_LIMIT    20627.76     60.52s (28.7%
 Every proved optimum matches the published value exactly, and the verifier
 rejects nothing.
 
-**Two rows moved for reasons that are not cuts, and are recorded here rather
-than smoothed over.** dcmulti now returns an incumbent 0.58% off where the
-previous table had none, and mas76's incumbent went the other way -- 40589.436
-against the 40408.477 recorded before, and mas76 is a minimisation, so that is
-a *worse* answer than the one this table used to report. Both are
-identical under all three MIR settings, so neither comes from the rule
-described below; they are heuristic drift from the dual pricing and
-heuristic-restart changes, and mas76 is the open one.
+**Two rows moved for reasons that are not cuts. Both have been bisected rather
+than left as drift.**
+
+*dcmulti* returns an incumbent again -- 189263.2, 0.58% off, verifier-accepted
+-- where the previous table had none. Each end isolates to one commit: it was
+still 202598.49 at `50bf2f0`, gone by `ac66b9c`, and back at `6d6e588`.
+
+*mas76 was never a regression.* This table used to report 40408.477, and that
+number does not reproduce at the commit that published it -- `50bf2f0`, whose
+own message is "re-measure the MIPLIB tables", returns **40662.142** under the
+harness default. 40662.142 then holds unchanged across every commit through
+`a5582b2`, and `d7fe05c` improves it to the 40589.436 above. Measured against
+the figure that reproduces, mas76 got 72.7 *better*. Measured against the one
+that was published, it looked worse. The published one was the memory -- the
+same failure this README names below, caught this time in a table that had
+been labelled a re-measurement.
 
 **gt2 is a regression this table found, now repaired.** It was published
 as `OPTIMAL 21166 in 1.71s`. Re-running the table showed it returning *nothing*
@@ -787,18 +795,18 @@ five now have regression tests.
 - **Symmetry breaking is weak.** One inequality per generator rather than full
   lexicographic ordering, so it captures a fraction of what orbitopal fixing
   would. Sound, but nowhere near the `k!` the theory allows.
-- **dcmulti's incumbent was lost to the dual pricing fix, and has come back
-  unexplained.** Giving the dual simplex Devex weights changed which vertices
-  the tree visits, and the primal heuristic that used to stumble onto a
-  feasible point on dcmulti stopped doing so: it returned 202598.49 (7.7% off,
-  unproven), then nothing at all, reproducibly, at 60 s, 120 s and 180 s. The
-  trade was taken anyway, because the pricing fix took a stalling relaxation
-  from 106,400 iterations to 439 and the LP set from 5.6 s to 2.0 s. As of the
-  table above it returns 189263.2 -- 0.58% off, verifier-accepted -- under all
-  three MIR settings, so the recovery is not the cut rule and it has **not been
-  bisected to a commit**. An unexplained recovery deserves no more trust than
-  an unexplained regression, so it is recorded rather than claimed. dcmulti is
-  still not proved inside the limit.
+- **dcmulti's incumbent was lost and has come back; both ends are bisected,
+  neither is explained.** It returned 202598.49 (7.7% off, unproven) at
+  `50bf2f0`, nothing at all from `ac66b9c`, and 189263.2 (0.58% off,
+  verifier-accepted) from `6d6e588` onward. The loss used to be attributed
+  here to the dual simplex Devex pricing; **that attribution was wrong** -- the
+  incumbent was already gone one commit earlier, at the root cut loop's time
+  cap and rollback, and the pricing fix landed after it. The pricing fix is
+  still worth what it was worth: a stalling relaxation from 106,400 iterations
+  to 439, and the LP set from 5.6 s to 2.0 s. What neither end explains is why
+  a cut-loop cap and a tree update should move a primal heuristic's luck at
+  all, and that is the honest state of it -- the commits are known, the
+  mechanism is not. dcmulti is still not proved inside the limit.
 - **MIR cuts are decided per model, not set once for the set.** They are worth
   a factor of four on p0201 and cost gt2 its root closure outright, and no
   structural property separates the two: both sit under the small-basis
@@ -837,6 +845,28 @@ five now have regression tests.
 - **Cuts are separated at the root only** and are never rolled back when they
   fail to pay for themselves (see p0201 above). Local cuts in the tree and a
   cost-aware rollback are the next steps.
+- **The two instances that fall furthest short get essentially no cuts, and the
+  density filter is why.** Both sit above the small-basis threshold, and both
+  generate GMI cuts that are near-dense, so the filter that exists to preserve
+  hypersparsity rejects nearly all of them:
+
+  | | rows | cols | support cap | candidate support min/median | admitted |
+  |---|---|---|---|---|---|
+  | qnet1   | 503 | 1541 | 45  | 712 / 946  | **0 of 40** |
+  | 10teams | 230 | 2025 | 264 | 120 / 1750 | **1 of 40** |
+
+  qnet1 therefore runs its entire tree on the uncut relaxation -- root gain
+  0.0 -- and finishes 28.7% off. 10teams never finds a feasible point at all,
+  with every heuristic failing (`fix_and_propagate` 0/2, `feasibility_jump`
+  0/2, `feasibility_pump` 0/1) across 703 nodes.
+
+  **This is not a mis-tuned constant.** qnet1's *sparsest* candidate touches
+  712 of 1541 columns, so it fails even the looser `0.4n` branch of the cap at
+  616. Admitting these cuts means admitting near-dense rows on a 503-row basis
+  -- precisely the case the filter exists to prevent, and the one measured
+  above as taking p0201 from 1619 nodes in 9 s to 63 nodes in 60 s. What is
+  missing is a cut family that separates *sparsely* on these models, not a
+  larger cap.
 - **QP is convex-only, and first-order.** `sovopt.qp` solves a convex quadratic
   by proximal PDHG (Condat–Vũ), validated against six hand-derived optima
   including one whose answer is *not* a vertex — the case a simplex provably
