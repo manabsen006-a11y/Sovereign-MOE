@@ -210,6 +210,7 @@ python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.harness --mode lp --method ipm      # the interior-point engine
+python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
 python -m pytest tests/               # 231 tests; the 15 GPU ones skip without a device
@@ -898,13 +899,100 @@ five now have regression tests.
   reductions, and no postsolve stack.
 - **Netlib, Mittelmann and QPLIB are untouched.** Only 11 MIPLIB instances are
   held; Netlib needs an `emps` decompressor that is not written.
-- **Scale is the weakest claim.** The largest MILP ever tested here is 230x2025
-  with 12k nonzeros, against a stated benchmark of "thousands to millions". LP
-  has reached 100k x 150k on the first-order path; MILP has not been near it.
+- **Scale is measured now, and bounded by three different things.** See
+  [Scale](#scale) for the ladder. LP reaches 1.02M nonzeros and 102,400 columns
+  on the first-order path and 15,360 square rows solved and verified; the
+  interior point is bounded by LU fill for want of a fill-reducing ordering, and
+  stops well short of the other two; MILP proves optimality to about 100
+  binaries and finds no feasible point at all past about 400. Against the stated
+  benchmark of "thousands to millions" of variables, the thousands are reached
+  and the millions are not.
 - **The branch-and-bound tree is single-threaded.** Nine kernels run in
   parallel; the search does not.
 - GPU fp64 on a laptop RTX 3050 runs at 1/32 rate; a datacentre card changes the
   crossover point substantially.
+
+## Scale
+
+The problem statement names a benchmark of "thousands to millions" of variables,
+and until this study every published figure here came from MIPLIB instances that
+top out at 230x2025. `python -m bench.scale` replaces the claim with numbers.
+
+The ladder is built from the refinery templates in `sovopt.models.refinery`
+rather than from random sparse matrices, because *shape* decides an LP's
+difficulty far more than dimension does: `blend` is wide and shallow,
+quality-constrained; `plan` is square, multi-period and **deliberately
+degenerate**, which is the case that punishes a simplex. Every point is checked
+by the independent verifier, so a size that "solves" to an infeasible point is a
+failure and not a time.
+
+### LP, 120 s limit
+
+| model | rows | cols | nnz | simplex | interior point | PDLP |
+|---|---|---|---|---|---|---|
+| blend k=1 | 130 | 400 | 4.0k | 0.48 s | **0.12 s** | 1.06 s |
+| blend k=2 | 260 | 1,600 | 16k | **0.51 s** | 0.58 s | 4.28 s |
+| blend k=4 | 520 | 6,400 | 64k | 2.19 s | 3.59 s | **1.67 s** |
+| blend k=8 | 1,040 | 25,600 | 256k | 7.04 s | 35.97 s | **2.16 s** |
+| blend k=16 | 2,080 | 102,400 | 1.02M | 102.5 s | timeout | **3.65 s** |
+| plan k=1 | 240 | 240 | 1.4k | 0.14 s | **0.01 s** | 1.86 s |
+| plan k=2 | 960 | 960 | 9.9k | 1.76 s | **0.19 s** | 4.11 s |
+| plan k=4 | 3,840 | 3,840 | 73k | 53.2 s | 14.9 s | **7.49 s** |
+| plan k=8 | 15,360 | 15,360 | 564k | timeout | timeout | **45.6 s** |
+| plan k=16 | 61,440 | 61,440 | 4.42M | timeout | *did not finish* | timeout |
+
+**The largest LP solved and verified is 2,080 x 102,400 with 1.02M nonzeros, in
+3.65 s; the largest square one is 15,360 x 15,360 with 564k nonzeros in 45.6 s.
+Both by PDLP.** That reaches the "thousands" the benchmark names and passes a
+million nonzeros. It is not millions of variables.
+
+Four things the table says that an aggregate would hide:
+
+* **The engines swap places, and the crossover is a shape rather than a size.**
+  The interior point wins the degenerate `plan` model by 9x at k=2 and 3.6x at
+  k=4 -- the degeneracy advantage the theory predicts, showing up on the model
+  built to be degenerate -- and loses `blend` badly at every size above 1,600
+  columns. PDLP wins everything past about 25k columns. This is why `--method
+  auto` still chooses between the simplex and PDLP by size only: the rule that
+  would pick the interior point needs a degeneracy estimate, and there isn't
+  one.
+* **`plan k=16` defeats all three.** At 61,440 x 61,440 with 4.42M nonzeros the
+  simplex and PDLP hit the limit, and the interior point did not finish a single
+  factorisation in 25 minutes at 3 GB resident. Its LU has no fill-reducing
+  ordering -- `lu_factor` orders columns by count -- so the KKT fills in, and
+  the buffer doubles rather than failing. That is the concrete next piece of
+  work for scale, and it is an ordering problem (AMD, nested dissection), not a
+  tuning one.
+* **A time limit does not bound the interior point.** The clock is checked
+  between iterations and, now, before each factorisation -- but a factorisation
+  already running cannot be interrupted, and a 120 s limit was measured
+  overrunning to 210 s on `plan k=8`.
+* **The simplex hands back a point the verifier rejects when it times out.** At
+  `plan k=8` and `k=16` it returned `TIME_LIMIT` with an objective of 0 and a
+  point that fails the independent verifier -- a phase-1 iterate that never
+  reached feasibility. `Status.TIME_LIMIT` reports `has_solution`, so a caller
+  is invited to use it. The interior point now withholds `x` when the point
+  fails the feasibility cap; the simplex does not. That is an open soundness
+  wart, not a wrong answer, and it is recorded rather than fixed because fixing
+  it means re-validating every path that reads a timed-out LP.
+
+### MILP, 120 s limit
+
+| model | rows | cols | binaries | status | gap | nodes | time |
+|---|---|---|---|---|---|---|---|
+| sched k=1 | 70 | 48 | 24 | OPTIMAL | 0 | 20 | 1.32 s |
+| sched k=2 | 284 | 192 | 96 | OPTIMAL | 5.5e-05 | 1,565 | 45.6 s |
+| sched k=4 | 1,144 | 768 | 384 | TIME_LIMIT | 1.2% | 1,087 | 131 s |
+| sched k=8 | 4,592 | 3,072 | 1,536 | TIME_LIMIT | no incumbent | 447 | 122 s |
+
+**MILP proves optimality to about 100 binaries, returns a plan within 1.2% to
+about 400, and finds nothing at all at 1,536.** `unit_scheduling` is big-M with
+minimum up-time, which is the weak-relaxation formulation refinery scheduling
+actually uses, so this is a fair test rather than a flattering one -- but it is
+one model family. The honest reading is that MILP scale here is bounded by the
+**primal heuristics and not by node throughput**: at k=8 the tree explored 447
+nodes and every heuristic failed, which is the same failure mode as 10teams on
+the MIPLIB set.
 
 ## Measurement conditions
 

@@ -518,6 +518,15 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
         theta_s[fixed[n:]] = 0.0                  # equality row: ds = 0
         dsd = theta_s + params.reg_dual
 
+        # The clock is checked here as well as at the top of the loop, because
+        # a factorisation cannot be interrupted once it starts and at scale it
+        # is by far the longest step. This stops a doomed one from *beginning*
+        # after the budget is already spent; it cannot shorten one already
+        # running, which is why a 120 s limit was measured overrunning to
+        # 210 s on a 15360-row planning model. See Known limits.
+        if time.perf_counter() - t0 > params.time_limit:
+            status = Status.TIME_LIMIT
+            break
         try:
             lu = kkt.factor(dxd, dsd, tol.lu_pivot_rel, tol.lu_drop)
         except LUSingular:
@@ -625,7 +634,18 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
         # uses. Say so rather than claim an optimum the checker would reject.
         status = Status.NUMERICAL
 
-    sol = Solution(status=status, x=x, objective=obj, y=y, reduced_costs=d,
+    if worst > params.feas_cap and Status(status).has_solution:
+        # An unconverged iterate is not a solution, and ``has_solution`` is
+        # true for TIME_LIMIT and ITERATION_LIMIT -- so handing the point back
+        # invites a caller to use it. Measured on a 15360-row planning model at
+        # a 120 s limit: the returned point failed the independent verifier
+        # outright. Withholding it costs a caller nothing it could have
+        # trusted.
+        x = None
+
+    sol = Solution(status=status, x=x, objective=obj if x is not None
+                   else float("nan"),
+                   y=y, reduced_costs=d,
                    iterations=iterations, time=time.perf_counter() - t0,
                    method=method)
     sol.dual_bound = obj
