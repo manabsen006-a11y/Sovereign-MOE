@@ -502,12 +502,24 @@ class LUFactor:
 
 
 def lu_factor(cp, ci, cx, n, tol: float = 0.01, drop: float = 1e-14,
-              order=None, cap_growth: float = 6.0) -> LUFactor:
+              order=None, cap_growth: float = 6.0,
+              max_nnz: int | None = None) -> LUFactor:
     """Factorise the square sparse matrix given in CSC form.
 
     ``tol`` is the relative threshold-pivoting tolerance; ``drop`` discards
     factor entries smaller than this as noise. Buffer space starts at
     ``cap_growth * nnz`` and doubles on overflow.
+
+    ``max_nnz`` caps the factors: a factorisation that would exceed it raises
+    :class:`LUSingular` instead of doubling its buffer again. Two callers need
+    that. A *trial* ordering can then be abandoned the moment it stops being
+    competitive rather than run to completion -- on mod010 an ordering that
+    loses reaches 277x fill in 24 s, against the winner's 1.79x in 0.004 s, so
+    without a cap the trial costs far more than the choice is worth. And a
+    factorisation with no hope of fitting in memory fails instead of thrashing:
+    the default hard cap is ``n^2 + 4n`` entries, which for a 122,880-row KKT
+    is large enough that the interior point was measured growing to 3 GB
+    resident without ever finishing one.
     """
     cp = np.ascontiguousarray(cp, dtype=np.int64)
     ci = np.ascontiguousarray(ci, dtype=IDX)
@@ -519,6 +531,9 @@ def lu_factor(cp, ci, cx, n, tol: float = 0.01, drop: float = 1e-14,
 
     cap = max(int(cap_growth * nnz) + 4 * n + 16, 64)
     hard_cap = max(64, min(n * n + 4 * n, 1 << 31))
+    if max_nnz is not None:
+        hard_cap = max(64, min(hard_cap, int(max_nnz)))
+        cap = min(cap, hard_cap)
 
     x = np.zeros(n, dtype=VAL)
     xi = np.zeros(n, dtype=IDX)

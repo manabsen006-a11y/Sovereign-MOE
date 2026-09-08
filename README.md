@@ -213,7 +213,7 @@ python -m bench.harness --mode lp --method ipm      # the interior-point engine
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 231 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 243 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -227,6 +227,7 @@ python -m pytest tests/               # 231 tests; the 15 GPU ones skip without 
 | CPLEX LP reader | `io/lp_format.py` | done (ranged rows, both-side terms, bounds, General/Binary) |
 | Scaling: Ruiz, Curtis–Reid, Pock–Chambolle | `numerics/scaling.py` | done |
 | Sparse LU, threshold Markowitz + Gilbert–Peierls | `numerics/lu.py` | done |
+| Fill-reducing ordering (reverse Cuthill–McKee) | `numerics/ordering.py` | done (AMD not built) |
 | Hypersparse FTRAN / BTRAN | `numerics/lu.py` | done |
 | Iterative refinement, compensated residual | `numerics/refine.py` | done |
 | Condition estimation (Hager) | `numerics/refine.py` | done |
@@ -887,6 +888,16 @@ five now have regression tests.
   branch-and-bound) and any MIQP (needs a QP at every node) are **refused**, not
   approximated. It returns no basis, so no ranging on a QP, and it reaches
   ~1e-8, not the simplex's 1e-12.
+- **The fill-reducing ordering helps the interior point and not the simplex.**
+  Reverse Cuthill-McKee is worth 20-45x on a banded KKT, but measured over the
+  factorisations of four real simplex solves it produced **4-45% more** fill
+  than the LU's own singleton-peeling order every time -- qnet1 +33%, mod010
+  +25%, 10teams +45%. That order was designed for a basis that is already
+  80-95% triangular, and it wins there. A simplex basis also changes at every
+  refactorisation, so an ordering would have to be recomputed each time rather
+  than once per solve, which is the opposite of the economics that make it pay
+  in the interior point. Recorded in
+  [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
 - **The interior-point method returns no basis and no certificate.** It solves
   all 11 instances to the published value at a 0.148 s shifted geomean, but it
   cannot warm-start a simplex, cannot answer a ranging question, and detects
@@ -931,15 +942,19 @@ failure and not a time.
 | model | rows | cols | nnz | simplex | interior point | PDLP |
 |---|---|---|---|---|---|---|
 | blend k=1 | 130 | 400 | 4.0k | 0.48 s | **0.12 s** | 1.06 s |
-| blend k=2 | 260 | 1,600 | 16k | **0.51 s** | 0.58 s | 4.28 s |
-| blend k=4 | 520 | 6,400 | 64k | 2.19 s | 3.59 s | **1.67 s** |
-| blend k=8 | 1,040 | 25,600 | 256k | 7.04 s | 35.97 s | **2.16 s** |
+| blend k=2 | 260 | 1,600 | 16k | **0.51 s** | 0.70 s | 4.28 s |
+| blend k=4 | 520 | 6,400 | 64k | 2.19 s | 2.61 s | **1.67 s** |
+| blend k=8 | 1,040 | 25,600 | 256k | 7.04 s | 26.4 s | **2.16 s** |
 | blend k=16 | 2,080 | 102,400 | 1.02M | 102.5 s | timeout | **3.65 s** |
 | plan k=1 | 240 | 240 | 1.4k | 0.14 s | **0.01 s** | 1.86 s |
-| plan k=2 | 960 | 960 | 9.9k | 1.76 s | **0.19 s** | 4.11 s |
-| plan k=4 | 3,840 | 3,840 | 73k | 53.2 s | 14.9 s | **7.49 s** |
-| plan k=8 | 15,360 | 15,360 | 564k | timeout | timeout | **45.6 s** |
+| plan k=2 | 960 | 960 | 9.9k | 1.76 s | **0.07 s** | 4.11 s |
+| plan k=4 | 3,840 | 3,840 | 73k | 53.2 s | **1.59 s** | 7.49 s |
+| plan k=8 | 15,360 | 15,360 | 564k | timeout | 81.5 s | **45.6 s** |
 | plan k=16 | 61,440 | 61,440 | 4.42M | timeout | *did not finish* | timeout |
+
+The interior-point column is measured **with the fill-reducing ordering
+described below**; before it, `plan k=4` took 14.9 s, `plan k=8` failed
+outright, and `blend k=8` took 36.0 s.
 
 **The largest LP solved and verified is 2,080 x 102,400 with 1.02M nonzeros, in
 3.65 s; the largest square one is 15,360 x 15,360 with 564k nonzeros in 45.6 s.
@@ -956,13 +971,17 @@ Four things the table says that an aggregate would hide:
   auto` still chooses between the simplex and PDLP by size only: the rule that
   would pick the interior point needs a degeneracy estimate, and there isn't
   one.
-* **`plan k=16` defeats all three.** At 61,440 x 61,440 with 4.42M nonzeros the
-  simplex and PDLP hit the limit, and the interior point did not finish a single
-  factorisation in 25 minutes at 3 GB resident. Its LU has no fill-reducing
-  ordering -- `lu_factor` orders columns by count -- so the KKT fills in, and
-  the buffer doubles rather than failing. That is the concrete next piece of
-  work for scale, and it is an ordering problem (AMD, nested dissection), not a
-  tuning one.
+* **A fill-reducing ordering moved the interior point's ceiling by 4x, and
+  `plan k=16` still defeats all three.** The KKT pattern is identical at every
+  iteration, so an ordering is chosen once per solve and reused. Reverse
+  Cuthill-McKee on the `plan` KKT cuts fill from 10-15x to 2.3-3.4x and the
+  factorisation from 1.5-3.4 s to 0.04-0.08 s -- a 20-45x speedup, and 97% of
+  an interior-point solve is that one factorisation repeated. `plan k=8` went
+  from failing to `OPTIMAL` in 81.5 s, and the largest model the interior point
+  solves went from 3,840 rows to 15,360. At 61,440 x 61,440 with 4.42M
+  nonzeros it still does not finish, so approximate minimum degree remains the
+  next step -- see [`numerics/ordering.py`](src/sovopt/numerics/ordering.py)
+  for why RCM was measured first and AMD deliberately not written yet.
 * **A time limit does not bound the interior point.** The clock is checked
   between iterations and, now, before each factorisation -- but a factorisation
   already running cannot be interrupted, and a 120 s limit was measured
@@ -1027,11 +1046,11 @@ convention exists because two published tables were found not to reproduce; see
 src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer
-  numerics/   scaling, LU, hypersparse solves, refinement
+  numerics/   scaling, LU, fill-reducing ordering, hypersparse solves, refinement
   lp/         revised simplex, basis, interior point, first-order LP
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        231 tests including regressions for every bug above
+tests/        243 tests including regressions for every bug above
 ui/           local single-page interface
 ```

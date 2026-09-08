@@ -100,6 +100,42 @@ under the small-basis exemption.
 
 ---
 
+## Fill-reducing ordering for the simplex basis (attempted, not adopted)
+
+**Idea.** A fill-reducing ordering cut interior-point factorisation time by
+20-45x (see `numerics/ordering.py`). The simplex factorises too, and far more
+often -- once per refactorisation, every ~60 pivots -- so the same ordering
+should pay there as well.
+
+**It does not.** Measured over every basis factorisation of four real solves,
+reverse Cuthill-McKee produced *more* fill than the LU's own singleton-peeling
+order in every case:
+
+| instance | basis | factorisations | default nnz(L+U) | RCM nnz(L+U) |
+|---|---|---|---|---|
+| qnet1    | 503 | 15 | 45,469  | 60,296  (+33%) |
+| mod010   | 146 | 22 | 47,647  | 59,519  (+25%) |
+| khb05250 | 101 |  3 | 783     | 816     (+4%)  |
+| 10teams  | 230 | 40 | 302,698 | 439,755 (+45%) |
+
+**Why, and why it is not a surprise in hindsight.** A simplex basis is 80-95%
+triangular already, and Suhl-Suhl singleton peeling eliminates that part with no
+fill at all before any ordering heuristic gets a say. RCM knows nothing about
+triangularity; it optimises bandwidth, and reordering a nearly-triangular matrix
+for bandwidth destroys the very structure the peeling was going to exploit.
+
+**The economics differ too, independently of the fill.** The interior point
+factorises the *same pattern* every iteration, so an ordering is computed once
+and amortised over the whole solve. A simplex basis changes at every
+refactorisation, so the ordering would be recomputed each time and charged to
+each one. Even at break-even fill it would lose.
+
+Recorded because the generalisation is the tempting part: "a fill-reducing
+ordering helps sparse factorisation" is true in general and false here, and the
+reason is that one of the two callers already has a better one.
+
+---
+
 ## Density cap keyed to the column count (attempted, reverted)
 
 The first version of the density filter capped cut support against `n`. It

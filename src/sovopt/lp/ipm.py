@@ -89,6 +89,7 @@ from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import IDX, VAL
 from ..core.tolerances import DEFAULT, INF, Tolerances
 from ..numerics.lu import LUSingular, lu_factor
+from ..numerics.ordering import rcm_order
 from ..numerics.scaling import scale_problem
 
 
@@ -138,6 +139,31 @@ class IPMParams:
     """Iterations of no primal-residual progress before the model is called
     infeasible or unbounded. See the stagnation test in :func:`solve_ipm`."""
 
+    ordering: str = "auto"
+    """Fill-reducing ordering for the KKT: ``"auto"``, ``"rcm"`` or ``"none"``.
+
+    The KKT *pattern* is identical at every iteration -- only the two diagonal
+    blocks move -- so an ordering is chosen once per solve and reused for every
+    factorisation. That is what makes it worth choosing carefully, and what
+    makes ``"auto"`` cheap: it factorises the first system once per candidate
+    and keeps whichever produced the sparser factors, so the whole decision
+    costs one extra factorisation out of the twenty or thirty a solve does.
+
+    Neither candidate dominates, which is why there is a race rather than a
+    default. ``"none"`` is the LU's own order -- peel singletons, then sort by
+    live column count -- which is right for a simplex basis and wrong for a
+    saddle-point matrix. Measured:
+
+        plan k=4  (3,840 rows, banded by time)   fill 10-15x -> 2.3-3.4x,
+                                                 factorisation 20-45x faster
+        mod010    (146 x 2,655, wide)            0.18 s -> 118 s timeout
+
+    A multi-period model's graph is a long thin strip and RCM exploits it
+    directly; a wide shallow model has no band to find and RCM's level sets
+    only get in the way. No cheap structural test told the two apart, and the
+    factor count does, so the factor count decides. See
+    :mod:`sovopt.numerics.ordering`."""
+
     verbose: bool = False
     tol: Tolerances = field(default_factory=lambda: DEFAULT)
 
@@ -155,8 +181,11 @@ class _KKT:
     computed once here and the per-iteration cost is two array writes.
     """
 
-    def __init__(self, A):
+    def __init__(self, A, ordering="auto"):
         self.A = A
+        self.order = None
+        self._ordering = ordering
+        self._pending = None
         m, n = A.m, A.n
         self.m, self.n = m, n
         nk = n + m
@@ -200,12 +229,44 @@ class _KKT:
         kx[self.pos_csr] = A.rx
         self.kx = kx
 
+        # Once per solve, not once per iteration: the pattern above is fixed
+        # for the whole run.
+        if ordering == "rcm":
+            self.order = rcm_order(kp, ki, nk)
+        elif ordering == "auto":
+            # candidates raced at the first factorisation, when the diagonal is
+            # representative of the rest of the solve
+            self._pending = [None, rcm_order(kp, ki, nk)]
+
     def factor(self, dx, ds, pivot_tol, drop):
         """Revalue the diagonals and factorise. ``dx``, ``ds`` are positive."""
         self.kx[self.diag_x] = -dx
         self.kx[self.diag_s] = ds
+        if self._pending is not None:
+            # The incumbent is factorised in full; every challenger is then
+            # capped at the incumbent's factor count, so a trial that cannot
+            # win is abandoned as soon as it proves that rather than run to
+            # completion. Without the cap the losing candidate on mod010 takes
+            # 24 s to reach 277x fill, against 0.004 s for the winner -- the
+            # choice was right and paying for it was not.
+            best = lu_factor(self.kp, self.ki, self.kx, self.nk,
+                             tol=pivot_tol, drop=drop, order=self._pending[0])
+            best_order = self._pending[0]
+            for cand in self._pending[1:]:
+                try:
+                    lu = lu_factor(self.kp, self.ki, self.kx, self.nk,
+                                   tol=pivot_tol, drop=drop, order=cand,
+                                   max_nnz=best.nnz)
+                except LUSingular:
+                    continue                  # over budget: it lost
+                if lu.nnz < best.nnz:
+                    best, best_order = lu, cand
+            self.order = best_order
+            self._pending = None
+            self.chose_rcm = best_order is not None
+            return best
         return lu_factor(self.kp, self.ki, self.kx, self.nk,
-                         tol=pivot_tol, drop=drop)
+                         tol=pivot_tol, drop=drop, order=self.order)
 
     def matvec(self, dx_diag, ds_diag, v):
         """``K v`` for the *unregularised* K, used by iterative refinement."""
@@ -420,7 +481,7 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
                        np.zeros(n), Status.OPTIMAL, 0, t0, params, "ipm")
 
     # ---- starting point ---------------------------------------------------- #
-    kkt = _KKT(A)
+    kkt = _KKT(A, ordering=params.ordering)
     try:
         z, y, zl, zu = _initial_point(kkt, A, cz, lo, hi, fixed,
                                       has_lo, has_hi, free_lo, free_hi,
@@ -601,13 +662,15 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
     x_s = z[:n]
     d_s = (zl - zu)[:n]
     sol = _finish(prob, work, scaled, sc, flip, x_s, y, d_s,
-                  status, it, t0, params, "ipm")
+                  status, it, t0, params, "ipm",
+                  ordering="rcm" if getattr(kkt, "chose_rcm", None) or
+                  (params.ordering == "rcm") else "none")
     sol.log = history
     return sol
 
 
 def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
-            status, iterations, t0, params, method):
+            status, iterations, t0, params, method, ordering="n/a"):
     """Unscale, verify absolutely, and report."""
     x = sc.unscale_primal(x_scaled)
     np.clip(x, prob.col_lb, prob.col_ub, out=x)
@@ -651,5 +714,5 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
     sol.dual_bound = obj
     sol.work_units = float(iterations)
     sol.info = {"iterations": iterations, "worst_violation": worst,
-                "scaling": sc.method}
+                "scaling": sc.method, "kkt_ordering": ordering}
     return sol.drop_objective_if_unsolved()
