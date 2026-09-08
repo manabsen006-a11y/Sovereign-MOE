@@ -135,7 +135,7 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["lp", "mip"], default="lp")
-    ap.add_argument("--method", choices=["auto", "simplex", "pdlp", "bnb"],
+    ap.add_argument("--method", choices=["auto", "simplex", "pdlp", "ipm", "bnb"],
                     default=None, help="override the solver choice")
     ap.add_argument("--dir", default=DATA_DIR)
     ap.add_argument("--time-limit", type=float, default=60.0)

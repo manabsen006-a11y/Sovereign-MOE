@@ -13,10 +13,10 @@ clean-room policy in [`CLAUDE.md`](CLAUDE.md).
 
 ## Status
 
-Working end to end, with **two independent LP engines** -- an exact revised
-simplex and a GPU first-order method -- validated against **published MIPLIB
-reference values** and an **independent verifier** that recomputes feasibility
-from the original model.
+Working end to end, with **three independent LP engines** -- an exact revised
+simplex, a primal-dual interior-point method and a GPU first-order method --
+validated against **published MIPLIB reference values** and an **independent
+verifier** that recomputes feasibility from the original model.
 
 Reproduce with `python -m bench.harness --mode lp --method pdlp --device cpu
 --time-limit 90 --tol 1e-8`. **Every timing in this README was measured on the
@@ -48,13 +48,23 @@ qnet1             503   1541     4622 OPTIMAL           14274.103        14274.1
   worst relative error 5.08e-07 (mod010)
 ```
 
-The revised simplex solves the same set to the same published values, exactly,
-and considerably faster:
+The other two engines solve the same set to the same published values, and
+considerably faster:
 
 | engine | optimal | verified | shifted geomean | total | worst rel. err |
 |---|---|---|---|---|---|
 | first-order (PDLP) | 11/11 | 11/11 | 0.700 s | 11.8 s | 5.08e-07 |
-| **revised simplex** | 11/11 | 11/11 | **0.145 s** | **2.0 s** | 5.10e-07 |
+| **revised simplex** | 11/11 | 11/11 | **0.145 s** | 2.0 s | 5.10e-07 |
+| **interior point** | 11/11 | 11/11 | 0.148 s | **1.8 s** | 5.10e-07 |
+
+Three engines agreeing to the published value on every instance is the point of
+having three. They fail differently: the simplex is exact but walks vertices and
+stalls on degeneracy, the interior-point method takes a fixed handful of
+iterations but needs a factorisation in each one and returns no basis, and PDLP
+needs neither but converges slowly in the tail. `--method` picks one;
+`--method auto` still chooses between the simplex and PDLP by size, because the
+rule for when the interior-point method should be preferred has not been
+measured on anything larger than this set.
 
 Per-instance the gap is much wider than the aggregate suggests -- on mas76 the
 simplex finishes below the timer's resolution against PDLP's 5.08 s, and it is
@@ -199,9 +209,10 @@ Presenting this? [`docs/DEMO.md`](docs/DEMO.md) is the runbook.
 python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --method simplex  # force one engine
+python -m bench.harness --mode lp --method ipm      # the interior-point engine
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 207 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 231 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -235,7 +246,8 @@ python -m pytest tests/               # 207 tests; the 15 GPU ones skip without 
 | Refinery model templates + Haverly pooling | `models/` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
 | **Convex QP** (proximal PDHG, Condat–Vũ) | `qp/proximal.py` | done (convex only) |
-| Crossover, presolve, IPM, MIQP, non-convex QP | — | **not built** (roadmap) |
+| **Interior point** (Mehrotra predictor-corrector) | `lp/ipm.py` | done |
+| Crossover, presolve, MIQP, non-convex QP | — | **not built** (roadmap) |
 
 ---
 
@@ -874,7 +886,13 @@ five now have regression tests.
   branch-and-bound) and any MIQP (needs a QP at every node) are **refused**, not
   approximated. It returns no basis, so no ranging on a QP, and it reaches
   ~1e-8, not the simplex's 1e-12.
-- **No interior-point method.** Named in the PS beside the revised simplex.
+- **The interior-point method returns no basis and no certificate.** It solves
+  all 11 instances to the published value at a 0.148 s shifted geomean, but it
+  cannot warm-start a simplex, cannot answer a ranging question, and detects
+  infeasibility by *stagnation* rather than by a Farkas certificate -- so it
+  reports `INFEASIBLE_OR_UNBOUNDED` where the simplex reports `INFEASIBLE`.
+  Crossover would fix the first two; the third needs a homogeneous
+  self-dual formulation, which this is not.
 - **No presolve module.** Domain propagation runs at every node, but there are
   no singleton/doubleton eliminations, no dominated-column or forcing-row
   reductions, and no postsolve stack.
@@ -922,10 +940,10 @@ src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer
   numerics/   scaling, LU, hypersparse solves, refinement
-  lp/         revised simplex, basis, first-order LP
+  lp/         revised simplex, basis, interior point, first-order LP
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        207 tests including regressions for every bug above
+tests/        231 tests including regressions for every bug above
 ui/           local single-page interface
 ```

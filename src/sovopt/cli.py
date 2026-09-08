@@ -96,6 +96,11 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
         return solve_pdlp(prob, PDLPParams(device=device, eps_abs=tol,
                                            eps_rel=tol, time_limit=time_limit,
                                            verbose=verbose))
+    if method == "ipm":
+        from .lp.ipm import IPMParams, solve_ipm
+        return solve_ipm(prob, IPMParams(time_limit=time_limit,
+                                         feas_cap=max(tol, 1e-9),
+                                         verbose=verbose))
     if method == "bnb":
         return solve_mip(prob, MIPParams(device=device, gap_rel=gap,
                                          time_limit=time_limit, verbose=verbose))
@@ -263,7 +268,7 @@ def main(argv=None):
 
     p = sub.add_parser("solve", help="solve a model")
     p.add_argument("model")
-    p.add_argument("--method", choices=["auto", "simplex", "pdlp", "bnb"],
+    p.add_argument("--method", choices=["auto", "simplex", "pdlp", "ipm", "bnb"],
                    default="auto")
     p.add_argument("--device", choices=["auto", "cpu", "gpu"], default="auto")
     p.add_argument("--time-limit", type=float, default=300.0)
