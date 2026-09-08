@@ -69,11 +69,33 @@ given a fill-reducing ordering, and is now about 1.8x faster on this set.
 Three engines agreeing to the published value on every instance is the point of
 having three. They fail differently: the simplex is exact but walks vertices and
 stalls on degeneracy, the interior-point method takes a fixed handful of
-iterations but needs a factorisation in each one and returns no basis, and PDLP
-needs neither but converges slowly in the tail. `--method` picks one;
-`--method auto` still chooses between the simplex and PDLP by size, because the
-rule for when the interior-point method should be preferred has not been
-measured on anything larger than this set.
+iterations but needs a factorisation in each one and returns no basis of its
+own, and PDLP needs neither but converges slowly in the tail. `--method` picks
+one; `--method auto` still chooses between the simplex and PDLP by size,
+because the rule for when the interior-point method should be preferred has not
+been measured on anything larger than this set.
+
+**`--crossover` composes them instead of choosing.** An interior point is not a
+vertex, so neither PDLP nor the interior-point method produced a basis -- and
+without a basis there is no cost or RHS ranging, and no warm start for a
+branch-and-bound node. Crossover identifies a basis from the interior point and
+lets the simplex finish from it. Over the LP set that is **61.9% fewer simplex
+pivots than starting cold** (6,747 → 2,573), every objective identical:
+
+| | 10teams | dcmulti | gt2 | khb05250 | mas76 | misc07 | mod010 | p0201 | qnet1 |
+|---|---|---|---|---|---|---|---|---|---|
+| cold pivots | 3,698 | 360 | 65 | 105 | 43 | 269 | 1,244 | 84 | 833 |
+| after crossover | 1,311 | 144 | 9 | **2** | **0** | 340 | 303 | **2** | 424 |
+
+The case it was built for is the one the simplex cannot reach alone. On the
+15,360 x 15,360 planning model of the [Scale](#scale) ladder -- where a cold
+simplex hits the time limit having never reached feasibility -- PDLP solves in
+148 s and crossover turns that into an **optimal basis in zero pivots**,
+verifier-accepted, agreeing with PDLP's objective. Ranging is available on a
+model the simplex on its own cannot solve at all.
+
+misc07 (+26% pivots) and flugpl (14 → 21) go the other way, which is what a
+heuristic identification does on some instances; the aggregate is the claim.
 
 Per-instance the gap is much wider than the aggregate suggests -- on mas76 the
 simplex finishes below the timer's resolution against PDLP's 5.08 s, and it is
@@ -222,7 +244,7 @@ python -m bench.harness --mode lp --method ipm      # the interior-point engine
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 247 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 261 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -244,6 +266,7 @@ python -m pytest tests/               # 247 tests; the 15 GPU ones skip without 
 | Basis, product-form update, singularity repair | `lp/basis.py` | done |
 | First-order LP (PDLP-class), CPU + CUDA | `lp/pdlp.py` | done |
 | Hand-written CUDA kernels | `core/backend.py` | done |
+| **Crossover**, interior point → optimal basis | `lp/crossover.py` | done |
 | Safe dual bounds (Neumaier–Shcherbina) | `mip/safebound.py` | done |
 | **Batched Node Relaxation** | `mip/bnr.py` | done |
 | Domain propagation | `mip/propagate.py` | done |
@@ -806,11 +829,14 @@ five now have regression tests.
 
 ## Known limits
 
-- **No crossover** from a first-order point to a basis, so neither PDLP nor the
-  interior point can hand over to the simplex on large models, and neither can
-  answer a ranging question. The three engines are chosen between, not
-  composed -- which is why `plan k=8` is solved by PDLP in 45.6 s and there is
-  still no basis for it.
+- **Crossover is identification plus clean-up, not Megiddo's push.** It is
+  built and it pays -- 61.9% fewer pivots over the LP set, and a basis in zero
+  pivots on a model the simplex cannot solve at all (see [Status](#status)) --
+  but the rigorous construction walks the optimal face to a vertex with a
+  bounded number of steps, and this ranks candidates and lets the simplex
+  finish. So there is no pivot bound, and two instances of eleven cost *more*
+  pivots than a cold start. The clean-up is what makes the answer exact, so a
+  poor identification is a cost and never an error.
 - **Product-form update, not Forrest–Tomlin.** Fill grows linearly in the number
   of etas, forcing a refactorisation every 60 pivots. This is the main reason
   10teams takes 18k iterations and 12 s.
@@ -913,11 +939,11 @@ five now have regression tests.
   [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
 - **The interior-point method returns no basis and no certificate.** It solves
   all 11 instances to the published value at a 0.140 s shifted geomean, but it
-  cannot warm-start a simplex, cannot answer a ranging question, and detects
-  infeasibility by *stagnation* rather than by a Farkas certificate -- so it
-  reports `INFEASIBLE_OR_UNBOUNDED` where the simplex reports `INFEASIBLE`.
-  Crossover would fix the first two; the third needs a homogeneous
-  self-dual formulation, which this is not.
+  detects infeasibility by *stagnation* rather than by a Farkas certificate --
+  so it reports `INFEASIBLE_OR_UNBOUNDED` where the simplex reports
+  `INFEASIBLE`. That needs a homogeneous self-dual formulation, which this is
+  not. The missing basis, and with it the ranging and the warm start, is now
+  supplied by `--crossover`.
 - **No presolve module.** Domain propagation runs at every node, but there are
   no singleton/doubleton eliminations, no dominated-column or forcing-row
   reductions, and no postsolve stack.
@@ -1063,10 +1089,10 @@ src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer
   numerics/   scaling, LU, fill-reducing ordering, hypersparse solves, refinement
-  lp/         revised simplex, basis, interior point, first-order LP
+  lp/         revised simplex, basis, interior point, crossover, first-order LP
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        247 tests including regressions for every bug above
+tests/        261 tests including regressions for every bug above
 ui/           local single-page interface
 ```

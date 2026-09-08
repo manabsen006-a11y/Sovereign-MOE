@@ -47,7 +47,7 @@ SIMPLEX_NNZ_LIMIT = 500_000
 def solve(prob: Problem, method: str = "auto", device: str = "auto",
           time_limit: float = 300.0, gap: float = 1e-4,
           tol: float = 1e-8, verbose: bool = False,
-          sensitivity: bool = False) -> Solution:
+          sensitivity: bool = False, crossover: bool = False) -> Solution:
     """Solve an LP or MILP, picking the method automatically by default.
 
     A **convex** quadratic objective is routed to the proximal primal-dual QP
@@ -96,6 +96,22 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
         return solve_pdlp(prob, PDLPParams(device=device, eps_abs=tol,
                                            eps_rel=tol, time_limit=time_limit,
                                            verbose=verbose))
+    if method in ("ipm", "pdlp") and crossover:
+        # Cross over to a basis. Neither engine produces one on its own, so
+        # without this there is no ranging and no warm start -- see
+        # :mod:`sovopt.lp.crossover`.
+        from .lp.crossover import crossover as _crossover
+        interior = solve(prob, method=method, device=device,
+                         time_limit=time_limit, gap=gap, tol=tol,
+                         verbose=verbose)
+        if interior.x is None:
+            return interior
+        return _crossover(prob, interior.x, interior.y,
+                          SimplexParams(time_limit=time_limit,
+                                        feas_tol=max(tol, 1e-9),
+                                        opt_tol=max(tol, 1e-9),
+                                        sensitivity=sensitivity,
+                                        verbose=verbose))
     if method == "ipm":
         from .lp.ipm import IPMParams, solve_ipm
         return solve_ipm(prob, IPMParams(time_limit=time_limit,
@@ -151,7 +167,8 @@ def cmd_solve(a):
     t = time.perf_counter()
     sol = solve(prob, method=a.method, device=a.device,
                 time_limit=a.time_limit, gap=a.gap, tol=a.tol,
-                verbose=a.verbose, sensitivity=a.sensitivity)
+                verbose=a.verbose, sensitivity=a.sensitivity,
+                crossover=a.crossover)
     dt = time.perf_counter() - t
 
     print()
@@ -198,6 +215,7 @@ def cmd_solve(a):
         print("  no sensitivity report: ranging is read off a simplex "
               "basis, and this model")
         print(f"  was solved by {sol.method}, which produces no basis.")
+        print("  Add --crossover to cross over to one and get the ranging.")
     if getattr(sol, "sensitivity", None) is not None:
         print()
         print(sol.sensitivity.report())
@@ -280,6 +298,9 @@ def main(argv=None):
                    help="write the solution keyed by column name")
     p.add_argument("--print-solution", type=int, default=0, metavar="N",
                    help="print the first N nonzero variables")
+    p.add_argument("--crossover", action="store_true",
+                   help="with --method ipm or pdlp, cross over to a simplex "
+                        "basis so ranging and warm starts are available")
     p.add_argument("--sensitivity", action="store_true",
                    help="report shadow prices and cost/RHS ranging")
     p.add_argument("-v", "--verbose", action="store_true")
