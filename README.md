@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 314 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 333 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -291,7 +291,8 @@ python -m pytest tests/               # 314 tests; the 15 GPU ones skip without 
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
 | **Convex QP** (proximal PDHG, Condat–Vũ) | `qp/proximal.py` | done (convex only) |
 | **Interior point** (Mehrotra predictor-corrector) | `lp/ipm.py` | done |
-| Crossover, presolve, MIQP, non-convex QP | — | **not built** (roadmap) |
+| **MIQP** (branch-and-bound over convex QP nodes) | `mip/miqp.py` | done |
+| Non-convex QP, Forrest–Tomlin, parallel tree | — | **not built** (roadmap) |
 
 ---
 
@@ -969,9 +970,19 @@ five now have regression tests.
   by proximal PDHG (Condat–Vũ), validated against six hand-derived optima
   including one whose answer is *not* a vertex — the case a simplex provably
   cannot reach. What it does not do: a non-convex `Q` (needs spatial
-  branch-and-bound) and any MIQP (needs a QP at every node) are **refused**, not
-  approximated. It returns no basis, so no ranging on a QP, and it reaches
-  ~1e-8, not the simplex's 1e-12.
+  branch-and-bound) is **refused**, not approximated. It returns no basis, so
+  no ranging on a QP, and it reaches ~1e-8, not the simplex's 1e-12.
+- **MIQP is solved, but its node bound is not rigorous.** `mip/miqp.py` runs
+  branch-and-bound with a convex QP at every node, and agrees with an
+  exhaustive search over every integer point on twenty generated models,
+  minimisation and maximisation alike. What it does not have is the safety net
+  the MILP path has: an LP node bound is made rigorous by the
+  Neumaier–Shcherbina correction, and **there is no equivalent for the QP
+  relaxation**, so a node bound is only as good as the first-order solver's
+  tolerance. Two things keep that honest — pruning requires a node to beat the
+  incumbent by more than that tolerance (`bound_slack`), and every incumbent is
+  re-validated against the original model, so a bad bound costs a worse answer
+  and never an invalid one. A certified QP bound is what would close it.
 - **The fill-reducing ordering helps the interior point and not the simplex.**
   Reverse Cuthill-McKee is worth 20-45x on a banded KKT, but measured over the
   factorisations of four real simplex solves it produced **4-45% more** fill
@@ -1211,9 +1222,9 @@ src/sovopt/
   numerics/   scaling, LU, fill-reducing ordering, hypersparse solves, refinement
   lp/         revised simplex, basis, interior point, crossover, first-order LP
   presolve.py reductions and the postsolve stack
-  mip/        safe bounds, batched node relaxation, propagation, tree
+  mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        314 tests including regressions for every bug above
+tests/        333 tests including regressions for every bug above
 ui/           local single-page interface
 ```

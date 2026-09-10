@@ -130,12 +130,24 @@ def test_simplex_still_refuses_a_quadratic_objective():
                          [0, 0], [10, 10]))
 
 
-def test_miqp_is_refused():
+def test_miqp_is_solved_now_and_its_answer_is_integral():
+    """This used to assert a refusal, and the refusal was the right answer
+    while branch-and-bound over QP nodes did not exist. It does now
+    (:mod:`sovopt.mip.miqp`), so what is asserted is the thing the refusal was
+    protecting: the quadratic term is honoured and the answer is integral.
+    Solving a MIQP as a MILP would drop Q and return a confident wrong number,
+    which is what the old message warned about.
+    """
     from sovopt.cli import solve
     p = qp([[1, 0], [0, 1]], [-1, -2], [[1, 1]], [-INF], [100.], [0, 0], [10, 10])
     p.kind = np.full(2, VarKind.INTEGER)
-    with pytest.raises(NotImplementedError, match="MIQP"):
-        solve(p)
+    s = solve(p, time_limit=60)
+    assert s.status == Status.OPTIMAL
+    assert s.method == "miqp-bb"
+    assert np.abs(s.x - np.round(s.x)).max() < 1e-6
+    # the reported value must include the quadratic term, not just c'x
+    assert abs(s.objective - p.objective(s.x)) < 1e-9
+    assert abs(s.objective - (-2.5)) < 1e-6      # optimum at (1, 2)
 
 
 def test_dispatcher_routes_a_convex_qp_to_the_qp_solver():

@@ -83,14 +83,17 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
         return _postsolve(res, reduced)
 
     if prob.is_qp:
-        if prob.is_mip:
-            raise NotImplementedError(
-                "this model is a MIQP (quadratic objective and integer "
-                "variables). The QP solver handles the continuous convex case; "
-                "branch-and-bound would need a QP solved at every node, which "
-                "is not implemented. Solving it as a MILP would silently "
-                "discard the quadratic term and report a wrong objective")
         from .qp import QPParams, solve_qp
+        if prob.is_mip:
+            # Branch-and-bound with a convex QP at every node. A non-convex Q
+            # is still refused rather than approximated -- by the QP solver,
+            # which is where convexity is decided.
+            from .mip.miqp import MIQPParams, solve_miqp
+            return solve_miqp(prob, MIQPParams(
+                time_limit=time_limit, gap_rel=gap,
+                qp=QPParams(eps_abs=max(tol, 1e-10),
+                            eps_rel=max(tol, 1e-10)),
+                verbose=verbose))
         return solve_qp(prob, QPParams(time_limit=time_limit,
                                        eps_abs=max(tol, 1e-10),
                                        eps_rel=max(tol, 1e-10),
