@@ -100,6 +100,68 @@ under the small-basis exemption.
 
 ---
 
+## Presolve (built, correct, does not pay -- kept opt-in)
+
+The README named presolve, with a Forrest-Tomlin update, as what was left to
+close the 6.7x speed gap to HiGHS. It is now built, and on everything measured
+here **it does not close any of it.**
+
+**Counted before building.** Over the eleven benchmark models: 275 fixed
+columns (10teams 225, khb05250 50), 20 forcing rows, 19 singleton rows
+(dcmulti 18), 17 redundant rows, **1** free column singleton, and **0** empty
+rows or columns. The textbook headline reduction -- substituting out a free
+column singleton, which removes a row *and* a column -- was worth one column on
+one model, so it was not written. What was written is the three that are
+actually present and whose duals can be recovered exactly.
+
+**Measured, simplex, whole LP set:**
+
+| | before | after | direct | presolve+solve | speedup |
+|---|---|---|---|---|---|
+| 10teams  | 230x2025 | 215x1800 | 2.013 s | 2.043 s | 0.99x |
+| dcmulti  | 290x548  | 272x548  | 0.213 s | 0.224 s | 0.95x |
+| gt2      | 29x188   | 28x188   | 0.023 s | 0.019 s | **1.22x** |
+| khb05250 | 101x1350 | 100x1299 | 0.051 s | 0.066 s | 0.76x |
+| qnet1    | 503x1541 | 502x1541 | 0.541 s | 0.611 s | 0.89x |
+| **total** | | | **3.599 s** | **3.738 s** | **0.96x** |
+
+mod010, p0201, mas76, misc07 and gr4x6 reduce by nothing at all. The interior
+point fares no better in aggregate (1.04x; khb05250 a real 2.12x, dcmulti a
+real 0.70x loss), and neither do the refinery models (plan k=2 1.38x, plan k=4
+0.77x on the *same* 20% row reduction).
+
+**Why, and it is not that the implementation is slow.** Presolve costs 1-25% of
+the total and never more than 0.03 s absolute; postsolve is 0.0004 s. The
+reduced model simply is not easier: **10teams goes from 3,698 simplex pivots to
+3,698** after losing 225 columns and 15 rows. A revised simplex already handles
+a fixed column almost for free -- it never prices, never enters the basis, and
+costs one column of the matrix -- so deleting 275 of them deletes work the
+solver was not doing. The reductions that would pay are the ones that shrink
+the *basis*, and those are the row reductions, of which there are 36 across the
+whole set.
+
+**Kept anyway, opt-in behind `--presolve`,** on the same grounds as
+`mir_cuts`: it is correct, it is cheap, and the two instances it does help
+(gt2 1.22x on the simplex, khb05250 2.12x on the interior point) are real. What
+it must not be is on by default while the aggregate says 0.96x.
+
+**What is correct about it, since that is the part that was hard.** Postsolve
+recovers the primal, the duals *and* the reduced costs for the original model:
+objective identical to a direct solve on all eleven, primal violation below
+1e-13, and duality gap below 1e-10 -- with the reduced costs rebuilt from
+`d = c - Aᵀy` at the end rather than tracked through the stack, which is a
+definition and so cannot drift. Forcing rows are detected and deliberately not
+applied: their dual needs an argument the other three do not, and getting it
+wrong would corrupt shadow prices on the one model they fire on.
+
+**One real bug, found by the tests rather than the benchmarks.** The
+empty-column rule parks an unconstrained column at whichever bound the
+objective wants, and took the minimisation branch regardless of sense -- on a
+maximisation that parks it at the *worst* end and returns a feasible,
+suboptimal plan that no feasibility check flags. Fixed, and pinned by a test.
+
+---
+
 ## Fill-reducing ordering for the simplex basis (attempted, not adopted)
 
 **Idea.** A fill-reducing ordering cut interior-point factorisation time by

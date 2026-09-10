@@ -47,7 +47,8 @@ SIMPLEX_NNZ_LIMIT = 500_000
 def solve(prob: Problem, method: str = "auto", device: str = "auto",
           time_limit: float = 300.0, gap: float = 1e-4,
           tol: float = 1e-8, verbose: bool = False,
-          sensitivity: bool = False, crossover: bool = False) -> Solution:
+          sensitivity: bool = False, crossover: bool = False,
+          presolve: bool = False) -> Solution:
     """Solve an LP or MILP, picking the method automatically by default.
 
     A **convex** quadratic objective is routed to the proximal primal-dual QP
@@ -63,6 +64,23 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
     from .lp.pdlp import PDLPParams, solve_pdlp
     from .lp.simplex import SimplexParams, solve_simplex
     from .mip.tree import MIPParams, solve_mip
+
+    if presolve and not prob.is_qp and not prob.is_mip:
+        # Pure LPs only. The reductions here are value-preserving but none of
+        # them rounds an implied bound to an integer, and the tree already runs
+        # domain propagation at every node -- so a MIP gets nothing from this
+        # and could get an unsound bound. Off by default: measured over both
+        # benchmark families it does not pay (docs/NEGATIVE-RESULTS.md).
+        from .presolve import postsolve as _postsolve
+        from .presolve import presolve as _presolve
+        res = _presolve(prob)
+        if res.status is not None:
+            return Solution(status=res.status, method="presolve")
+        reduced = solve(res.problem, method=method, device=device,
+                        time_limit=time_limit, gap=gap, tol=tol,
+                        verbose=verbose, sensitivity=False,
+                        crossover=crossover, presolve=False)
+        return _postsolve(res, reduced)
 
     if prob.is_qp:
         if prob.is_mip:
@@ -168,7 +186,7 @@ def cmd_solve(a):
     sol = solve(prob, method=a.method, device=a.device,
                 time_limit=a.time_limit, gap=a.gap, tol=a.tol,
                 verbose=a.verbose, sensitivity=a.sensitivity,
-                crossover=a.crossover)
+                crossover=a.crossover, presolve=a.presolve)
     dt = time.perf_counter() - t
 
     print()
@@ -298,6 +316,10 @@ def main(argv=None):
                    help="write the solution keyed by column name")
     p.add_argument("--print-solution", type=int, default=0, metavar="N",
                    help="print the first N nonzero variables")
+    p.add_argument("--presolve", action="store_true",
+                   help="reduce the model before solving, then postsolve "
+                        "(LP only; measured as a net loss on the benchmark "
+                        "sets, so it is opt-in)")
     p.add_argument("--crossover", action="store_true",
                    help="with --method ipm or pdlp, cross over to a simplex "
                         "basis so ranging and warm starts are available")

@@ -244,7 +244,7 @@ python -m bench.harness --mode lp --method ipm      # the interior-point engine
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 261 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 277 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -267,6 +267,7 @@ python -m pytest tests/               # 261 tests; the 15 GPU ones skip without 
 | First-order LP (PDLP-class), CPU + CUDA | `lp/pdlp.py` | done |
 | Hand-written CUDA kernels | `core/backend.py` | done |
 | **Crossover**, interior point → optimal basis | `lp/crossover.py` | done |
+| Presolve + postsolve (primal, duals, reduced costs) | `presolve.py` | done (opt-in; see below) |
 | Safe dual bounds (Neumaier–Shcherbina) | `mip/safebound.py` | done |
 | **Batched Node Relaxation** | `mip/bnr.py` | done |
 | Domain propagation | `mip/propagate.py` | done |
@@ -944,9 +945,18 @@ five now have regression tests.
   `INFEASIBLE`. That needs a homogeneous self-dual formulation, which this is
   not. The missing basis, and with it the ranging and the warm start, is now
   supplied by `--crossover`.
-- **No presolve module.** Domain propagation runs at every node, but there are
-  no singleton/doubleton eliminations, no dominated-column or forcing-row
-  reductions, and no postsolve stack.
+- **Presolve exists, is correct, and does not pay.** `--presolve` reduces
+  fixed columns, singleton rows and redundant rows to a fixpoint and postsolves
+  the primal, the duals and the reduced costs exactly -- objective identical to
+  a direct solve on all eleven models, duality gap below 1e-10. It is **off by
+  default because the aggregate is 0.96x**: 10teams goes from 3,698 pivots to
+  3,698 after losing 225 columns, because a revised simplex already handles a
+  fixed column almost for free. The reductions that would pay shrink the
+  *basis*, and there are 36 row reductions across the whole set against 275
+  column ones. Kept opt-in for the two cases it does help. Forcing rows are
+  detected and not applied -- their dual needs an argument the other three do
+  not. Full measurement in
+  [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
 - **Netlib, Mittelmann and QPLIB are untouched.** Only 11 MIPLIB instances are
   held; Netlib needs an `emps` decompressor that is not written.
 - **Scale is measured now, and bounded by three different things.** See
@@ -1090,9 +1100,10 @@ src/sovopt/
   io/         MPS reader and writer
   numerics/   scaling, LU, fill-reducing ordering, hypersparse solves, refinement
   lp/         revised simplex, basis, interior point, crossover, first-order LP
+  presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        261 tests including regressions for every bug above
+tests/        277 tests including regressions for every bug above
 ui/           local single-page interface
 ```
