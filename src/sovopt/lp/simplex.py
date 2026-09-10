@@ -825,7 +825,8 @@ class NodeSolver:
                     status = st1
                 else:
                     S.refresh()
-                    if S.primal_infeasibility() > p.feas_tol * 100:
+                    if S.primal_infeasibility() > _infeasible_threshold(
+                            self.prob, p.feas_tol):
                         # Phase 1 stalled with infeasibility left. Its own duals
                         # are the certificate: y1 = B^-T c1 prices the rows in a
                         # combination no feasible point can satisfy.
@@ -870,6 +871,33 @@ class NodeSolver:
             "avg_iterations": self.total_iterations / max(self.n_solves, 1),
             **self.S.B.stats(),
         }
+
+
+def _infeasible_threshold(prob, feas_tol: float) -> float:
+    """How much phase-1 infeasibility is too much to call it feasible.
+
+    Phase 1 drives the sum of bound violations down and stops when it can
+    do no better; whatever is left decides between OPTIMAL and INFEASIBLE.
+    Comparing that residual against an **absolute** ``100 * feas_tol`` is
+    wrong on any model whose rows are large, because the residual is in the
+    units of the rows and the threshold is not.
+
+    Netlib bore3d is the case that found it. It is feasible, with a
+    published optimum of 1373.080394, and the simplex returns exactly that
+    at the default tolerance -- then calls it **INFEASIBLE** at
+    ``feas_tol=1e-8``, which is the tolerance the benchmark harness uses.
+    Tightening a tolerance made the solver reject a feasible model rather
+    than solve it more carefully, which is backwards, and an INFEASIBLE
+    verdict is the one answer a caller cannot check for themselves.
+
+    So the threshold is scaled by the size of the finite row bounds. The
+    infinite ones are excluded: they are stored as a 1e30 sentinel, and
+    letting that into a maximum makes the threshold meaningless.
+    """
+    lo, hi = prob.row_lb, prob.row_ub
+    finite = np.concatenate([lo[lo > -INF], hi[hi < INF]])
+    scale = float(np.abs(finite).max()) if finite.size else 0.0
+    return feas_tol * 100.0 * max(1.0, scale)
 
 
 def solve_simplex(prob: Problem, params: SimplexParams | None = None,
@@ -929,12 +957,45 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
             if status == Status.OPTIMAL:
                 # dual simplex ends primal feasible; polish residual dual error
                 status = _primal_loop(S, phase=2)
+            elif status == Status.INFEASIBLE:
+                # The dual ratio test finding no entering column is a Farkas
+                # certificate *if* it is not numerical, and at a tight tolerance
+                # it can be numerical: fewer columns qualify as dual feasible,
+                # so the test runs out of candidates on a problem that has an
+                # answer. Netlib bore3d is exactly that. It is feasible, with a
+                # published optimum of 1373.080394, and this branch returned
+                # INFEASIBLE for it at `feas_tol=1e-8` while returning the
+                # published value at 1e-7 -- tightening a tolerance made the
+                # solver reject a feasible model instead of solving it more
+                # carefully.
+                #
+                # INFEASIBLE is the one answer a caller cannot check for
+                # themselves: there is no point to hand a verifier. So it is
+                # confirmed here by an independent primal phase 1 before it is
+                # reported, and the cost is paid only on the rare path that
+                # claims it.
+                method = "primal(2-phase, confirming dual infeasible)"
+                B.set_logical_basis()
+                B.set_status_from_costs()
+                S.refresh()
+                st1 = _primal_loop(S, phase=1)
+                if st1 == Status.OPTIMAL:
+                    S.refresh()
+                    if S.primal_infeasibility() > _infeasible_threshold(
+                            scaled, params.feas_tol):
+                        status = Status.INFEASIBLE
+                    else:
+                        S.farkas = None      # the dual verdict was numerical
+                        status = _primal_loop(S, phase=2)
+                else:
+                    status = st1
         else:
             method = "primal(2-phase)"
             st1 = _primal_loop(S, phase=1)
             if st1 == Status.OPTIMAL:
                 S.refresh()
-                if S.primal_infeasibility() > params.feas_tol * 100:
+                if S.primal_infeasibility() > _infeasible_threshold(
+                        scaled, params.feas_tol):
                     status = Status.INFEASIBLE
                 else:
                     status = _primal_loop(S, phase=2)

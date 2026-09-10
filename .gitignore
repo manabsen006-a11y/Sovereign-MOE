@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 data/instances/
+data/netlib/
 .pytest_cache/
 ui/_paste.*
 *.egg-info/

@@ -247,10 +247,12 @@ python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.harness --mode lp --method ipm      # the interior-point engine
+python -m bench.netlib --fetch        # download the Netlib LP set (once)
+python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 300 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 314 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -261,6 +263,7 @@ python -m pytest tests/               # 300 tests; the 15 GPU ones skip without 
 |---|---|---|
 | Sparse core, dual CSR/CSC | `core/sparse.py` | done |
 | MPS reader / writer | `io/mps.py` | done (free + fixed, RANGES, MARKER, QUADOBJ) |
+| Netlib compressed-LP expander | `io/netlib.py` | done (all 89 expand) |
 | CPLEX LP reader | `io/lp_format.py` | done (ranged rows, both-side terms, bounds, General/Binary) |
 | Scaling: Ruiz, Curtis–Reid, Pock–Chambolle | `numerics/scaling.py` | done |
 | Sparse LU, threshold Markowitz + Gilbert–Peierls | `numerics/lu.py` | done |
@@ -998,8 +1001,15 @@ five now have regression tests.
   detected and not applied -- their dual needs an argument the other three do
   not. Full measurement in
   [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
-- **Netlib, Mittelmann and QPLIB are untouched.** Only 11 MIPLIB instances are
-  held; Netlib needs an `emps` decompressor that is not written.
+- **Netlib is in; Mittelmann and QPLIB are not.** All 89 problems of the
+  Netlib LP set now expand and solve — see [Netlib](#netlib). **78 of 89 match
+  the published optimum** to 1e-6. Of the eleven that do not: three hit the
+  60 s limit (`dfl001`, `maros-r7`, and `cycle`, which reaches the published
+  value to 1e-12 but cannot prove it in time), and eight are accuracy
+  shortfalls on the notoriously ill-conditioned end of the set — `greenbea`
+  1.3e-3, `pilot` 1.5e-4, `greenbeb` 2.6e-5, then `80bau3b`, `ganges`, `nesm`,
+  `scrs8` and `pilot87` between 1e-6 and 1e-5. That is the honest accuracy
+  profile of this LP engine, and nothing before this measured it.
 - **Scale is measured now, and bounded by three different things.** See
   [Scale](#scale) for the ladder. LP reaches 1.02M nonzeros and 102,400 columns
   on the first-order path and 15,360 square rows solved and verified; the
@@ -1116,6 +1126,55 @@ one model family. The honest reading is that MILP scale here is bounded by the
 nodes and every heuristic failed, which is the same failure mode as 10teams on
 the MIPLIB set.
 
+## Netlib
+
+The Netlib LP set is the oldest and most cited collection of linear programs
+there is, and it is distributed only in a compressed container -- there is no
+plain-MPS copy on netlib.org. That container is why the set sat under Known
+limits as untouched. [`io/netlib.py`](src/sovopt/io/netlib.py) expands it, and
+hands the result to the ordinary MPS reader, so nothing about model
+construction is duplicated.
+
+The point was never the expander. It is that Netlib's readme carries the
+optimal value of every problem to ten significant figures, so **89 problems
+arrive with their answers attached** -- 89 independent checks on an engine that
+previously had 11.
+
+```
+python -m bench.netlib --fetch     # once
+python -m bench.netlib             # 89 problems, 412 s
+```
+
+| | |
+|---|---|
+| expand and parse | **89/89** |
+| match the published optimum to 1e-6 | **78/89** |
+| hit the 60 s limit | 3 (`dfl001`, `maros-r7`, `cycle`) |
+| accuracy shortfall | 8, worst `greenbea` at 1.3e-3 |
+
+`cycle` reaches the published value to 1e-12 and cannot prove it inside the
+limit, so it is counted as a miss on a technicality rather than a wrong answer.
+The eight shortfalls are the ill-conditioned end of the set -- `greenbea`,
+`pilot`, `pilot87` are notorious -- and they are the first honest measurement
+of where this LP engine's accuracy runs out.
+
+**It paid on the first run.** `bore3d` came back `INFEASIBLE`, with a published
+optimum of 1373.080394. The model was fine: the simplex returned exactly that
+value at the default tolerance and called the same problem infeasible at
+`feas_tol=1e-8`, which is the tolerance the harness uses. The dual simplex
+reports `INFEASIBLE` when its ratio test finds no entering column that keeps
+the basis dual feasible, and at a tight tolerance fewer columns qualify, so the
+test can run out of candidates on a problem that has an answer. Tightening a
+tolerance made the solver reject a feasible model rather than solve it more
+carefully.
+
+That verdict is now confirmed by an independent primal phase 1 before it is
+reported, on the grounds that **`INFEASIBLE` is the one answer a caller cannot
+check** -- every other status comes with a point that the verifier can test,
+and this one comes with nothing. The confirmation costs nothing except on the
+rare path that claims infeasibility. Eleven MIPLIB instances had never exposed
+it.
+
 ## Measurement conditions
 
 Every wall-clock figure in this README came from one machine:
@@ -1148,13 +1207,13 @@ convention exists because two published tables were found not to reproduce; see
 ```
 src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
-  io/         MPS reader and writer
+  io/         MPS reader and writer, Netlib expander
   numerics/   scaling, LU, fill-reducing ordering, hypersparse solves, refinement
   lp/         revised simplex, basis, interior point, crossover, first-order LP
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        300 tests including regressions for every bug above
+tests/        314 tests including regressions for every bug above
 ui/           local single-page interface
 ```
