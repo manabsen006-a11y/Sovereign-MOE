@@ -100,6 +100,58 @@ under the small-basis exemption.
 
 ---
 
+## A parallel branch-and-bound tree (built, measured, reverted)
+
+Known limits said the tree is single-threaded while nine kernels run in
+parallel. The profile says that is where the time is: **node LP solves are
+86-97% of MIP time** (misc07 91%, qnet1 97%, 10teams 93%, p0201 88%, gt2 86%),
+and every JIT kernel in the project is compiled `nogil=True`, so on paper
+threads should run them concurrently.
+
+**The tree's shape makes it look easy.** It already pops a *slab* of up to 64
+nodes and decides what to explore before solving any of them, so the slab is
+fixed, each node's LP is independent, and results can be applied in slab order.
+Determinism is preserved by construction rather than by luck -- and that was
+confirmed: at 1, 4 and 8 threads gt2 and p0201 returned identical status,
+objective **and node count**.
+
+**It is slower at every thread count.**
+
+| | 1 thread | 4 | 8 |
+|---|---|---|---|
+| gt2 | 14.45 s | 17.04 s | 18.14 s |
+| p0201 | 24.48 s | 28.24 s | 32.91 s |
+| misc07 (nodes in 60 s) | 3,046 | 2,601 | 2,475 |
+
+misc07 explores 20% *fewer* nodes in the same wall clock at 8 threads.
+
+**Why, isolated from the tree entirely.** Sixteen independent node LPs, each
+with its own `NodeSolver` so nothing is shared, solved sequentially against
+solved on eight threads:
+
+    sequential 6.440s     8 threads 10.076s     0.64x
+
+Not "no gain" -- a loss, on the cleanest possible version of the experiment.
+The reason is that `nogil` kernels are not the same thing as a `nogil`
+*algorithm*: the revised simplex's iteration loop is Python, calling short
+kernels for pricing, the ratio test and the solves. The GIL is held for the
+Python between them, which is most of the wall clock, so the threads serialise
+and pay coordination costs on top.
+
+**Reverted rather than shipped dormant.** The implementation defaulted to one
+thread and so changed nothing, but it put a thread pool, a work queue and a
+per-thread solver pool into the hottest and most correctness-critical loop in
+the project, in exchange for a path that provably cannot pay. The finding is
+worth more than the code.
+
+**What would have to change first.** The simplex iteration loop itself would
+have to move inside a `nogil` kernel, so that a node solve is one long
+GIL-free call rather than a Python loop around many short ones. That is a
+rewrite of `lp/simplex.py`, not a threading change, and until it happens
+parallelising the tree is measuring the GIL.
+
+---
+
 ## Presolve (built, correct, does not pay -- kept opt-in)
 
 The README named presolve, with a Forrest-Tomlin update, as what was left to

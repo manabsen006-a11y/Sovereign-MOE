@@ -1008,8 +1008,18 @@ five now have regression tests.
   binaries and finds no feasible point at all past about 400. Against the stated
   benchmark of "thousands to millions" of variables, the thousands are reached
   and the millions are not.
-- **The branch-and-bound tree is single-threaded.** Nine kernels run in
-  parallel; the search does not.
+- **The branch-and-bound tree is single-threaded, and threading it was tried
+  and reverted.** Node LPs are 86-97% of MIP time and every kernel is compiled
+  `nogil`, so a slab of independent node LPs looks like free parallelism -- the
+  slab is fixed before any of it is solved, so determinism even survives it
+  (identical status, objective and node count at 1, 4 and 8 threads). It is
+  slower at every thread count: gt2 14.45 s -> 18.14 s, and misc07 explores 20%
+  *fewer* nodes in the same 60 s. Isolated from the tree, sixteen independent
+  node LPs with their own solvers run **0.64x** on eight threads. A `nogil`
+  kernel is not a `nogil` algorithm: the simplex iteration loop is Python
+  calling short kernels, and the GIL is held for the Python between them.
+  Parallelising the tree means rewriting that loop inside a kernel first. Full
+  measurement in [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
 - GPU fp64 on a laptop RTX 3050 runs at 1/32 rate; a datacentre card changes the
   crossover point substantially.
 
