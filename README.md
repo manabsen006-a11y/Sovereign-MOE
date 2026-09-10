@@ -250,7 +250,7 @@ python -m bench.harness --mode lp --method ipm      # the interior-point engine
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 284 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 300 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -866,11 +866,27 @@ five now have regression tests.
   would not be trading chain length against refactorisation cost at all. What
   has changed is that most of the 10teams number it was meant to fix has been
   recovered without it, which moves it down the list rather than off it.
-- **Conflict analysis only sees LP infeasibilities.** The tree propagates before
-  solving a node, so nodes propagation can refute never reach the LP that would
-  produce a dual ray. Measured: misc07 learns 42 clauses (3168 nodes -> 2848),
-  while p0201, gr4x6 and gt2 analyse zero nodes. Propagation-based conflict
-  analysis is the larger prize and needs the propagator to carry reasons.
+- **Conflict analysis now sees propagation too, and it was not the larger
+  prize.** This entry used to say nodes refuted by propagation never reach the
+  LP that produces a dual ray, and called that the bigger half. It is now
+  implemented — a deletion filter relaxes each decision back to its root bound
+  and re-propagates, keeping only the decisions the refutation actually needs —
+  and the honest count is small. Nodes killed by propagation against nodes
+  killed by the LP:
+
+  | | flugpl | dcmulti | misc07 | p0201 | gt2 | khb05250 |
+  |---|---|---|---|---|---|---|
+  | propagation | 639 | 24 | 14 | **0** | **0** | **0** |
+  | LP | 655 | 44 | 89 | 0 | 0 | 0 |
+
+  p0201, gt2 and khb05250 have no infeasible nodes *at all* — those trees prune
+  by bound, not by infeasibility, so there was never anything for either
+  analyser to learn from. flugpl's 639 cannot become clauses either: it has no
+  binary columns, and a clause can only speak about binaries. What is left is
+  38 clauses over the whole set, at an average reason length of 2.3 on dcmulti,
+  and an A/B that is a **wash**: 6/11 proved either way, 375.9 s against
+  379.6 s. Kept on by default because it is correct and costs nothing
+  measurable, not because it is faster.
 - **Symmetry breaking is weak.** One inequality per generator rather than full
   lexicographic ordering, so it captures a fraction of what orbitopal fixing
   would. Sound, but nowhere near the `k!` the theory allows.
@@ -1129,6 +1145,6 @@ src/sovopt/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        284 tests including regressions for every bug above
+tests/        300 tests including regressions for every bug above
 ui/           local single-page interface
 ```
