@@ -58,6 +58,17 @@ from .heuristics import (HeuristicStats, feasibility_jump, feasibility_pump,
 from .propagate import propagate
 from .symmetry import breaking_constraints, detect_symmetry
 
+NODE_REFACTOR_FREQ = 60
+"""Pivots between basis refactorisations *inside the tree*.
+
+The LP path raised its default to 150 for a 1.87x speedup (see
+:class:`~sovopt.lp.simplex.SimplexParams`), and the tree deliberately does
+not follow it. A node LP re-solves its parent with one bound changed: it
+does a handful of pivots from a warm basis, so it never gets far enough
+down a long eta chain to amortise it, and pays for the chain on every
+FTRAN instead. Measured over the MIPLIB set at a 60 s limit, 150 against
+60: 5/11 proved against 6/11, and 414.5 s against 377.4 s."""
+
 __all__ = ["MIPParams", "solve_mip"]
 
 ACCEPT_FEAS_TOL = 1e-6
@@ -394,7 +405,7 @@ def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol,
         scaled = append_cuts(scaled, chosen)
         int_full = np.concatenate([int_mask, np.zeros(scaled.m, dtype=bool)])
         node_lp = NodeSolver(scaled, SimplexParams(
-            time_limit=params.time_limit,
+            time_limit=params.time_limit, refactor_freq=NODE_REFACTOR_FREQ,
             feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
         total += len(chosen)
 
@@ -471,7 +482,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                                                  device=params.device))
     else:
         node_lp = NodeSolver(scaled, SimplexParams(
-            time_limit=params.time_limit,
+            time_limit=params.time_limit, refactor_freq=NODE_REFACTOR_FREQ,
             feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
 
     # ---- root relaxation, solved harder than an ordinary node ------------- #
@@ -525,6 +536,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 lp_try = (node_lp if len(trials) == 1 else
                           NodeSolver(scaled, SimplexParams(
                               time_limit=params.time_limit,
+                              refactor_freq=NODE_REFACTOR_FREQ,
                               feas_tol=tol.primal_feas,
                               opt_tol=tol.dual_feas)))
                 now = time.perf_counter()
@@ -819,7 +831,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             scaled = append_cuts(scaled, [Cut(i, v, rr, kind="conflict")
                                           for i, v, rr in pending_clauses])
             node_lp = NodeSolver(scaled, SimplexParams(
-                time_limit=params.time_limit,
+                time_limit=params.time_limit, refactor_freq=NODE_REFACTOR_FREQ,
                 feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
             warm_cache.clear()          # basis size changed
             pending_clauses = []
@@ -904,6 +916,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 if node_lp is None or node_lp_rows != scaled.m:
                     node_lp = NodeSolver(scaled, SimplexParams(
                         time_limit=params.time_limit,
+                        refactor_freq=NODE_REFACTOR_FREQ,
                         feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
                     node_lp_rows = scaled.m
                 r_exact = node_lp.solve(l, h)

@@ -100,7 +100,33 @@ class SimplexParams:
     pivot_tol: float = 1e-9
     harris_relax: float = 1e-9
 
-    refactor_freq: int = 60
+    refactor_freq: int = 150
+    """Pivots between refactorisations of the basis.
+
+    The product-form update appends an eta per pivot, so a longer budget
+    means a longer eta chain on every FTRAN and BTRAN, traded against a
+    full LU refactorisation. The README blamed the product form itself for
+    10teams and named Forrest-Tomlin as the fix; measured, the budget was
+    simply set too low. Sweeping it over the LP set, total solve time:
+
+        20      40      60     100     150     250
+        4.152s  3.622s  4.057s  2.576s  2.171s  2.585s
+
+    150 is the best setting for seven of eleven instances, with 10teams 2.55x
+    and qnet1 2.20x. Repeating the 60-against-150 comparison back to back gave
+    5.2s against 2.8s and then 4.8s against 3.5s -- so the **direction is
+    reproducible and the magnitude is not**: somewhere between 1.4x and 1.9x
+    on total time, on a machine whose absolute speed drifts by about that much
+    on its own. Accuracy is not traded for any of it: the verifier accepts
+    11/11 at both settings across every run, and the worst relative error is
+    5.10e-07 either way, to the digit.
+
+    **The branch-and-bound tree overrides this back to 60**, because the
+    two paths want opposite things and the reason is structural: a root LP
+    does thousands of pivots from one basis and amortises a long chain,
+    while a node LP does a handful from a warm start and pays for the
+    chain without ever using it. Measured over the MIP set, 150 proves
+    5/11 against 60's 6/11 and is 10% slower. See :mod:`sovopt.mip.tree`."""
     recompute_freq: int = 200
     """How often basic values are rebuilt from the factors rather than updated
     incrementally. Incremental updates drift; this bounds the drift."""

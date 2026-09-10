@@ -57,8 +57,14 @@ considerably faster:
 | revised simplex | 11/11 | 11/11 | 0.258 s | 3.9 s | 5.10e-07 |
 | **interior point** | 11/11 | 11/11 | **0.140 s** | **1.6 s** | 5.10e-07 |
 
+The simplex row predates the refactorisation-budget change described under
+[Known limits](#known-limits) and is therefore conservative; re-measuring it
+here would have meant re-measuring all four on a machine that had since drifted
+by more than the change is worth, which would have hidden it rather than shown
+it.
+
 All four rows above -- the PDLP listing and these three -- were re-measured
-back to back at this commit, so they are comparable with each other and *not*
+back to back at an earlier commit, so they are comparable with each other and *not*
 with figures recorded earlier in this README: the same commands on this machine
 now run about twice the seconds they did in the sitting those were taken in,
 while every objective matches to the digit and the HiGHS ratio below reproduces
@@ -244,7 +250,7 @@ python -m bench.harness --mode lp --method ipm      # the interior-point engine
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 277 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 284 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -838,9 +844,28 @@ five now have regression tests.
   finish. So there is no pivot bound, and two instances of eleven cost *more*
   pivots than a cold start. The clean-up is what makes the answer exact, so a
   poor identification is a cost and never an error.
-- **Product-form update, not Forrest–Tomlin.** Fill grows linearly in the number
-  of etas, forcing a refactorisation every 60 pivots. This is the main reason
-  10teams takes 18k iterations and 12 s.
+- **Product-form update, not Forrest–Tomlin — but that is not what was costing
+  10teams.** This entry used to blame the product form and name Forrest–Tomlin
+  as the fix. Measured, the refactorisation *budget* was simply set too low.
+  Sweeping it over the LP set, total solve time:
+
+  | pivots between refactorisations | 20 | 40 | 60 | 100 | **150** | 250 |
+  |---|---|---|---|---|---|---|
+  | total | 4.152 s | 3.622 s | 4.057 s | 2.576 s | **2.171 s** | 2.585 s |
+
+  150 is best on seven of eleven instances, and raising the LP default from 60
+  to 150 is worth **1.4–1.9×** across repeated back-to-back runs (10teams
+  2.55×, qnet1 2.20×). No accuracy is traded for it: the verifier accepts 11/11
+  at both settings and the worst relative error is 5.10e-07 either way, to the
+  digit. **The tree keeps 60** — a node LP does a handful of pivots from a warm
+  basis and never gets far enough down a long eta chain to amortise it, and at
+  150 the MIP set proves 5/11 against 6/11.
+
+  Forrest–Tomlin is still not implemented, and is still the principled answer:
+  it updates the factors directly, keeping them compact *and* accurate, so it
+  would not be trading chain length against refactorisation cost at all. What
+  has changed is that most of the 10teams number it was meant to fix has been
+  recovered without it, which moves it down the list rather than off it.
 - **Conflict analysis only sees LP infeasibilities.** The tree propagates before
   solving a node, so nodes propagation can refute never reach the LP that would
   produce a dual ray. Measured: misc07 learns 42 clauses (3168 nodes -> 2848),
@@ -1104,6 +1129,6 @@ src/sovopt/
   mip/        safe bounds, batched node relaxation, propagation, tree
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        277 tests including regressions for every bug above
+tests/        284 tests including regressions for every bug above
 ui/           local single-page interface
 ```
