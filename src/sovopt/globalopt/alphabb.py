@@ -462,7 +462,7 @@ def solve_alphabb(prob: Problem,
                          "time_limit": max(0.0, deadline - time.perf_counter())})
         r = solve_qp(red.prob, qp)
         if r.x is None:
-            raise RuntimeError("QP relaxation returned no iterate")
+            return red, None, -np.inf, alpha      # no point: nothing is known
         y = r.y if r.y is not None else np.zeros(work.m, dtype=VAL)
         rp = red.prob
         b = safe_qp_bound(rp.A, rp.c, rp.Q, rp.row_lb, rp.row_ub,
@@ -496,6 +496,16 @@ def solve_alphabb(prob: Problem,
 
         nodes += 1
         red, x, node_bound, alpha = relax(lo, hi)
+        if red is not None and x is None:
+            # the relaxation returned no point (a limit hit before its
+            # feasibility cap): stop at the deadline, else leave the node
+            # undecided at its parent's bound
+            if time.perf_counter() > deadline:
+                status = Status.TIME_LIMIT
+                break
+            undecided += 1
+            leaf_lb = min(leaf_lb, node.bound)
+            continue
         if red is None:
             # every variable fixed: the node is one point, and either it is
             # an incumbent or it is nothing
@@ -548,6 +558,8 @@ def solve_alphabb(prob: Problem,
                 closed = False
                 for tighten in (1, 2):
                     _, x2, b2, _ = relax(lo, hi, tighten)
+                    if x2 is None:
+                        break
                     node_bound = max(node_bound, b2)
                     consider(x2)
                     gap = max(params.gap_abs, params.gap_rel * abs(incumbent)) \

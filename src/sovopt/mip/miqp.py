@@ -227,9 +227,17 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
         if r.status in (Status.INFEASIBLE, Status.INFEASIBLE_OR_UNBOUNDED):
             continue
         if r.x is None:
-            # the proximal solver always returns its best iterate; a relaxation
-            # with no point at all is a bug, not a node to drop silently
-            raise RuntimeError("QP relaxation returned no iterate")
+            # The interior point withholds a point that fails its feasibility
+            # cap at a time or iteration limit. Without a point there is no
+            # certified bound and nothing to branch on: at the deadline the
+            # search stops, otherwise the node is closed as undecided at its
+            # parent's bound, which keeps the reported gap honest.
+            if time.perf_counter() > deadline:
+                status = Status.TIME_LIMIT
+                break
+            undecided += 1
+            leaf_lb = min(leaf_lb, bound)
+            continue
         x = np.asarray(r.x, dtype=VAL)
         # The bound is certified from the iterate and its duals, whatever the
         # solver's status -- never taken from the solver's own objective.

@@ -88,11 +88,23 @@ def test_solves_a_maximisation_the_same_way():
     assert np.abs(d - s.reduced_costs).max() < 1e-7
 
 
-def test_refuses_a_quadratic_objective():
+def test_solves_a_quadratic_objective_and_the_lp_path_is_unchanged():
+    """It used to refuse a Q. Now Q joins the (1,1) block: with Q = I the
+    optimum is the projection of -c onto the feasible set, which the
+    proximal QP computes independently. And Q = 0 must give the LP answer
+    to the last digit, since the LP pattern builder is a separate branch."""
+    from sovopt.qp import QPParams, solve_qp
     p = random_lp(seed=0)
+    lp = solve_ipm(p.copy())
     p.Q = SparseMatrix.from_dense(np.eye(p.n))
-    with pytest.raises(NotImplementedError):
-        solve_ipm(p)
+    s = solve_ipm(p.copy())
+    assert s.status == Status.OPTIMAL
+    ref = solve_qp(p.copy(), QPParams(method="proximal", time_limit=60))
+    assert abs(s.objective - ref.objective) <= 1e-6 * max(1.0, abs(ref.objective))
+    z = p.copy()
+    z.Q = SparseMatrix.from_dense(np.zeros((p.n, p.n)))
+    s0 = solve_ipm(z)
+    assert abs(s0.objective - lp.objective) <= 1e-9 * max(1.0, abs(lp.objective))
 
 
 # --------------------------------------------------------------------------- #

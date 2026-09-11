@@ -77,6 +77,14 @@ class NotConvexError(ValueError):
 
 @dataclass
 class QPParams:
+    method: str = "ipm"
+    """``"ipm"`` (interior point, the default) or ``"proximal"`` (this file).
+
+    Both check convexity the same way and refuse the same models. The
+    interior point solves every convex QPLIB instance in the default set that
+    the proximal method could not finish in a minute, so it is the default;
+    the proximal method stays because it is matrix-free -- no factorisation,
+    so no fill -- and is the path a GPU can run."""
     eps_abs: float = 1e-8
     eps_rel: float = 1e-8
     max_iter: int = 200_000
@@ -128,8 +136,27 @@ def _min_eigenvalue(mat, n, lam_max, iters=60):
     return float(lam_max - shift)
 
 
+def check_convex(Q, n: int, convexity_tol: float):
+    """Refuse an indefinite ``Q``. Returns ``(lam_max, lam_min)``.
+
+    An *estimate* by power iteration, not a certificate -- the module header
+    says what that means -- shared by both QP engines so they agree on what
+    they refuse.
+    """
+    lam_max = _spectral_norm(Q, n)
+    lam_min = _min_eigenvalue(Q, n, lam_max)
+    if lam_min < -convexity_tol * max(1.0, lam_max):
+        raise NotConvexError(
+            f"Q has an eigenvalue near {lam_min:.3e}; this method solves convex "
+            f"QP only. A non-convex quadratic needs spatial branch-and-bound "
+            f"(sovopt.globalopt).")
+    return lam_max, lam_min
+
+
 def solve_qp(prob: Problem, params: QPParams | None = None) -> Solution:
-    """Solve a convex QP. Raises :class:`NotConvexError` if ``Q`` is indefinite."""
+    """Solve a convex QP by proximal PDHG. Raises :class:`NotConvexError` if
+    ``Q`` is indefinite. :func:`sovopt.qp.solve_qp` is the dispatcher; this
+    is the ``method="proximal"`` engine."""
     params = params or QPParams()
     t0 = time.perf_counter()
 
@@ -154,13 +181,7 @@ def solve_qp(prob: Problem, params: QPParams | None = None) -> Solution:
     A, Q = scaled.A, scaled.Q
 
     # --- convexity check: refuse rather than silently mis-solve -------------
-    lam_max = _spectral_norm(Q, n)
-    lam_min = _min_eigenvalue(Q, n, lam_max)
-    if lam_min < -params.convexity_tol * max(1.0, lam_max):
-        raise NotConvexError(
-            f"Q has an eigenvalue near {lam_min:.3e}; this method solves convex "
-            f"QP only. A non-convex quadratic needs spatial branch-and-bound "
-            f"(sovopt.globalopt).")
+    lam_max, lam_min = check_convex(Q, n, params.convexity_tol)
 
     c = scaled.c
     rl, ru = scaled.row_lb, scaled.row_ub

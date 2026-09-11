@@ -241,6 +241,7 @@ def _recursion_incumbent(bp, x, lo, hi, time_limit):
 def _obbt(bp, lo, hi, params, deadline):
     """Tighten every variable that appears in a product, by LP in both directions."""
     touched = sorted({t.x for t in bp.terms} | {t.y for t in bp.terms})
+    is_int = bp.linear.integer_mask
     n = bp.n
     for _rnd in range(params.obbt_rounds):
         improved = False
@@ -248,6 +249,12 @@ def _obbt(bp, lo, hi, params, deadline):
             if time.perf_counter() > deadline:
                 return lo, hi, improved
             if hi[j] - lo[j] <= params.branch_eps:
+                continue
+            if is_int[j] and hi[j] - lo[j] <= 1.0 + params.branch_eps:
+                # a binary's box is already as tight as an LP can make it
+                # short of fixing it, which the tree does better; on the
+                # QPLIB binary instances OBBT here spent the whole root
+                # budget for nothing
                 continue
             for sense in (+1.0, -1.0):
                 probe = build_relaxation(bp, lo, hi)
@@ -342,15 +349,24 @@ def solve_global(bp: BilinearProblem,
         if v < incumbent:
             incumbent, best_x = v, np.array(x, copy=True)
 
-    root = _solve_relaxation(bp, lo, hi, params.time_limit)
-    if root.status == Status.INFEASIBLE:
-        return Solution(status=Status.INFEASIBLE, time=time.perf_counter() - t0,
-                        method="spatial-bb")
-    if root.status != Status.OPTIMAL or root.x is None:
-        return Solution(status=root.status, time=time.perf_counter() - t0,
-                        method="spatial-bb")
+    deadline = t0 + params.time_limit
 
-    accept(_recursion_incumbent(bp, root.x, lo, hi, params.time_limit))
+    def remaining():
+        return max(1.0, deadline - time.perf_counter())
+
+    root = _solve_relaxation(bp, lo, hi, remaining())
+    if root.status == Status.INFEASIBLE:
+        out = Solution(status=Status.INFEASIBLE, time=time.perf_counter() - t0,
+                       method="spatial-bb")
+        out.info = {"root_status": root.status.name, "terms": len(bp.terms)}
+        return out
+    if root.status != Status.OPTIMAL or root.x is None:
+        out = Solution(status=root.status, time=time.perf_counter() - t0,
+                       method="spatial-bb")
+        out.info = {"root_status": root.status.name, "terms": len(bp.terms)}
+        return out
+
+    accept(_recursion_incumbent(bp, root.x, lo, hi, remaining()))
 
     counter = 0
     frontier: list[_Node] = []
@@ -386,7 +402,7 @@ def solve_global(bp: BilinearProblem,
         if np.isfinite(incumbent) and nd.bound >= incumbent - tol:
             continue
 
-        rel = _solve_relaxation(bp, nd.lo, nd.hi, params.time_limit, nd.basis)
+        rel = _solve_relaxation(bp, nd.lo, nd.hi, remaining(), nd.basis)
         nodes += 1
         if rel.status == Status.INFEASIBLE or rel.x is None:
             continue
@@ -404,7 +420,7 @@ def solve_global(bp: BilinearProblem,
             accept(x)
             continue
 
-        accept(_recursion_incumbent(bp, x, nd.lo, nd.hi, params.time_limit))
+        accept(_recursion_incumbent(bp, x, nd.lo, nd.hi, remaining()))
         accept(_polish(bp, x, nd.lo, nd.hi, params.polish_steps))
 
         if not integral(x):
@@ -446,9 +462,14 @@ def solve_global(bp: BilinearProblem,
         dual_bound = incumbent
 
     if best_x is None:
-        return Solution(status=Status.INFEASIBLE if status == Status.OPTIMAL
-                        else status, nodes=nodes,
-                        time=time.perf_counter() - t0, method="spatial-bb")
+        out = Solution(status=Status.INFEASIBLE if status == Status.OPTIMAL
+                       else status, nodes=nodes,
+                       time=time.perf_counter() - t0, method="spatial-bb")
+        out.dual_bound = dual_bound if not flip else -dual_bound
+        out.info = {"obbt_rounds": n_obbt, "terms": len(bp.terms),
+                    "uncertified_nodes": uncertified,
+                    "bound_is_rigorous": uncertified == 0}
+        return out
 
     obj = bp.linear.objective(best_x)
     if flip:

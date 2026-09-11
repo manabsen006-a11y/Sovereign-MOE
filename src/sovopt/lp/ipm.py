@@ -10,7 +10,9 @@ path does not notice degeneracy at all.
 
 The formulation
 ---------------
-The canonical model here is ``min cᵀx  s.t.  rl <= Ax <= ru,  l <= x <= u``.
+The canonical model here is ``min ½xᵀQx + cᵀx  s.t.  rl <= Ax <= ru,
+l <= x <= u`` with ``Q`` positive semidefinite or absent -- the LP case is
+``Q = 0`` and nothing below changes shape for it.
 Introducing a row slack ``s = Ax`` turns every row into an equality and every
 constraint into a bound::
 
@@ -27,9 +29,17 @@ with ``z_l, z_u >= 0``. Eliminating the bound duals leaves the *augmented
 system*, and eliminating the slack block from that leaves what is actually
 factorised each iteration::
 
-    ⎡ -Θx⁻¹   Aᵀ ⎤ ⎡dx⎤   ⎡ r_x ⎤            Θx⁻¹ = z_l/(x-l) + z_u/(u-x)
-    ⎢            ⎥ ⎢  ⎥ = ⎢     ⎥
-    ⎣  A      Θs ⎦ ⎣dy⎦   ⎣ r_y ⎦            Θs   = 1 / (same, for the slacks)
+    ⎡ -(Q+Θx⁻¹)  Aᵀ ⎤ ⎡dx⎤   ⎡ r_x ⎤        Θx⁻¹ = z_l/(x-l) + z_u/(u-x)
+    ⎢               ⎥ ⎢  ⎥ = ⎢     ⎥
+    ⎣    A       Θs ⎦ ⎣dy⎦   ⎣ r_y ⎦        Θs   = 1 / (same, for the slacks)
+
+A convex quadratic changes exactly two things: ``Q`` joins the (1,1) block,
+which stays negative definite because ``Q ⪰ 0``, and the dual objective
+acquires ``-½xᵀQx`` (the Wolfe dual). Everything else -- the predictor, the
+corrector, the step rule, the refinement -- is the LP code unchanged. That is
+the reason this is the QP engine of choice: QPLIB's convex instances, which
+the first-order QP solver could not finish in a minute, are ten to thirty
+factorisations here.
 
 Why the augmented system and not the normal equations
 -----------------------------------------------------
@@ -76,6 +86,9 @@ Altman & Gondzio, "Regularized symmetric indefinite systems in interior point
   (1999) 275-302 -- the static primal/dual regularisation used here.
 Gondzio, "Interior point methods 25 years later", European J. Oper. Res. 218
   (2012) 587-601 -- survey; the step-length and termination conventions.
+Vanderbei, "LOQO: an interior point code for quadratic programming", Optim.
+  Methods Softw. 11 (1999) 451-484 -- the quadratic block in the reduced KKT
+  system and the Wolfe dual objective.
 """
 
 from __future__ import annotations
@@ -139,6 +152,11 @@ class IPMParams:
     """Iterations of no primal-residual progress before the model is called
     infeasible or unbounded. See the stagnation test in :func:`solve_ipm`."""
 
+    gap_stall_accept: float = 1e-7
+    """Relative gap accepted as optimal when mu has stopped decreasing with
+    both residuals already converged -- the floor on the complementarity
+    gaps, not the model, is what holds the gap there. See the loop."""
+
     ordering: str = "auto"
     """Fill-reducing ordering for the KKT: ``"auto"``, ``"rcm"`` or ``"none"``.
 
@@ -181,8 +199,9 @@ class _KKT:
     computed once here and the per-iteration cost is two array writes.
     """
 
-    def __init__(self, A, ordering="auto"):
+    def __init__(self, A, ordering="auto", Q=None):
         self.A = A
+        self.Q = Q
         self.order = None
         self._ordering = ordering
         self._pending = None
@@ -190,6 +209,11 @@ class _KKT:
         self.m, self.n = m, n
         nk = n + m
         self.nk = nk
+        self.q_diag = np.zeros(n, dtype=VAL)
+
+        if Q is not None and Q.nnz > 0:
+            self._build_with_q(A, Q, ordering)
+            return
 
         acp = np.asarray(A.cp, dtype=np.int64)
         arp = np.asarray(A.rp, dtype=np.int64)
@@ -238,9 +262,53 @@ class _KKT:
             # representative of the rest of the solve
             self._pending = [None, rcm_order(kp, ki, nk)]
 
+    def _build_with_q(self, A, Q, ordering):
+        """The same pattern with ``-Q`` in the (1,1) block, built from triplets.
+
+        ``Q`` is constant across iterations, so its entries are written once
+        and only the diagonal is revalued: ``-(Q_jj + Θx⁻¹_j)``. A diagonal
+        entry is inserted for every column whether or not ``Q`` has one, so
+        that ``diag_x`` always exists.
+        """
+        from ..core.sparse import coo_to_csc
+        m, n, nk = self.m, self.n, self.nk
+        q_cols = np.repeat(np.arange(n, dtype=np.int64), np.diff(Q.cp))
+        q_rows = np.asarray(Q.ci, dtype=np.int64)
+        q_vals = np.asarray(Q.cx, dtype=VAL)
+        # Q's diagonal is kept aside and revalued with Θ every iteration; the
+        # off-diagonal part is written once. Every diagonal position gets a
+        # placeholder (non-zero, so the triplet builder keeps it) that factor()
+        # overwrites before anything reads it.
+        on_diag = q_rows == q_cols
+        q_diag = np.zeros(n, dtype=VAL)
+        np.add.at(q_diag, q_cols[on_diag], q_vals[on_diag])
+        self.q_diag = q_diag
+        a_cols = np.repeat(np.arange(n, dtype=np.int64), np.diff(A.cp))
+        a_rows = np.asarray(A.ci, dtype=np.int64)
+        ar = np.arange(n, dtype=np.int64)
+        am = np.arange(m, dtype=np.int64)
+        rows = np.concatenate([q_rows[~on_diag], ar, n + a_rows, a_cols, n + am])
+        cols = np.concatenate([q_cols[~on_diag], ar, a_cols, n + a_rows, n + am])
+        vals = np.concatenate([-q_vals[~on_diag], np.ones(n),
+                               np.asarray(A.cx, dtype=VAL),
+                               np.asarray(A.cx, dtype=VAL), np.ones(m)])
+        kp, ki, kx = coo_to_csc(rows, cols, vals, nk, nk)
+        self.kp = np.asarray(kp, dtype=np.int64)
+        self.ki = np.asarray(ki, dtype=IDX)
+        self.kx = np.asarray(kx, dtype=VAL)
+        col_of = np.repeat(np.arange(nk, dtype=np.int64), np.diff(self.kp))
+        diag = np.flatnonzero(self.ki == col_of)
+        assert diag.size == nk
+        self.diag_x = diag[:n]
+        self.diag_s = diag[n:]
+        if ordering == "rcm":
+            self.order = rcm_order(self.kp, self.ki, nk)
+        elif ordering == "auto":
+            self._pending = [None, rcm_order(self.kp, self.ki, nk)]
+
     def factor(self, dx, ds, pivot_tol, drop):
         """Revalue the diagonals and factorise. ``dx``, ``ds`` are positive."""
-        self.kx[self.diag_x] = -dx
+        self.kx[self.diag_x] = -(self.q_diag + dx)
         self.kx[self.diag_s] = ds
         if self._pending is not None:
             # The incumbent is factorised in full; every challenger is then
@@ -274,6 +342,8 @@ class _KKT:
         vx, vy = v[:n], v[n:]
         out = np.empty_like(v)
         out[:n] = -dx_diag * vx + self.A.rmatvec(vy)
+        if self.Q is not None:
+            out[:n] -= self.Q.matvec(vx)
         out[n:] = self.A.matvec(vx) + ds_diag * vy
         return out
 
@@ -432,20 +502,16 @@ def _max_step(v, dv, active):
 
 
 def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
-    """Solve an LP by a primal-dual interior-point method.
+    """Solve an LP or a convex QP by a primal-dual interior-point method.
 
-    Integer restrictions are ignored -- this solves the relaxation. A quadratic
-    objective is refused rather than dropped, on the same grounds as the rest
-    of the engine: silently discarding ``Q`` returns a confident wrong number.
+    Integer restrictions are ignored -- this solves the relaxation. Convexity
+    of ``Q`` is the caller's premise: :mod:`sovopt.qp` checks it before
+    routing here, and an indefinite ``Q`` handed in directly makes the (1,1)
+    block indefinite, which the factorisation may or may not survive.
     """
     params = params or IPMParams()
     tol = params.tol
     t0 = time.perf_counter()
-
-    if prob.Q is not None:
-        raise NotImplementedError(
-            "solve_ipm optimises a linear objective; this model has a "
-            "quadratic term, which would be silently discarded")
 
     flip = prob.sense == ObjSense.MAXIMISE
     work = prob
@@ -453,10 +519,15 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
         work = prob.copy()
         work.c = -work.c
         work.obj_offset = -work.obj_offset
+        if work.Q is not None:
+            work.Q = work.Q.copy()
+            work.Q.cx = -work.Q.cx
+            work.Q.rx = -work.Q.rx
         work.sense = ObjSense.MINIMISE
 
     scaled, sc = scale_problem(work, method="ruiz")
     A = scaled.A
+    Q = scaled.Q if (scaled.Q is not None and scaled.Q.nnz > 0) else None
     m, n = A.m, A.n
     nk = n + m
 
@@ -481,7 +552,7 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
                        np.zeros(n), Status.OPTIMAL, 0, t0, params, "ipm")
 
     # ---- starting point ---------------------------------------------------- #
-    kkt = _KKT(A, ordering=params.ordering)
+    kkt = _KKT(A, ordering=params.ordering, Q=Q)
     try:
         z, y, zl, zu = _initial_point(kkt, A, cz, lo, hi, fixed,
                                       has_lo, has_hi, free_lo, free_hi,
@@ -500,6 +571,8 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
     history = []
     best_pres = np.inf
     stall = 0
+    mu_stall = 0
+    mu_prev = np.inf
 
     for it in range(1, params.max_iter + 1):
         if time.perf_counter() - t0 > params.time_limit:
@@ -520,6 +593,9 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
         # the dual residual and mu all reach 1e-16, and the solve never
         # terminates despite having found the optimum.
         r = cz.copy()
+        qx = Q.matvec(z[:n]) if Q is not None else None
+        if qx is not None:
+            r[:n] += qx                      # the gradient of ½xᵀQx + cᵀx
         r[:n] -= A.rmatvec(y)
         r[n:] += y
         rd = r - zl + zu
@@ -527,9 +603,11 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
 
         mu = float((g[free_lo] @ zl[free_lo] + t[free_hi] @ zu[free_hi]) / ncomp)
 
-        pobj = float(cz @ z)
+        quad = 0.5 * float(z[:n] @ qx) if qx is not None else 0.0
+        pobj = float(cz @ z) + quad
+        # Wolfe dual: the LP dual objective less ½xᵀQx
         dobj = float(lo[free_lo] @ zl[free_lo] - hi[free_hi] @ zu[free_hi]
-                     + lo[fixed] @ r[fixed])
+                     + lo[fixed] @ r[fixed]) - quad
         pres = float(np.abs(rp).max(initial=0.0)) / (1.0 + float(np.abs(z[n:]).max(initial=0.0)))
         dres = float(np.abs(rd).max(initial=0.0)) / c_norm
         gap = abs(pobj - dobj) / (1.0 + abs(pobj) + abs(dobj))
@@ -540,6 +618,20 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
         history.append((it, mu, pres, dres, gap))
 
         if pres <= params.eps_p and dres <= params.eps_d and gap <= params.eps_gap:
+            status = Status.OPTIMAL
+            break
+        # The complementarity gaps are floored at 1e-12 so a division never
+        # blows up, and on a model whose duals reach 1e4 that floor pins mu
+        # near 1e-8 for good. Both residuals are then at machine precision,
+        # the objective agrees with the published value to eight digits, and
+        # the gap test alone stands between the run and OPTIMAL. Measured on
+        # QPLIB_8938: 140 iterations of mu = 4.872e-08 exactly. A gap that has
+        # stopped moving with the residuals converged is the accuracy this
+        # arithmetic can reach, and it is reported as such in info["gap"].
+        mu_stall = mu_stall + 1 if mu >= mu_prev * (1.0 - 1e-3) else 0
+        mu_prev = mu
+        if (mu_stall >= 5 and pres <= params.eps_p and dres <= params.eps_d
+                and gap <= params.gap_stall_accept):
             status = Status.OPTIMAL
             break
         if not np.isfinite(mu) or float(np.abs(z).max(initial=0.0)) > params.divergence_norm:
@@ -664,13 +756,14 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
     sol = _finish(prob, work, scaled, sc, flip, x_s, y, d_s,
                   status, it, t0, params, "ipm",
                   ordering="rcm" if getattr(kkt, "chose_rcm", None) or
-                  (params.ordering == "rcm") else "none")
+                  (params.ordering == "rcm") else "none",
+                  gap=history[-1][4] if history else None)
     sol.log = history
     return sol
 
 
 def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
-            status, iterations, t0, params, method, ordering="n/a"):
+            status, iterations, t0, params, method, ordering="n/a", gap=None):
     """Unscale, verify absolutely, and report."""
     x = sc.unscale_primal(x_scaled)
     np.clip(x, prob.col_lb, prob.col_ub, out=x)
@@ -686,7 +779,7 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
         y = -y
         d = -d
 
-    obj = float(prob.c @ x) + prob.obj_offset
+    obj = prob.objective(x)
     # (row, bound, integrality) -- the relaxation is what was solved, so the
     # integrality entry is not this method's to answer for.
     row_v, col_v, _ = prob.violation(x)
@@ -715,4 +808,6 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
     sol.work_units = float(iterations)
     sol.info = {"iterations": iterations, "worst_violation": worst,
                 "scaling": sc.method, "kkt_ordering": ordering}
+    if gap is not None:
+        sol.info["gap"] = gap
     return sol.drop_objective_if_unsolved()

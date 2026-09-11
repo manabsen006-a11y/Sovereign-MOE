@@ -71,9 +71,12 @@ class NonconvexQPParams:
     time_limit: float = 300.0
     gap_rel: float = 1e-4
     gap_abs: float = 1e-9
-    relaxation: str = "mccormick"
-    """``"mccormick"`` (products as variables, LP nodes) or ``"alphabb"``
-    (diagonal shift, convex QP nodes)."""
+    relaxation: str = "auto"
+    """``"mccormick"`` (products as variables, LP nodes), ``"alphabb"``
+    (diagonal shift, convex QP nodes), or ``"auto"``: McCormick unless the
+    products would exceed ``max_products``, which is the one regime where a
+    relaxation with no product variables is the only one that fits."""
+    max_products: int = 5000
     verbose: bool = False
     spatial: SpatialParams | None = None
     alphabb: AlphaBBParams | None = None
@@ -143,6 +146,26 @@ def qp_to_bilinear(prob: Problem) -> BilinearProblem:
     return BilinearProblem(linear=lin, terms=terms, name=prob.name)
 
 
+def _implied_bounds(prob: Problem) -> Problem:
+    """Tighten the box by activity-based propagation before anything else.
+
+    QPLIB_0018 is ``x >= 0`` with ``Σx = 1`` and no upper bounds written
+    down; every variable is bounded by 1 and the file does not say so. The
+    same propagation the MIP tree runs at every node finds that in one pass,
+    and a model refused for "no finite bounds" when its rows imply them
+    would be a refusal on a technicality.
+    """
+    from ..mip.propagate import propagate
+    r = propagate(prob.A, prob.row_lb, prob.row_ub, prob.col_lb, prob.col_ub,
+                  prob.integer_mask, max_rounds=10, feas_tol=1e-9)
+    if r.infeasible:
+        return prob
+    tightened = prob.copy()
+    tightened.col_lb = r.lo
+    tightened.col_ub = r.hi
+    return tightened
+
+
 def _refuse_unbounded(prob: Problem, bp: BilinearProblem):
     touched = sorted({t.x for t in bp.terms} | {t.y for t in bp.terms})
     for j in touched:
@@ -150,7 +173,7 @@ def _refuse_unbounded(prob: Problem, bp: BilinearProblem):
             name = prob.col_names[j] if prob.col_names else f"x[{j}]"
             raise ValueError(
                 f"non-convex QP needs finite bounds on every variable in a "
-                f"quadratic term; {name} has none")
+                f"quadratic term; {name} has none, and the rows imply none")
 
 
 def solve_nonconvex_qp(prob: Problem,
@@ -159,8 +182,15 @@ def solve_nonconvex_qp(prob: Problem,
     params = params or NonconvexQPParams()
     if prob.Q is None:
         raise ValueError("solve_nonconvex_qp needs a quadratic objective")
+    original = prob
+    prob = _implied_bounds(prob)
 
-    if params.relaxation == "alphabb":
+    relaxation = params.relaxation
+    if relaxation == "auto":
+        Q = prob.Q
+        n_products = (Q.nnz + int((Q.ci == np.repeat(np.arange(Q.n), np.diff(Q.cp))).sum())) // 2
+        relaxation = "alphabb" if n_products > params.max_products else "mccormick"
+    if relaxation == "alphabb":
         ap = params.alphabb or AlphaBBParams()
         ap.time_limit, ap.gap_rel, ap.gap_abs = \
             params.time_limit, params.gap_rel, params.gap_abs
@@ -168,7 +198,7 @@ def solve_nonconvex_qp(prob: Problem,
         sol = solve_alphabb(prob, ap)
         sol.method = "nonconvex-qp[alphabb]"
         return sol
-    if params.relaxation != "mccormick":
+    if relaxation != "mccormick":
         raise ValueError(f"unknown relaxation {params.relaxation!r}")
 
     bp = qp_to_bilinear(prob)
@@ -182,16 +212,16 @@ def solve_nonconvex_qp(prob: Problem,
     n = prob.n
     sol = Solution(status=inner.status, nodes=inner.nodes, time=inner.time,
                    dual_bound=inner.dual_bound, method="nonconvex-qp[mccormick]")
-    sol.info = {**(inner.info or {}), "relaxation": "mccormick",
+    sol.info = {**(getattr(inner, "info", None) or {}), "relaxation": "mccormick",
                 "products": len(bp.terms)}
     if inner.x is not None:
         x = np.asarray(inner.x[:n], dtype=VAL)
         # the answer is re-validated against the model that was asked, not
         # the reformulation that was solved
-        row_v, col_v, int_v = prob.violation(x)
+        row_v, col_v, int_v = original.violation(x)
         if max(row_v, col_v) > 1e-6 or int_v > sp.integrality:
             sol.status = Status.NUMERICAL
             return sol.drop_objective_if_unsolved()
         sol.x = x
-        sol.objective = prob.objective(x)
+        sol.objective = original.objective(x)
     return sol.drop_objective_if_unsolved()

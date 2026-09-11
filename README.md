@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 481 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 532 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -289,8 +289,9 @@ python -m pytest tests/               # 481 tests; the 15 GPU ones skip without 
 | Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
 | Refinery model templates + Haverly pooling | `models/` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
-| **Convex QP** (proximal PDHG, Condat–Vũ) | `qp/proximal.py` | done (convex only) |
-| **Interior point** (Mehrotra predictor-corrector) | `lp/ipm.py` | done |
+| **Convex QP** (interior point; proximal PDHG as the GPU path) | `lp/ipm.py`, `qp/proximal.py` | done |
+| **Interior point** (Mehrotra predictor-corrector, LP and QP) | `lp/ipm.py` | done |
+| QPLIB reader and benchmark | `io/qplib.py`, `bench/qplib.py` | done |
 | **MIQP** (branch-and-bound over convex QP nodes, certified bounds) | `mip/miqp.py` | done |
 | **Non-convex (MI)QP** (McCormick reformulation → spatial B&B; αBB opt-in) | `globalopt/nonconvex_qp.py`, `globalopt/alphabb.py` | done |
 | Forrest–Tomlin, parallel tree | — | **not built** (roadmap) |
@@ -1067,11 +1068,16 @@ six now have regression tests.
   above as taking p0201 from 1619 nodes in 9 s to 63 nodes in 60 s. What is
   missing is a cut family that separates *sparsely* on these models, not a
   larger cap.
-- **The convex QP solver is first-order.** `sovopt.qp` solves a convex
-  quadratic by proximal PDHG (Condat–Vũ), validated against six hand-derived
-  optima including one whose answer is *not* a vertex — the case a simplex
-  provably cannot reach. It returns no basis, so no ranging on a QP, and it
-  reaches ~1e-8, not the simplex's 1e-12.
+- **Convex QP is limited by the factorisation's fill, not by the method.**
+  `sovopt.qp` now routes to the interior point (see [QPLIB](#qplib) for why),
+  which solves QPLIB's convex instances to 1e-8 in 1-14 s up to 39,204
+  variables — when the KKT factorises. `QPLIB_8559` (10,000 variables, 5,000
+  rows, a 70k-nonzero `Q`) fills 64× under the LU's own ordering and 69×
+  under RCM: **38 s per factorisation**, thirty of them per solve. That is the
+  AMD gap from the scale study, on a QP. The proximal method remains as
+  `method="proximal"` — matrix-free, so it is the GPU path and the one that
+  survives a `Q` too dense to factorise — and it is the one that reaches
+  ~1e-8 rather than 1e-9. Neither returns a basis, so no ranging on a QP.
 - **Non-convex QP hits a wall at about 25 dense variables.** A `Q` the
   convexity check rejects is solved to a proven global optimum by spatial
   branch-and-bound over McCormick envelopes (see [Non-convex
@@ -1298,6 +1304,76 @@ and this one comes with nothing. The confirmation costs nothing except on the
 rare path that claims infeasibility. Eleven MIPLIB instances had never exposed
 it.
 
+---
+
+## QPLIB
+
+QPLIB is to QP what Netlib is to LP: 453 instances with a classification, a
+published solution point and its objective value to fifteen digits.
+[`io/qplib.py`](src/sovopt/io/qplib.py) reads the library's own format --
+every structural line of which carries a comment the reader checks, so a
+misread section fails at the line it happened on -- and
+[`bench/qplib.py`](bench/qplib.py) fetches, parses and runs the 169 instances
+with linear constraints, routing each by its class: convex and continuous to
+the QP engine, convex with integers to the MIQP tree, the rest to the
+non-convex route.
+
+The set is self-checking twice over, and both checks were needed. The
+**reader** is checked by evaluating our model at the published point:
+feasibility and objective have to match, and on the first attempt the
+objective did not -- the file's off-diagonal entries are the *whole*
+coefficient of `x_i x_j` inside the `½(...)`, so the symmetric Hessian carries
+half on each side, a factor of two on every cross term that still parses.
+The **engines** are checked against the published value: a convex instance
+must reach it, and a non-convex instance must never report a certified bound
+above it.
+
+```
+python -m bench.qplib --fetch                      # once, 35 instances
+python -m bench.qplib --run --time-limit 60 --max-vars 6000
+```
+
+| | |
+|---|---|
+| parsed | **29/29** (32/32 with the three box-only giants) |
+| published point verified | **28/29** (`9002` publishes none) |
+| certified bound never above the published value | **24/24** |
+| convex, continuous: optimal to 1e-8 | **6/7** — `8845` 14 s, `8938` 3 s, `8906` 1 s; `8991` (14,400 vars) 1.0 s, `8792` (15,129) 2.2 s, `8790` (39,204) 5.1 s |
+| convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 3.6% / 1.6% in 60 s; `10069` closed |
+| non-convex: published value reached | 1/18 (`10042`); `5881` within 0.5%, `0031`/`0032` within 4-6% |
+
+**What the run found, in the order it found it.** The first pass used the
+proximal QP for every convex instance and solved none of them: `8845` timed
+out infeasible, `9002` ran to its iteration limit at 2e10, `8906` went
+`NUMERICAL`. Every one of these is an ordinary convex QP of the kind a
+refinery planning model produces, and a first-order method that reaches 1e-8
+on a two-variable textbook case does not reach it here. The remedy was not a
+tuning: `Q` now joins the (1,1) block of the interior point's KKT system --
+`-(Q + Θx⁻¹)`, still negative definite, still quasi-definite, factorised by
+the same LU -- and the dual objective gains `-½xᵀQx`. Everything else in
+`lp/ipm.py` is the LP code unchanged, and it is now the default QP engine.
+
+Two things came out of putting it under the MIQP tree. The interior point
+returns duals of `+4e-16` on a `<=` row, and a Neumaier–Shcherbina term with
+a dual of the wrong sign against an infinite row bound is `-inf`, so every
+certified node bound was vacuous and the tree closed nothing; a dual pointing
+at an infinite bound is now replaced by zero, which is a valid choice of `y`
+and never worse than `-inf`. And on `8938` the complementarity gaps' floor of
+1e-12 pinned `mu` at 4.87e-8 for 140 iterations with both residuals at
+machine precision and the objective eight digits into the published value:
+a gap that has stopped moving with the residuals converged is now accepted
+and reported in `info["gap"]`.
+
+Where the engine is genuinely short: `9002` (bounds of 1e11, a diagonal `Q`
+spanning 1e-11 to 2) defeats the starting point and is reported
+`INFEASIBLE_OR_UNBOUNDED`, which is wrong; the row-constrained 10,000-variable
+instances fill the factorisation 64× and cannot finish thirty of them in the
+limit; the convex binary instances reach the published optimum quickly and
+then cannot close the last few percent with a first-order-quality bound at
+QP-node cost; and the dense non-convex ones -- 50 variables over a simplex,
+the standard quadratic program -- are a known hard class for envelopes and
+show it, at 70% above the published value with the bound 20× below.
+
 ## Measurement conditions
 
 Every wall-clock figure in this README came from one machine:
@@ -1330,14 +1406,14 @@ convention exists because two published tables were found not to reproduce; see
 ```
 src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
-  io/         MPS reader and writer, Netlib expander
+  io/         MPS reader and writer, Netlib expander, QPLIB reader
   numerics/   scaling, LU, fill-reducing ordering, hypersparse solves, refinement
   lp/         revised simplex, basis, interior point, crossover, first-order LP
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
-bench/        fetch, harness, verifier, GPU benchmark
-tests/        481 tests including regressions for every bug above
+bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
+tests/        532 tests including regressions for every bug above
 ui/           local single-page interface
 ```

@@ -106,6 +106,14 @@ def safe_dual_bound(A, c, row_lb, row_ub, col_lb, col_ub, y,
     when the bound is vacuous, which is always safe.
     """
     y = np.asarray(y, dtype=np.float64)
+    # A dual component that points at an infinite row bound makes the bound
+    # vacuous, and any y is admissible -- so that component is replaced by
+    # zero, which is never worse than -inf and is exact when the component
+    # was a rounding residue. An interior-point solve returns y = +4e-16 on a
+    # <= row; without this line the certified bound of every node it solved
+    # was -inf and the MIQP tree could close nothing.
+    y = np.where((y > 0.0) & (row_lb <= -INF), 0.0, y)
+    y = np.where((y < 0.0) & (row_ub >= INF), 0.0, y)
     d = c - A.rmatvec(y)
 
     row_terms = _term(y, row_lb, row_ub, np)

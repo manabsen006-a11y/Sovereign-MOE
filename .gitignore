@@ -9,3 +9,4 @@ ui/_paste.*
 # solver output written by `sovopt solve --out`
 *.sol.json
 gt2.json
+data/qplib/
