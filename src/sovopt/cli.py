@@ -51,15 +51,17 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
           presolve: bool = False) -> Solution:
     """Solve an LP or MILP, picking the method automatically by default.
 
-    A **convex** quadratic objective is routed to the proximal primal-dual QP
-    solver. Anything else quadratic is refused rather than ignored: the simplex
-    and branch-and-bound engines below optimise ``c'x`` only, so dropping the
-    ``Q`` term would return a confident, wrong answer -- on a two-variable test
-    it reports -3.0 for a point whose true quadratic objective is -1.875 -- and
-    nothing downstream could detect it.
-
-    Refused, specifically: a non-convex ``Q`` (needs spatial branch-and-bound,
-    :mod:`sovopt.globalopt`) and any MIQP (needs a QP solved at every node).
+    A quadratic objective never reaches the LP engines: the simplex and
+    branch-and-bound below optimise ``c'x`` only, so dropping the ``Q`` term
+    would return a confident, wrong answer -- on a two-variable test it reports
+    -3.0 for a point whose true quadratic objective is -1.875 -- and nothing
+    downstream could detect it. A **convex** ``Q`` goes to the proximal
+    primal-dual QP solver, or to branch-and-bound over it when there are
+    integers; a ``Q`` the convexity check rejects goes to spatial
+    branch-and-bound over McCormick envelopes
+    (:mod:`sovopt.globalopt.nonconvex_qp`), which needs a finite box on every
+    variable in a quadratic term and refuses, naming the variable, without
+    one.
     """
     from .lp.pdlp import PDLPParams, solve_pdlp
     from .lp.simplex import SimplexParams, solve_simplex
@@ -83,21 +85,27 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
         return _postsolve(res, reduced)
 
     if prob.is_qp:
-        from .qp import QPParams, solve_qp
-        if prob.is_mip:
-            # Branch-and-bound with a convex QP at every node. A non-convex Q
-            # is still refused rather than approximated -- by the QP solver,
-            # which is where convexity is decided.
-            from .mip.miqp import MIQPParams, solve_miqp
-            return solve_miqp(prob, MIQPParams(
-                time_limit=time_limit, gap_rel=gap,
-                qp=QPParams(eps_abs=max(tol, 1e-10),
-                            eps_rel=max(tol, 1e-10)),
-                verbose=verbose))
-        return solve_qp(prob, QPParams(time_limit=time_limit,
-                                       eps_abs=max(tol, 1e-10),
-                                       eps_rel=max(tol, 1e-10),
-                                       verbose=verbose))
+        from .qp import NotConvexError, QPParams, solve_qp
+        qp_params = QPParams(time_limit=time_limit, eps_abs=max(tol, 1e-10),
+                             eps_rel=max(tol, 1e-10), verbose=verbose)
+        try:
+            if prob.is_mip:
+                # branch-and-bound with a convex QP at every node
+                from .mip.miqp import MIQPParams, solve_miqp
+                return solve_miqp(prob, MIQPParams(
+                    time_limit=time_limit, gap_rel=gap, qp=qp_params,
+                    verbose=verbose))
+            return solve_qp(prob, qp_params)
+        except NotConvexError:
+            # Convexity is decided by the QP solver, and a Q it rejects is
+            # not approximated: its products become variables under McCormick
+            # envelopes and the result is solved to a proven global optimum
+            # by spatial branch-and-bound. The check fails before any
+            # iteration runs, so the time budget arrives here nearly intact.
+            from .globalopt.nonconvex_qp import (NonconvexQPParams,
+                                                 solve_nonconvex_qp)
+            return solve_nonconvex_qp(prob, NonconvexQPParams(
+                time_limit=time_limit, gap_rel=gap, verbose=verbose))
 
     if method == "auto":
         if prob.is_mip:

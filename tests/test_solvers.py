@@ -324,12 +324,19 @@ def test_quadratic_objective_is_never_silently_dropped():
         with pytest.raises(NotImplementedError):
             fn(qp)
 
-    # a non-convex Q has no QP path either, and must not fall through to an LP
-    from sovopt.qp import NotConvexError
+    # A non-convex Q used to be refused here; it now goes to spatial
+    # branch-and-bound, and the property is the same one: the answer must
+    # be the global optimum of the model that was asked, never the LP's.
+    # With Q = diag(1, -1) the objective is concave in y, so y goes to the
+    # row: y = 1.5 - x, f = 1.5x - 4.125, minimised at x = 0.
     nonconvex = qp.copy()
     nonconvex.Q = SparseMatrix.from_dense(np.diag([1.0, -1.0]))
-    with pytest.raises((NotImplementedError, NotConvexError)):
-        solve(nonconvex)
+    s = solve(nonconvex)
+    assert s.status == Status.OPTIMAL
+    assert s.method.startswith("nonconvex-qp")
+    assert abs(s.objective - (-4.125)) < 1e-6
+    assert abs(s.objective - (-3.0)) > 0.5      # not the dropped-Q answer
+    assert np.allclose(s.x, [0.0, 1.5], atol=1e-4)
 
     # the same model without Q must still solve normally
     lp = qp.copy()

@@ -238,3 +238,10 @@ def test_the_bound_is_reported_as_rigorous():
     p = target_miqp(0)
     s = solve_miqp(p.copy(), MIQPParams(time_limit=120))
     assert s.info["bound_is_rigorous"] is True
+    # the generator's H = MᵀM + ½I is not diagonally dominant, so convexity
+    # here is estimated, not certified, and the flag must say so
+    assert s.info["convexity_certified"] is False
+    q = p.copy()
+    q.Q = SparseMatrix.from_dense(np.diag([1.0, 2.0, 3.0, 4.0]))
+    s = solve_miqp(q, MIQPParams(time_limit=120))
+    assert s.info["convexity_certified"] is True

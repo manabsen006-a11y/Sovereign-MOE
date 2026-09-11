@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 390 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 481 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -292,7 +292,8 @@ python -m pytest tests/               # 390 tests; the 15 GPU ones skip without 
 | **Convex QP** (proximal PDHG, Condat–Vũ) | `qp/proximal.py` | done (convex only) |
 | **Interior point** (Mehrotra predictor-corrector) | `lp/ipm.py` | done |
 | **MIQP** (branch-and-bound over convex QP nodes, certified bounds) | `mip/miqp.py` | done |
-| Non-convex QP, Forrest–Tomlin, parallel tree | — | **not built** (roadmap) |
+| **Non-convex (MI)QP** (McCormick reformulation → spatial B&B; αBB opt-in) | `globalopt/nonconvex_qp.py`, `globalopt/alphabb.py` | done |
+| Forrest–Tomlin, parallel tree | — | **not built** (roadmap) |
 
 ---
 
@@ -523,6 +524,71 @@ On the single-pool Haverly instances pq matches the p-formulation rather than
 beating it (root 500 against 500). The RLT rows are what rescue the *q* encoding
 there, from 1950 to 500; the advantage over p is a multi-pool phenomenon, which
 is the point of the formulation.
+
+---
+
+## Non-convex QP
+
+A quadratic objective the convexity check rejects used to be refused. It is now
+solved to a **proven global optimum**, and the route it takes was decided by a
+measurement rather than by which method was built first.
+
+Two relaxations were built. **αBB** shifts `Q`'s diagonal by
+`α_i = max(0, −½(Q_ii − Σ_j |Q_ij| d_j/d_i))` — the scaled Gershgorin
+theorem with `d = u − l`, a *certificate* of convexity rather than an
+eigenvalue estimate — and solves the convex QP `f + Σ α_j (x_j−l_j)(x_j−u_j)`
+at each node with the proximal solver, pruning on the certified bound from bug
+6. **McCormick** rewrites `½xᵀQx` as a linear function of product variables
+`w_ij = x_i x_j` under the four envelope rows, which is a bilinear program, and
+hands it to the pooling engine above. Same instances, same 120 s limit, gap
+1e-4, random dense indefinite `Q` over `[0, 3]ⁿ` with `n/4` rows:
+
+| n | products | αBB | McCormick |
+|---|---|---|---|
+| 5 | 15 | 5 / 9 nodes, 0.4 / 1.3 s | 3 / 0 nodes, 0.4 / 0.0 s |
+| 10 | 55 | 39 / 103 nodes, 8.0 / 11.7 s | 7 / 15 nodes, 0.1 / 0.2 s |
+| 15 | 120 | **time limit**, gap 10.7% / 12.0% | 81 / 205 nodes, **1.1 / 9.5 s** |
+| 20 | 210 | time limit, gap 17.4% / 25.8% | 187 / 891 nodes, **22.9 / 93.5 s** |
+| 25 | 325 | time limit, gap 79% / 57% | time limit, gap 150% / 59% |
+
+The envelope treats each product exactly, where a diagonal shift has to pay
+for every cross term through the diagonal; on a dense `Q` that is the whole
+difference. McCormick is the default; αBB stays as `relaxation="alphabb"`
+because it needs no product variables — `n²` of them for a dense `Q` — its
+bound is unconditional, and the table has to remain reproducible
+(`python -m bench.nonconvex_qp --relaxation alphabb`). Recorded in
+[`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
+
+At 15% density, where a refinery quadratic more plausibly lives, the same
+route proves **30 variables in 6.6 / 25.8 s** and times out at 50 with the
+bound 80–134% below the incumbent.
+
+The McCormick column above is after four changes to the spatial tree, each
+measured on the n = 15 / 20 rows: 17.5 / 43.8 / 118.1 s / time limit before
+any of them. A projected-gradient polish for incumbents and a warm start of
+each node LP from its parent's basis took those to 6.9 / 21.3 / 49.0 s / time
+limit. Then the profile showed 40% of the run inside the recursion heuristic,
+which fixes one factor of every product and re-solves — and for a quadratic
+every variable is the first factor of its own square, so the "LP" it solved
+118 times cold was evaluating the products; it now evaluates them. The other
+17% was the LU's column-ordering pass, written as "not on the hot path" in
+pure numpy, which on an 845-row relaxation refactorised every 56 pivots was
+the hot path; it is a kernel now, byte-identical in its output. Together:
+1.1 / 9.5 / 22.9 / 93.5 s.
+
+Two things the spatial tree gained for everyone, not just the QP route:
+**integer branching** — a fractional integer is split before any product, so
+a pooling model with a binary unit switch is solved in the same tree — and a
+**certified node bound**: every node is pruned on Neumaier–Shcherbina applied
+to the simplex's duals rather than on the LP objective, with
+`info["uncertified_nodes"]` counting any node where an infinite factor left
+the bound vacuous. On Haverly that count is zero after OBBT.
+
+Validated the way everything non-convex here is: exhaustive enumeration —
+every vertex of a box for a concave objective, every integer point for an
+integer model, a 401-point-per-axis grid for a continuous one — with the
+certified dual bound required to sit *below* the enumerated optimum, and the
+two relaxations required to agree with each other.
 
 ---
 
@@ -1001,12 +1067,23 @@ six now have regression tests.
   above as taking p0201 from 1619 nodes in 9 s to 63 nodes in 60 s. What is
   missing is a cut family that separates *sparsely* on these models, not a
   larger cap.
-- **QP is convex-only, and first-order.** `sovopt.qp` solves a convex quadratic
-  by proximal PDHG (Condat–Vũ), validated against six hand-derived optima
-  including one whose answer is *not* a vertex — the case a simplex provably
-  cannot reach. What it does not do: a non-convex `Q` (needs spatial
-  branch-and-bound) is **refused**, not approximated. It returns no basis, so
-  no ranging on a QP, and it reaches ~1e-8, not the simplex's 1e-12.
+- **The convex QP solver is first-order.** `sovopt.qp` solves a convex
+  quadratic by proximal PDHG (Condat–Vũ), validated against six hand-derived
+  optima including one whose answer is *not* a vertex — the case a simplex
+  provably cannot reach. It returns no basis, so no ranging on a QP, and it
+  reaches ~1e-8, not the simplex's 1e-12.
+- **Non-convex QP hits a wall at about 25 dense variables.** A `Q` the
+  convexity check rejects is solved to a proven global optimum by spatial
+  branch-and-bound over McCormick envelopes (see [Non-convex
+  QP](#non-convex-qp)), and on a random dense indefinite `Q` — every variable
+  coupled to every other, the hardest shape — that proves 20 variables in
+  under 100 s and gets nowhere at 25 in 120 s. At 15% density it proves 30
+  and not 50. The weak side is the *incumbent*: a projected-gradient polish
+  ignores the rows, so with active constraints the search often holds a poor
+  upper bound against a bound that is already close. A local NLP step that
+  respects the rows is the piece that would move the wall. Every variable in
+  a quadratic term needs a finite box, and a model without one is refused
+  with the variable named.
 - **MIQP is rigorous only if `Q` is convex, and convexity is estimated.**
   `mip/miqp.py` prunes on a *certified* bound — Neumaier–Shcherbina applied to
   the tangent plane of the quadratic at the solver's iterate, valid for any
@@ -1014,9 +1091,10 @@ six now have regression tests.
   argument needs `Q ⪰ 0`, and the QP solver establishes it by power
   iteration on the smallest eigenvalue: an estimate, not a proof. A `Q` that
   is indefinite by less than `convexity_tol` passes as convex, and then the
-  tangent plane is not a global underestimator. Gershgorin would certify it
-  where it applies and is the natural next step; today the claim is
-  conditional and this line says so.
+  tangent plane is not a global underestimator. Where the scaled Gershgorin
+  test from the non-convex route certifies convexity outright the bound is
+  unconditional and `info["convexity_certified"]` is true; elsewhere the
+  claim is conditional and this line says so.
 - **The fill-reducing ordering helps the interior point and not the simplex.**
   Reverse Cuthill-McKee is worth 20-45x on a banded KKT, but measured over the
   factorisations of four real simplex solves it produced **4-45% more** fill
@@ -1257,8 +1335,9 @@ src/sovopt/
   lp/         revised simplex, basis, interior point, crossover, first-order LP
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
+  globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        390 tests including regressions for every bug above
+tests/        481 tests including regressions for every bug above
 ui/           local single-page interface
 ```

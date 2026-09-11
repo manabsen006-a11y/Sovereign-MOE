@@ -43,8 +43,11 @@ bound is the minimum over every leaf's certified bound, so the gap the caller
 sees is one the caller could recompute.
 
 Rigour is conditional on ``Q ⪰ 0``, which is the premise of this path rather
-than something it can prove: the QP solver checks it by estimating the
-smallest eigenvalue, and a non-convex ``Q`` is refused there.
+than something it can prove in general: the QP solver checks it by estimating
+the smallest eigenvalue, and a non-convex ``Q`` is refused there. Where the
+scaled Gershgorin test of :mod:`sovopt.globalopt.alphabb` certifies convexity
+outright -- every shift it would need is zero -- the bound is unconditional,
+and ``info["convexity_certified"]`` says which case a solve was.
 
 References
 ----------
@@ -144,6 +147,9 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
         work.Q.cx = -work.Q.cx
         work.Q.rx = -work.Q.rx
         work.sense = ObjSense.MINIMISE
+
+    from ..globalopt.alphabb import gershgorin_alpha
+    certified = bool((gershgorin_alpha(work.Q, work.col_lb, work.col_ub) == 0.0).all())
 
     int_mask = work.integer_mask
     root = propagate(work.A, work.row_lb, work.row_ub,
@@ -318,5 +324,6 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
     sol = Solution(status=status, x=best_x, objective=obj, nodes=nodes,
                    time=time.perf_counter() - t0, method="miqp-bb")
     sol.dual_bound = -global_lb if flip else global_lb
-    sol.info = {"nodes": nodes, "bound_is_rigorous": True}
+    sol.info = {"nodes": nodes, "bound_is_rigorous": True,
+                "convexity_certified": certified}
     return sol

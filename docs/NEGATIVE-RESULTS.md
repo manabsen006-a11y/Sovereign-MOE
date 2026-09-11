@@ -152,6 +152,51 @@ parallelising the tree is measuring the GIL.
 
 ---
 
+## αBB for non-convex QP (built, measured, kept opt-in)
+
+**Idea.** The direct way to make a non-convex quadratic solvable is to shift
+its diagonal until it is convex and branch on the box: with
+`d = u − l`, `α_i = max(0, −½(Q_ii − Σ_j |Q_ij| d_j/d_i))` makes
+`Q + 2 diag α` positive semidefinite by the scaled Gershgorin theorem, and
+`f + Σ α_j (x_j−l_j)(x_j−u_j)` is a convex underestimator on the box whose
+gap is `≤ Σ α_j (u_j−l_j)²/4`. Solve the convex QP at each node, prune on the
+certified bound, split the widest term. It was built first because it needs
+nothing but the existing convex QP solver and no product variables, and its
+bound is unconditional -- the convexity of the relaxation is a proof.
+
+**It loses to the McCormick reformulation by a wide margin on dense Q.**
+Same instances, same 120 s limit, gap 1e-4:
+
+| n | αBB | McCormick |
+|---|---|---|
+| 10 | 39 / 103 nodes, 8.0 / 11.7 s | 7 / 15 nodes, 0.1 / 0.2 s |
+| 15 | **time limit**, gap 10.7% / 12.0% | 81 / 205 nodes, 1.1 / 9.5 s |
+| 20 | time limit, gap 17.4% / 25.8% | 187 / 891 nodes, 22.9 / 93.5 s |
+| 25 | time limit, gap 79% / 57% | time limit, gap 150% / 59% |
+
+**Why.** A diagonal shift pays for every cross term `Q_ij x_i x_j` through
+the diagonal of both variables, and the gap it introduces is quadratic in the
+box width on every axis at once. An envelope treats each product exactly --
+it is the convex hull of that one term -- so its error is confined to the
+products that are actually loose at the node. On a dense `Q` every term is a
+cross term, and that is the whole difference. The node solver compounds it:
+a proximal QP takes ~150 iterations to converge on even a two-variable node,
+where a warm-started simplex takes a handful of pivots.
+
+**What was worth keeping from it.** The marginals-based box reduction
+derived from the certified bound's own pieces took the two-variable smoke
+test from 319 nodes to 7; the certified `safe_qp_bound` it prunes on is what
+the convex MIQP tree now uses too; and the polish heuristic was carried over
+to the spatial tree, where it turned out to matter more than it did here.
+
+**Kept, not reverted.** `relaxation="alphabb"` on
+`sovopt.globalopt.nonconvex_qp`, off by default. It needs no product
+variables -- `n²` of them for a dense `Q` -- so there is a regime of large
+sparse `Q` where it may yet win, and the table above cannot be regenerated
+without it (`python -m bench.nonconvex_qp --relaxation alphabb`).
+
+---
+
 ## Presolve (built, correct, does not pay -- kept opt-in)
 
 The README named presolve, with a Forrest-Tomlin update, as what was left to

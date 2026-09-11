@@ -21,7 +21,21 @@ The loop
    precisely *distributive recursion*, the fixed-point iteration refineries run
    inside PIMS and GRTMPS. Here it is a heuristic that supplies incumbents while
    the tree proves optimality, rather than the whole method with no guarantee.
-4. Branch: split the most-violated product at its relaxed value.
+4. Branch: a fractional integer first, then the most-violated product at its
+   relaxed value. Integer variables were added for the non-convex QP route
+   (:mod:`sovopt.globalopt.nonconvex_qp`) and cost the pooling models nothing;
+   an integer split is the ordinary ``{<= ⌊v⌋} ∪ {>= ⌈v⌉}`` and a node is only
+   finished when its point is both integral and bilinear-feasible.
+
+The node bound is certified
+---------------------------
+The relaxation is an LP solved by the exact simplex, whose optimal objective is
+a bound to the simplex's own tolerance. Each node is pruned instead on the
+Neumaier-Shcherbina bound built from the simplex's duals -- valid for any dual
+vector, exact at an optimal one -- so the tree's proof does not rest on the
+node LP having converged. Where that bound is vacuous (an envelope half was
+dropped for an infinite factor) the LP objective is used and the node counted
+in ``info["uncertified_nodes"]``.
 
 Optimality-based bound tightening
 ---------------------------------
@@ -64,6 +78,7 @@ from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import VAL
 from ..core.tolerances import INF
 from ..lp.simplex import SimplexParams, solve_simplex
+from ..mip.safebound import safe_dual_bound
 from .bilinear import BilinearProblem, build_relaxation
 
 __all__ = ["SpatialParams", "solve_global"]
@@ -84,6 +99,22 @@ class SpatialParams:
     branch_eps: float = 1e-4
     """Keep a split this far inside the range so children are strictly smaller."""
 
+    integrality: float = 1e-6
+    polish_steps: int = 50
+    """Projected-gradient steps in the factor space from each relaxation
+    point, keeping only a point that is feasible for the rows once the
+    products are recomputed. An incumbent heuristic; the bound never sees it.
+    Added for the non-convex QP route, where the relaxation point alone gave
+    incumbents 50-75% above the optimum at 25 variables."""
+    root_multistart: int = 16
+    """Extra polish runs from seeded random points of the box at the root.
+    A relaxation vertex is a poor place to start a descent on a quadratic;
+    sixteen random ones cost a few milliseconds and set the incumbent the
+    whole tree prunes against."""
+    warm_start: bool = True
+    """Start each node LP from its parent's basis. The McCormick rows change
+    coefficients between parent and child but not shape, so the parent's
+    basis is a valid, usually near-optimal, start."""
     verbose: bool = False
     log_every: float = 1.0
 
@@ -95,6 +126,7 @@ class _Node:
     hi: np.ndarray
     depth: int = 0
     _order: int = 0
+    basis: object = None
 
     def __lt__(self, other):
         if self.bound != other.bound:
@@ -102,9 +134,80 @@ class _Node:
         return self._order < other._order
 
 
-def _solve_relaxation(bp, lo, hi, time_limit):
+def _solve_relaxation(bp, lo, hi, time_limit, warm=None):
     relax = build_relaxation(bp, lo, hi)
-    return solve_simplex(relax, SimplexParams(time_limit=time_limit))
+    relax.kind[:] = 0                          # the node LP relaxes integrality
+    if warm is not None and len(warm) != relax.n + relax.m:
+        warm = None                            # an envelope half came or went
+    sol = solve_simplex(relax, SimplexParams(time_limit=time_limit),
+                        warm_basis=warm)
+    sol.info = {**(getattr(sol, "info", None) or {}), "relaxation": relax}
+    return sol
+
+
+def _polish(bp, x, lo, hi, steps):
+    """Projected gradient on the factors, products recomputed, rows checked.
+
+    The objective is linear in the extended vector and the products are
+    functions of the factors, so its gradient in factor space is one chain
+    rule: ``c_i + Σ c_w · (the other factor)``. Only a point that satisfies
+    the rows with its products recomputed is returned, so this can only ever
+    improve the incumbent -- never the bound, which does not see it.
+    """
+    if steps <= 0 or not bp.terms:
+        return None
+    c = bp.linear.c
+    factors = sorted({t.x for t in bp.terms} | {t.y for t in bp.terms})
+    prods = np.array([t.w for t in bp.terms])
+    tx = np.array([t.x for t in bp.terms])
+    ty = np.array([t.y for t in bp.terms])
+    n = x.size
+
+    def close(v):
+        v = v.copy()
+        v[prods] = v[tx] * v[ty]
+        return v
+
+    def grad(v):
+        g = c.copy()
+        np.add.at(g, tx, c[prods] * v[ty])
+        np.add.at(g, ty, c[prods] * v[tx])
+        g[prods] = 0.0
+        return g
+
+    cur = close(np.clip(x, lo, hi))
+    best_x, best_f = None, bp.linear.objective(cur)
+    g = grad(cur)
+    step = 1.0 / max(float(np.abs(g[factors]).max(initial=0.0)), 1e-8)
+    for _ in range(steps):
+        g = grad(cur)
+        cand = cur.copy()
+        cand[factors] = np.clip(cur[factors] - step * g[factors],
+                                lo[factors], hi[factors])
+        cand = close(cand)
+        f = bp.linear.objective(cand)
+        if f < best_f - 1e-12:
+            rv, bv, _ = bp.linear.violation(cand)
+            if max(rv, bv) <= 1e-9:
+                best_x, best_f = cand, f
+            cur = cand
+        else:
+            step *= 0.5
+            if step < 1e-12:
+                break
+    return best_x
+
+
+def _certified(rel, fallback):
+    """Neumaier-Shcherbina on the node LP's duals; ``(bound, certified?)``."""
+    if rel.y is None:
+        return fallback, False
+    r = rel.info["relaxation"]
+    b = safe_dual_bound(r.A, r.c, r.row_lb, r.row_ub, r.col_lb, r.col_ub,
+                        rel.y, strict=True) + r.obj_offset
+    if np.isfinite(b):
+        return b, True
+    return fallback, False
 
 
 def _recursion_incumbent(bp, x, lo, hi, time_limit):
@@ -119,6 +222,16 @@ def _recursion_incumbent(bp, x, lo, hi, time_limit):
     for t in bp.terms:
         v = float(np.clip(x[t.x], lo[t.x], hi[t.x]))
         lo2[t.x] = hi2[t.x] = v
+    if all(lo2[t.y] == hi2[t.y] for t in bp.terms):
+        # Every factor is fixed -- the case for a quadratic objective, where
+        # each x_i is the first factor of its own square -- so the LP would
+        # only be evaluating the products. Do that directly: on a 20-variable
+        # QP the LP was 118 cold simplex solves and 40% of the run.
+        pt = np.clip(x, lo2, hi2)
+        for t in bp.terms:
+            pt[t.w] = pt[t.x] * pt[t.y]
+        rv, bv, _ = bp.linear.violation(pt)
+        return pt if max(rv, bv) <= 1e-9 else None
     sol = _solve_relaxation(bp, lo2, hi2, time_limit)
     if sol.status != Status.OPTIMAL or sol.x is None:
         return None
@@ -211,6 +324,23 @@ def solve_global(bp: BilinearProblem,
 
     incumbent = np.inf
     best_x = None
+    int_idx = np.flatnonzero(bp.linear.integer_mask)
+    uncertified = 0
+
+    def integral(x):
+        return int_idx.size == 0 or \
+            np.abs(x[int_idx] - np.round(x[int_idx])).max() <= params.integrality
+
+    def accept(x):
+        """An incumbent must be bilinear-feasible *and* integral."""
+        nonlocal incumbent, best_x
+        if x is None or not integral(x):
+            return
+        if bp.max_violation(x) > params.bilinear_tol:
+            return
+        v = bp.linear.objective(x)
+        if v < incumbent:
+            incumbent, best_x = v, np.array(x, copy=True)
 
     root = _solve_relaxation(bp, lo, hi, params.time_limit)
     if root.status == Status.INFEASIBLE:
@@ -220,15 +350,23 @@ def solve_global(bp: BilinearProblem,
         return Solution(status=root.status, time=time.perf_counter() - t0,
                         method="spatial-bb")
 
-    cand = _recursion_incumbent(bp, root.x, lo, hi, params.time_limit)
-    if cand is not None and bp.max_violation(cand) <= params.bilinear_tol:
-        v = bp.linear.objective(cand)
-        if v < incumbent:
-            incumbent, best_x = v, cand
+    accept(_recursion_incumbent(bp, root.x, lo, hi, params.time_limit))
 
     counter = 0
     frontier: list[_Node] = []
-    heapq.heappush(frontier, _Node(root.objective, lo, hi, 0, counter))
+    root_bound, ok = _certified(root, root.objective)
+    uncertified += not ok
+    accept(_polish(bp, root.x, lo, hi, params.polish_steps))
+    if params.root_multistart > 0 and bp.terms:
+        rng = np.random.default_rng(0)
+        finite = np.isfinite(lo) & np.isfinite(hi) & (lo > -INF) & (hi < INF)
+        for _ in range(params.root_multistart):
+            start = np.where(finite, rng.uniform(np.where(finite, lo, 0.0),
+                                                 np.where(finite, hi, 1.0)),
+                             root.x)
+            accept(_polish(bp, start, lo, hi, params.polish_steps))
+    heapq.heappush(frontier, _Node(root_bound, lo, hi, 0, counter,
+                                   root.basis_status if params.warm_start else None))
 
     nodes = 0
     status = Status.NODE_LIMIT
@@ -248,44 +386,52 @@ def solve_global(bp: BilinearProblem,
         if np.isfinite(incumbent) and nd.bound >= incumbent - tol:
             continue
 
-        rel = _solve_relaxation(bp, nd.lo, nd.hi, params.time_limit)
+        rel = _solve_relaxation(bp, nd.lo, nd.hi, params.time_limit, nd.basis)
         nodes += 1
         if rel.status == Status.INFEASIBLE or rel.x is None:
             continue
         if rel.status != Status.OPTIMAL:
             continue
-        bound = max(rel.objective, nd.bound)
+        cert, ok = _certified(rel, rel.objective)
+        uncertified += not ok
+        bound = max(cert, nd.bound)
         if np.isfinite(incumbent) and bound >= incumbent - tol:
             continue
 
         x = rel.x
         viol = bp.max_violation(x)
-        if viol <= params.bilinear_tol:
-            v = bp.linear.objective(x)
-            if v < incumbent:
-                incumbent, best_x = v, x.copy()
+        if viol <= params.bilinear_tol and integral(x):
+            accept(x)
             continue
 
-        cand = _recursion_incumbent(bp, x, nd.lo, nd.hi, params.time_limit)
-        if cand is not None and bp.max_violation(cand) <= params.bilinear_tol:
-            v = bp.linear.objective(cand)
-            if v < incumbent:
-                incumbent, best_x = v, cand
+        accept(_recursion_incumbent(bp, x, nd.lo, nd.hi, params.time_limit))
+        accept(_polish(bp, x, nd.lo, nd.hi, params.polish_steps))
 
-        j, val = _pick_branch(bp, x, nd.lo, nd.hi, params)
-        if j is None:
-            continue
+        if not integral(x):
+            # a fractional integer comes first: its split is exact, where a
+            # product's split only tightens an envelope
+            fr = np.abs(x[int_idx] - np.round(x[int_idx]))
+            j = int(int_idx[int(np.argmax(fr))])
+            v = float(x[j])
+            left_lo, left_hi = nd.lo.copy(), nd.hi.copy()
+            left_hi[j] = np.floor(v)
+            right_lo, right_hi = nd.lo.copy(), nd.hi.copy()
+            right_lo[j] = np.ceil(v)
+        else:
+            j, val = _pick_branch(bp, x, nd.lo, nd.hi, params)
+            if j is None:
+                continue
+            left_lo, left_hi = nd.lo.copy(), nd.hi.copy()
+            left_hi[j] = val
+            right_lo, right_hi = nd.lo.copy(), nd.hi.copy()
+            right_lo[j] = val
 
-        counter += 1
-        left_hi = nd.hi.copy()
-        left_hi[j] = val
-        heapq.heappush(frontier, _Node(bound, nd.lo.copy(), left_hi,
-                                       nd.depth + 1, counter))
-        counter += 1
-        right_lo = nd.lo.copy()
-        right_lo[j] = val
-        heapq.heappush(frontier, _Node(bound, right_lo, nd.hi.copy(),
-                                       nd.depth + 1, counter))
+        basis = rel.basis_status if params.warm_start else None
+        for cl, ch in ((left_lo, left_hi), (right_lo, right_hi)):
+            if (cl <= ch).all():
+                counter += 1
+                heapq.heappush(frontier, _Node(bound, cl, ch, nd.depth + 1,
+                                               counter, basis))
 
         if params.verbose and time.perf_counter() - last_log > params.log_every:
             last_log = time.perf_counter()
@@ -316,5 +462,7 @@ def solve_global(bp: BilinearProblem,
         "obbt_rounds": n_obbt,
         "terms": len(bp.terms),
         "max_bilinear_violation": bp.max_violation(best_x),
+        "uncertified_nodes": uncertified,
+        "bound_is_rigorous": uncertified == 0,
     }
     return sol

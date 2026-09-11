@@ -355,38 +355,62 @@ def _gp_lu(cp, ci, cx, n, q, tol, drop,
     return 0, lnz, unz
 
 
-def _column_order(cp, ci, m, n):
-    """Pivot column order: peeled singletons first, then ascending live count.
+@jit_kernel()
+def _peel_singletons(cp, ci, m, n, order, live, coldead):
+    """Peel column singletons in rounds; returns how many were placed.
 
-    Runs once per factorisation on the pattern only; not on the hot path.
+    Round by round: every column with exactly one live row is placed, its row
+    retired, and the live counts of the survivors recomputed before the next
+    round. Same order as the numpy version it replaced, so the factors are
+    byte-identical; the difference is that this runs at compiled speed. It
+    was written as "not on the hot path", and on an 845-row bilinear
+    relaxation refactorised every 56 pivots it was 17% of the solve.
     """
-    rowdead = np.zeros(m, dtype=bool)
-    coldead = np.zeros(n, dtype=bool)
-    order = np.empty(n, dtype=IDX)
+    rowdead = np.zeros(m, dtype=np.bool_)
+    for j in range(n):
+        live[j] = cp[j + 1] - cp[j]
+        coldead[j] = False
     placed = 0
-
-    live = np.diff(cp).astype(np.int64)
     changed = True
     while changed and placed < n:
         changed = False
-        singles = np.flatnonzero((~coldead) & (live == 1))
-        for j in singles:
-            if coldead[j]:
+        for j in range(n):
+            if coldead[j] or live[j] != 1:
                 continue
-            rows = ci[cp[j]:cp[j + 1]]
-            alive = rows[~rowdead[rows]]
-            if alive.size != 1:
+            alive = -1
+            cnt = 0
+            for p in range(cp[j], cp[j + 1]):
+                if not rowdead[ci[p]]:
+                    alive = ci[p]
+                    cnt += 1
+            if cnt != 1:
                 continue
             order[placed] = j
             placed += 1
             coldead[j] = True
-            rowdead[alive[0]] = True
+            rowdead[alive] = True
             changed = True
         if changed:
-            rest = np.flatnonzero(~coldead)
-            for j in rest:
-                rows = ci[cp[j]:cp[j + 1]]
-                live[j] = int((~rowdead[rows]).sum())
+            for j in range(n):
+                if coldead[j]:
+                    continue
+                c = 0
+                for p in range(cp[j], cp[j + 1]):
+                    if not rowdead[ci[p]]:
+                        c += 1
+                live[j] = c
+    return placed
+
+
+def _column_order(cp, ci, m, n):
+    """Pivot column order: peeled singletons first, then ascending live count.
+
+    Runs once per factorisation on the pattern only.
+    """
+    order = np.empty(n, dtype=IDX)
+    live = np.empty(n, dtype=np.int64)
+    coldead = np.empty(n, dtype=np.bool_)
+    placed = _peel_singletons(cp, ci, m, n, order, live, coldead)
 
     rest = np.flatnonzero(~coldead)
     if rest.size:
