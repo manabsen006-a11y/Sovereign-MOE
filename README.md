@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 333 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 390 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -291,7 +291,7 @@ python -m pytest tests/               # 333 tests; the 15 GPU ones skip without 
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
 | **Convex QP** (proximal PDHG, Condat–Vũ) | `qp/proximal.py` | done (convex only) |
 | **Interior point** (Mehrotra predictor-corrector) | `lp/ipm.py` | done |
-| **MIQP** (branch-and-bound over convex QP nodes) | `mip/miqp.py` | done |
+| **MIQP** (branch-and-bound over convex QP nodes, certified bounds) | `mip/miqp.py` | done |
 | Non-convex QP, Forrest–Tomlin, parallel tree | — | **not built** (roadmap) |
 
 ---
@@ -733,7 +733,7 @@ Not one of these was found by a unit test passing. Each was surfaced by
 something outside the solver's agreement with itself — the independent
 verifier, a published value, the runtime objecting to an undefined cast, or
 brute-force enumeration over a model small enough to check exhaustively. All
-five now have regression tests.
+six now have regression tests.
 
 1. **Dual unscaling multiplied by the objective scale where it must divide.**
    Every dual was wrong by `obj_scale²`. Residuals still looked converged and
@@ -835,6 +835,41 @@ five now have regression tests.
    instances tried — identical node counts on a 22-item knapsack, flugpl and
    gr4x6 — because the re-solve only fires when an iterate looks integral,
    which is rare.
+
+6. **The MIQP tree pruned on the QP solver's objective, which is not a bound.**
+   A first-order iterate is a (nearly) feasible point, so its objective lies
+   *above* the node's optimum; a tree that discards nodes on it discards the
+   optimum whenever the iterate is far enough from converged. On
+   well-conditioned models it never was, and 20/20 brute-force checks passed —
+   which is why the first commit shipped it with a `bound_slack` and a
+   docstring admitting the hole. On models with a 1e3 eigenvalue spread and
+   the relaxation stopped after 64 iterations, the same tree returned a wrong
+   answer marked **OPTIMAL on 5 of 20**; on one it pruned the entire
+   search after a single node. The well-conditioned set was not immune
+   either: one of its 20 went wrong the same way.
+
+   The fix is the same idea as bug 5's, on the other relaxation. Convexity
+   puts the tangent plane at the iterate below the objective everywhere, and a
+   tangent plane is linear, so Neumaier–Shcherbina applies to it unchanged:
+
+   ```
+   ½x'Qx + c'x  ≥  −½x̂'Qx̂  +  LP-bound(A, Qx̂ + c, rl, ru, l, u, y)
+   ```
+
+   for every feasible `x`, every `x̂` and every `y`, exact at an optimal pair.
+   `safe_qp_bound` is that line plus the compensated summation the LP bound
+   already had. Pruning on it, the same 20 badly-solved models give **0
+   wrong** at 768 nodes against 428 — the price of
+   not trusting a bad relaxation is exploring what it could not exclude. With
+   the relaxation solved properly the node counts are identical — 579 and 229 nodes on the two sets, to the second, and
+   the certificate costs one sparse product per node.
+
+   The second half of bug 5 came with it: an integral iterate is not a
+   finished node either. Closing one is now licensed only by a bound that
+   meets the incumbent; otherwise the node is split on an unfixed integer, or
+   re-solved tighter when every integer is fixed, and a node that still cannot
+   be closed leaves the status at `NODE_LIMIT` with the certified gap that
+   remains, rather than `OPTIMAL`.
 
 ---
 
@@ -972,17 +1007,16 @@ five now have regression tests.
   cannot reach. What it does not do: a non-convex `Q` (needs spatial
   branch-and-bound) is **refused**, not approximated. It returns no basis, so
   no ranging on a QP, and it reaches ~1e-8, not the simplex's 1e-12.
-- **MIQP is solved, but its node bound is not rigorous.** `mip/miqp.py` runs
-  branch-and-bound with a convex QP at every node, and agrees with an
-  exhaustive search over every integer point on twenty generated models,
-  minimisation and maximisation alike. What it does not have is the safety net
-  the MILP path has: an LP node bound is made rigorous by the
-  Neumaier–Shcherbina correction, and **there is no equivalent for the QP
-  relaxation**, so a node bound is only as good as the first-order solver's
-  tolerance. Two things keep that honest — pruning requires a node to beat the
-  incumbent by more than that tolerance (`bound_slack`), and every incumbent is
-  re-validated against the original model, so a bad bound costs a worse answer
-  and never an invalid one. A certified QP bound is what would close it.
+- **MIQP is rigorous only if `Q` is convex, and convexity is estimated.**
+  `mip/miqp.py` prunes on a *certified* bound — Neumaier–Shcherbina applied to
+  the tangent plane of the quadratic at the solver's iterate, valid for any
+  iterate and any dual vector (see bug 6 below for what it replaced). That
+  argument needs `Q ⪰ 0`, and the QP solver establishes it by power
+  iteration on the smallest eigenvalue: an estimate, not a proof. A `Q` that
+  is indefinite by less than `convexity_tol` passes as convex, and then the
+  tangent plane is not a global underestimator. Gershgorin would certify it
+  where it applies and is the natural next step; today the claim is
+  conditional and this line says so.
 - **The fill-reducing ordering helps the interior point and not the simplex.**
   Reverse Cuthill-McKee is worth 20-45x on a banded KKT, but measured over the
   factorisations of four real simplex solves it produced **4-45% more** fill
@@ -1225,6 +1259,6 @@ src/sovopt/
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark
-tests/        333 tests including regressions for every bug above
+tests/        390 tests including regressions for every bug above
 ui/           local single-page interface
 ```

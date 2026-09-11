@@ -33,6 +33,31 @@ which prunes nothing and is still correct.
 
 That is the property that lets an unconverged GPU iterate drive an exact search.
 
+The same idea for a convex quadratic
+------------------------------------
+For ``f(x) = ½xᵀQx + cᵀx`` with ``Q ⪰ 0`` and *any* point ``x̂``, convexity says
+the tangent plane at ``x̂`` lies below ``f`` everywhere:
+
+    f(x)  >=  f(x̂) + g(x̂)ᵀ(x − x̂),        g(x̂) = Qx̂ + c
+
+(the difference is ``½(x−x̂)ᵀQ(x−x̂)``, which is what ``Q ⪰ 0`` means). The
+right-hand side is *linear* in ``x``, so the bound above applies to it with
+``g(x̂)`` in the place of ``c``, and
+
+    f(x)  >=  −½ x̂ᵀQx̂  +  LP-bound(A, g(x̂), rl, ru, l, u, y)
+
+for every feasible ``x``, every ``x̂`` and every ``y``. At an optimal pair the
+reduced costs ``g − Aᵀy`` have the signs complementarity demands and the bound
+is exactly ``f(x*)``; away from one it is weaker and still valid. So a
+first-order QP solve stopped at any accuracy still yields a node bound that is
+safe to prune on -- which is what turns branch-and-bound over QP relaxations
+from "probably right" into "right".
+
+Rigour here is conditional on ``Q ⪰ 0``, which is the caller's premise, not
+this function's finding: the convex QP path checks it by estimating the
+smallest eigenvalue. A caller that can *certify* convexity -- a diagonal shift
+large enough for Gershgorin, say -- makes the bound unconditional.
+
 Floating point
 --------------
 The bound above is exact in real arithmetic. In floating point the accumulation
@@ -49,6 +74,9 @@ Cook, Koch, Steffy & Wolter, "A hybrid branch-and-bound approach for exact
   rational mixed-integer programming", Math. Prog. Computation 5 (2013).
 Althaus & Dumitriu, "Certifying feasibility and objective value of linear
   programs", Oper. Res. Letters 40 (2012).
+Fletcher & Leyffer, "Numerical experience with lower bounds for MIQP
+  branch-and-bound", SIAM J. Optim. 8 (1998) 604-616 -- the Lagrangian bound
+  for a convex QP relaxation that the quadratic form above makes safe.
 """
 
 from __future__ import annotations
@@ -57,7 +85,8 @@ import numpy as np
 
 from ..core.tolerances import INF
 
-__all__ = ["safe_dual_bound", "safe_dual_bound_batch", "bound_slack"]
+__all__ = ["safe_dual_bound", "safe_qp_bound", "safe_dual_bound_batch",
+           "bound_slack"]
 
 
 def _term(coef, lo, hi, xp):
@@ -97,6 +126,40 @@ def safe_dual_bound(A, c, row_lb, row_ub, col_lb, col_ub, y,
         return float(value - 4.0 * eps * mag)
 
     return float(row_terms.sum() + col_terms.sum())
+
+
+def safe_qp_bound(A, c, Q, row_lb, row_ub, col_lb, col_ub, x_hat, y,
+                  strict: bool = False) -> float:
+    """A valid lower bound on ``min ½xᵀQx + cᵀx`` over the node, for any
+    ``x_hat`` and any ``y``, given ``Q ⪰ 0``.
+
+    ``x_hat`` is the point the tangent plane is taken at -- the QP solver's
+    iterate, converged or not. ``Q`` may be ``None``, in which case this is
+    exactly :func:`safe_dual_bound`. Returns ``-inf`` when vacuous.
+    """
+    if Q is None:
+        return safe_dual_bound(A, c, row_lb, row_ub, col_lb, col_ub, y,
+                               strict=strict)
+    x_hat = np.asarray(x_hat, dtype=np.float64)
+    qx = Q.matvec(x_hat)
+    g = c + qx
+    linear = safe_dual_bound(A, g, row_lb, row_ub, col_lb, col_ub, y,
+                             strict=strict)
+    if not np.isfinite(linear):
+        return -np.inf
+    # −½ x̂ᵀQx̂, and in strict mode an allowance for the rounding in Qx̂ and
+    # in the products that formed it
+    prods = x_hat * qx
+    if strict:
+        s, comp = _neumaier_sum(prods)
+        eps = np.finfo(np.float64).eps
+        mag = float(np.abs(prods).sum())
+        # each qx_i carries at most nnz(row i) roundings of its own terms;
+        # bounding that by nnz(Q)·eps·|x̂|·‖Q‖_max·|x̂| is loose and still tiny
+        qmag = float(np.abs(Q.cx).max(initial=0.0)) * float(np.abs(x_hat).max(initial=0.0)) ** 2
+        allowance = 4.0 * eps * mag + Q.nnz * eps * qmag
+        return float(linear - 0.5 * (s + comp) - allowance)
+    return float(linear - 0.5 * float(prods.sum()))
 
 
 def _neumaier_sum(a):

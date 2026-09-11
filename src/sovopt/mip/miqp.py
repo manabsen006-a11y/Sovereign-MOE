@@ -19,23 +19,32 @@ of branch-and-bound that does not depend on the relaxation being an LP --
 propagation, best-bound selection, branching, incumbent validation -- and
 nothing else.
 
-The bound is not rigorous, and that matters
--------------------------------------------
+The bound is rigorous, and how
+------------------------------
 On the LP path a node bound is made safe by the Neumaier-Shcherbina correction
 in :mod:`sovopt.mip.safebound`, so an unconverged relaxation costs search
-effort and never a wrong answer. **There is no equivalent here.** The bound is
-whatever the proximal QP solver reports, accurate to its own tolerance and no
-better, so a node could in principle be pruned on a bound that is slightly too
-high and the true optimum lost with it.
+effort and never a wrong answer. The first version of this tree had no
+equivalent: its bound was whatever the proximal QP solver reported, good to
+that solver's tolerance and no better, and it said so.
 
-Two things keep that honest rather than hidden. Pruning subtracts
-``bound_slack`` from every node bound before comparing, so a bound has to beat
-the incumbent by more than the QP solver's accuracy before the subtree is
-discarded. And every incumbent is validated against the *original* model --
-feasibility, integrality and objective recomputed from scratch -- so a wrong
-answer cannot be reported even if a bound was wrong; the search would return a
-worse answer, not an invalid one. A certified QP bound is the piece that would
-make this rigorous, and it is not written.
+:func:`~sovopt.mip.safebound.safe_qp_bound` closes that. Convexity puts the
+tangent plane at the solver's iterate *below* the objective everywhere, and the
+tangent plane is linear, so the Neumaier-Shcherbina bound applies to it as-is.
+The result is a lower bound that holds for **any** iterate and **any** dual
+vector -- converged, half-converged or stopped by a time limit -- and is exact
+at an optimal pair. Every node here is pruned on that bound and never on the
+solver's own objective, which is why a relaxation solved deliberately badly
+still produces the brute-force optimum (see the tests).
+
+Two things remain from before, because they are cheap and independent: every
+incumbent is validated against the *original* model -- feasibility,
+integrality and objective recomputed from scratch -- and the reported dual
+bound is the minimum over every leaf's certified bound, so the gap the caller
+sees is one the caller could recompute.
+
+Rigour is conditional on ``Q ⪰ 0``, which is the premise of this path rather
+than something it can prove: the QP solver checks it by estimating the
+smallest eigenvalue, and a non-convex ``Q`` is refused there.
 
 References
 ----------
@@ -59,9 +68,10 @@ import numpy as np
 
 from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import VAL
-from ..core.tolerances import DEFAULT, INF, Tolerances
+from ..core.tolerances import DEFAULT, Tolerances
 from ..qp import QPParams, solve_qp
 from .propagate import propagate
+from .safebound import safe_qp_bound
 
 __all__ = ["MIQPParams", "solve_miqp"]
 
@@ -76,14 +86,6 @@ class MIQPParams:
     gap_rel: float = 1e-4
     gap_abs: float = 1e-9
 
-    bound_slack: float = 1e-6
-    """How far a node bound must beat the incumbent before its subtree is cut.
-
-    The relaxation is solved by a first-order method to a finite tolerance, so
-    its objective is a lower bound only up to that tolerance. Requiring the
-    bound to clear the incumbent by this margin trades a little search effort
-    for not discarding a subtree on a bound that was slightly optimistic."""
-
     propagate_rounds: int = 6
     integrality: float = 1e-6
 
@@ -92,13 +94,23 @@ class MIQPParams:
     verbose: bool = False
 
 
-def _relaxation(prob: Problem, lo, hi, params: MIQPParams, deadline: float):
-    """Solve the node's continuous relaxation over ``[lo, hi]``."""
+def _relaxation(prob: Problem, lo, hi, params: MIQPParams, deadline: float,
+                tighten: int = 0):
+    """Solve the node's continuous relaxation over ``[lo, hi]``.
+
+    ``tighten`` re-solves with the tolerances divided by ``100**tighten`` and
+    the iteration budget multiplied by ``4**tighten``; see the loop for when
+    that is needed.
+    """
     node = prob.copy()
     node.col_lb = lo
     node.col_ub = hi
     node.kind = np.zeros(prob.n, dtype=node.kind.dtype)   # relax integrality
+    f = 100.0 ** tighten
     qp = QPParams(**{**vars(params.qp),
+                     "eps_abs": params.qp.eps_abs / f,
+                     "eps_rel": params.qp.eps_rel / f,
+                     "max_iter": params.qp.max_iter * 4 ** tighten,
                      "time_limit": max(0.0, deadline - time.perf_counter())})
     return solve_qp(node, qp)
 
@@ -146,6 +158,8 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
     best_x = None
     nodes = 0
     status = Status.NODE_LIMIT
+    leaf_lb = np.inf        # min certified bound over every closed node
+    undecided = 0           # nodes closed without a bound that closes them
 
     def consider(x) -> bool:
         """Accept a candidate only if the *original* model agrees it is one."""
@@ -182,7 +196,8 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
         bound, _, path = heapq.heappop(frontier)
         gap = max(params.gap_abs, params.gap_rel * abs(incumbent)) \
             if np.isfinite(incumbent) else 0.0
-        if np.isfinite(incumbent) and bound - params.bound_slack >= incumbent - gap:
+        if np.isfinite(incumbent) and bound >= incumbent - gap:
+            leaf_lb = min(leaf_lb, bound)
             continue
 
         lo = root.lo.copy()
@@ -203,22 +218,75 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
 
         nodes += 1
         r = _relaxation(work, lo, hi, params, deadline)
-        if r.x is None or r.status in (Status.INFEASIBLE,
-                                       Status.INFEASIBLE_OR_UNBOUNDED):
+        if r.status in (Status.INFEASIBLE, Status.INFEASIBLE_OR_UNBOUNDED):
             continue
-        node_bound = float(r.objective)
-        if np.isfinite(incumbent) and \
-                node_bound - params.bound_slack >= incumbent - gap:
+        if r.x is None:
+            # the proximal solver always returns its best iterate; a relaxation
+            # with no point at all is a bug, not a node to drop silently
+            raise RuntimeError("QP relaxation returned no iterate")
+        x = np.asarray(r.x, dtype=VAL)
+        # The bound is certified from the iterate and its duals, whatever the
+        # solver's status -- never taken from the solver's own objective.
+        y = r.y if r.y is not None else np.zeros(work.m, dtype=VAL)
+        node_bound = safe_qp_bound(work.A, work.c, work.Q, work.row_lb,
+                                   work.row_ub, lo, hi, x, y, strict=True) \
+            + work.obj_offset
+        node_bound = max(node_bound, bound)      # a child is never looser than its parent
+        if np.isfinite(incumbent) and node_bound >= incumbent - gap:
+            leaf_lb = min(leaf_lb, node_bound)
             continue
 
-        x = np.asarray(r.x, dtype=VAL)
-        frac = np.abs(x[int_mask] - np.round(x[int_mask]))
+        idx = np.flatnonzero(int_mask)
+        frac = np.abs(x[idx] - np.round(x[idx]))
         consider(x)                      # a rounding is always worth a try
 
         if frac.size == 0 or frac.max() <= params.integrality:
-            continue                     # relaxation was integral: nothing to branch
+            # An integral iterate is not a finished node. The LP tree learnt
+            # this the hard way (README, "A valid bound is not a valid
+            # search"): a bound licenses *discarding* a node, and only a bound
+            # that meets the incumbent licenses *closing* one. An unconverged
+            # iterate can look integral while the node's real optimum is a
+            # different integer point, so closing on it loses that point and
+            # nothing downstream can notice.
+            closed = np.isfinite(incumbent) and node_bound >= incumbent - gap
+            if not closed:
+                unfixed = idx[hi[idx] - lo[idx] > 0.5]
+                if unfixed.size:
+                    # split an integer domain at the iterate: {<= v} ∪ {>= v+1}
+                    # covers every integer, so nothing is lost and the domain
+                    # shrinks either way
+                    j = int(unfixed[int(np.argmax(hi[unfixed] - lo[unfixed]))])
+                    v = float(np.round(x[j]))
+                    if v >= hi[j]:
+                        v -= 1.0
+                    for child in ((j, False, v), (j, True, v + 1.0)):
+                        heapq.heappush(frontier,
+                                       (node_bound, order, path + (child,)))
+                        order += 1
+                    continue
+                # every integer is fixed: this is a continuous QP, and the
+                # only way to close it is to solve it better
+                for tighten in (1, 2):
+                    r = _relaxation(work, lo, hi, params, deadline, tighten)
+                    if r.x is None:
+                        break
+                    x = np.asarray(r.x, dtype=VAL)
+                    y = r.y if r.y is not None else np.zeros(work.m, dtype=VAL)
+                    nb = safe_qp_bound(work.A, work.c, work.Q, work.row_lb,
+                                       work.row_ub, lo, hi, x, y, strict=True) \
+                        + work.obj_offset
+                    node_bound = max(node_bound, nb)
+                    consider(x)
+                    gap = max(params.gap_abs, params.gap_rel * abs(incumbent)) \
+                        if np.isfinite(incumbent) else 0.0
+                    if np.isfinite(incumbent) and node_bound >= incumbent - gap:
+                        closed = True
+                        break
+                if not closed:
+                    undecided += 1
+            leaf_lb = min(leaf_lb, node_bound)
+            continue
 
-        idx = np.flatnonzero(int_mask)
         j = int(idx[int(np.argmax(frac))])
         v = float(x[j])
         for child in ((j, False, np.floor(v)), (j, True, np.ceil(v))):
@@ -231,9 +299,14 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
                   f"{incumbent if np.isfinite(incumbent) else float('nan'):< 14.8g}"
                   f"  {time.perf_counter() - t0:6.1f}s")
 
-    if not frontier and status == Status.NODE_LIMIT:
+    if not frontier and status == Status.NODE_LIMIT and not undecided:
         status = Status.OPTIMAL if best_x is not None else Status.INFEASIBLE
+    # an exhausted search with an undecided node keeps NODE_LIMIT, as the LP
+    # tree does: the incumbent is real, the certified bound below is real,
+    # and the gap between them is exactly what was not proved
 
+    # the global lower bound: nothing open or closed lies below it
+    global_lb = min(leaf_lb, min((b for b, _, _ in frontier), default=np.inf))
     if best_x is None:
         return Solution(status=status if status != Status.NODE_LIMIT
                         else Status.NODE_LIMIT,
@@ -241,9 +314,9 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
                         method="miqp-bb").drop_objective_if_unsolved()
 
     obj = prob.objective(best_x)
-    dual = -incumbent if flip else incumbent
+    global_lb = min(global_lb, incumbent)
     sol = Solution(status=status, x=best_x, objective=obj, nodes=nodes,
                    time=time.perf_counter() - t0, method="miqp-bb")
-    sol.dual_bound = dual if status == Status.OPTIMAL else float("nan")
-    sol.info = {"nodes": nodes, "bound_is_rigorous": False}
+    sol.dual_bound = -global_lb if flip else global_lb
+    sol.info = {"nodes": nodes, "bound_is_rigorous": True}
     return sol
