@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 532 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 551 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -294,7 +294,8 @@ python -m pytest tests/               # 532 tests; the 15 GPU ones skip without 
 | QPLIB reader and benchmark | `io/qplib.py`, `bench/qplib.py` | done |
 | **MIQP** (branch-and-bound over convex QP nodes, certified bounds) | `mip/miqp.py` | done |
 | **Non-convex (MI)QP** (McCormick reformulation → spatial B&B; αBB opt-in) | `globalopt/nonconvex_qp.py`, `globalopt/alphabb.py` | done |
-| Forrest–Tomlin, parallel tree | — | **not built** (roadmap) |
+| **Forrest–Tomlin update** (built, measured, opt-in) | `numerics/ft.py` | done |
+| Parallel tree | — | **not built** (roadmap) |
 
 ---
 
@@ -967,11 +968,23 @@ six now have regression tests.
   basis and never gets far enough down a long eta chain to amortise it, and at
   150 the MIP set proves 5/11 against 6/11.
 
-  Forrest–Tomlin is still not implemented, and is still the principled answer:
-  it updates the factors directly, keeping them compact *and* accurate, so it
-  would not be trading chain length against refactorisation cost at all. What
-  has changed is that most of the 10teams number it was meant to fix has been
-  recovered without it, which moves it down the list rather than off it.
+  Forrest–Tomlin is now implemented (`numerics/ft.py`, `basis_update="ft"`),
+  and the measurement confirms the sentence above rather than the one this
+  entry used to carry. It updates `U` in place with one short row eta per
+  pivot, so a solve after a thousand pivots costs what it cost after none:
+  on the four largest Netlib instances the simplex solves at **2.13 ms per
+  pivot with Forrest–Tomlin at a budget of 1000, against 5.2 ms for the
+  product form at the same budget** — the eta file really was the cost at
+  long budgets. But the product form at *its* best budget of 150 solves the
+  same set at 2.44 ms per pivot, and a Forrest–Tomlin path takes 4–25% more
+  pivots on most instances (its solves are accurate to 2e-12 where the
+  product form's reach 1e-13, and a degenerate dual simplex notices), so the
+  totals are a wash on the big four (66.7 s against 63.6 s) and a loss on
+  the small set (1.34 s against 0.87 s at 150), where the update's own cost
+  — one extra `L` solve and an `O(m)` position shift per pivot — is what
+  shows. The default stays product form at 150. Recorded in
+  [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md), with what would
+  have to change for the answer to flip.
 - **Conflict analysis now sees propagation too, and it was not the larger
   prize.** This entry used to say nodes refuted by propagation never reach the
   LP that produces a dual ray, and called that the bigger half. It is now
@@ -1407,13 +1420,13 @@ convention exists because two published tables were found not to reproduce; see
 src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer, Netlib expander, QPLIB reader
-  numerics/   scaling, LU, fill-reducing ordering, hypersparse solves, refinement
+  numerics/   scaling, LU, Forrest–Tomlin update, ordering, hypersparse solves, refinement
   lp/         revised simplex, basis, interior point, crossover, first-order LP
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        532 tests including regressions for every bug above
+tests/        551 tests including regressions for every bug above
 ui/           local single-page interface
 ```

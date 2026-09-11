@@ -152,6 +152,66 @@ parallelising the tree is measuring the GIL.
 
 ---
 
+## Forrest-Tomlin basis update (built, measured, kept opt-in)
+
+**Idea.** The product-form update appends an eta column per pivot and every
+FTRAN and BTRAN pays for the whole eta file, so its cost grows with the pivots
+since the last refactorisation and the refactorisation budget has to stay
+short. Forrest-Tomlin updates `U` itself: the entering column becomes a spike
+in `U`, the one row that breaks triangularity is eliminated against the rows
+beneath it, and the multipliers are a *row* eta as short as that row. A solve
+after a thousand pivots then costs what it cost after none, and the budget
+can be an order of magnitude longer. `numerics/ft.py` implements it with `U`
+row-wise in a row file with logical permutations (Suhl & Suhl), a growth cap
+on the multipliers, and a rule that a fresh factor never refuses -- without
+which woodw livelocked at 27,167 refusals in 27,360 pivots, one
+refactorisation each.
+
+**It works, and it is verified.** The dense identity `L R⁻¹ Ũ = P B Q̃` is
+checked outright after every update on small cases; hundreds of random
+column replacements -- an adversarial sequence, the trailing matrix goes
+ill-conditioned fast -- keep the backward error below 1e-9 with the cap
+refactorising a handful of times; and the simplex reaches the same optimum
+under both updates on every instance tried.
+
+**It does not pay here.** Solve cost per pivot, product form (PFI) against
+Forrest-Tomlin (FT), across refactorisation budgets:
+
+| set | PFI @150 | FT @150 | PFI @1000 | FT @1000 |
+|---|---|---|---|---|
+| Netlib woodw, 25fv47, pilot87, d2q06c | **2.44 ms**, 63.6 s | 2.44 ms, 79.0 s | 5.2 ms, 159.5 s | **2.13 ms**, 66.7 s |
+| MIPLIB LP relaxations (11) | **0.87 s** | 1.34 s | 2.86 s | 2.92 s |
+| dfl001 (6,071 rows, 300 s limit) | 11.7 ms | — | — | 11.3 ms (10.8 ms @400) |
+| plan k=4 (3,840 rows) | **11.6 s** | — | — | 15.5 s (12.5 s @400) |
+
+At a long budget FT is exactly what it promises -- 2.4× cheaper per pivot
+than PFI at the same budget on the big four, and the factorisation count
+falls from 177 to 82. But PFI at *its* best budget is already at 2.44 ms,
+which is where the refactorisation-budget commit had put it, and an FT path
+takes more pivots on most instances: +25% on the big four, +28% on the MIPLIB
+set at 150, 2.2× on 10teams and woodw. The solves are accurate -- 2e-12
+backward error against the product form's 1e-13 -- but a degenerate dual
+simplex takes a different path on the last two digits, and the different
+path is longer more often than it is shorter. Net: a wash on the large
+instances and a loss on the small ones, where FT's per-pivot overhead (one
+extra `L` solve for the spike and an `O(m)` position shift) is what shows.
+
+**Why the layout mattered, and still does.** The first version kept `U`'s
+rows as linked lists and the solves ran 2.9× slower than the column LU's on
+the same matrix (88 µs vs 31 µs on woodw's basis); the row file brought that
+to 1.7× (54 µs) and no further, because each entry still pays an `alive`
+check and two indirections through the position arrays. The column-oriented
+LU solve the product form uses is the fastest thing in the code, and FT
+cannot use it.
+
+**Kept, not reverted.** `SimplexParams(basis_update="ft")`, off by default.
+What would flip it: a simplex whose per-pivot cost is dominated by the basis
+solves rather than by pricing -- dfl001 spends 11 ms per pivot with the
+solves a fraction of it -- together with hypersparse FTRAN/BTRAN, which the
+product form cannot offer and FT's row file could.
+
+---
+
 ## αBB for non-convex QP (built, measured, kept opt-in)
 
 **Idea.** The direct way to make a non-convex quadratic solvable is to shift

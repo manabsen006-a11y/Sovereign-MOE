@@ -32,11 +32,13 @@ and therefore ``B_new^-1 = E^-1 B_old^-1``. Each pivot appends one *eta vector*;
 FTRAN applies them in order after the LU solve, BTRAN applies them in reverse
 before it.
 
-Product form is used here rather than Forrest-Tomlin because it is far simpler
-to get right and its weakness -- fill grows linearly in the number of etas -- is
-bounded by refactorising every few dozen pivots. Forrest-Tomlin would update the
-LU factors themselves and keep them sparser for longer; it is the natural next
-step and is deliberately not attempted yet.
+Two update schemes are available and the choice is a parameter, because the
+right one was decided by measurement rather than by reputation. **Product
+form** appends an eta per pivot and pays for the whole eta file on every
+solve; its cost grows linearly with the pivots since the last refactorisation.
+**Forrest-Tomlin** (:mod:`sovopt.numerics.ft`) updates ``U`` itself and keeps
+one short *row* eta per pivot, so a solve after a hundred pivots costs about
+what it cost after none. See ``SimplexParams.basis_update`` for the numbers.
 
 Numerical safety
 ----------------
@@ -65,6 +67,7 @@ import numpy as np
 from ..core._jit import jit_kernel
 from ..core.sparse import IDX, VAL
 from ..core.tolerances import INF
+from ..numerics.ft import FTFactor
 from ..numerics.lu import LUSingular, lu_factor
 
 __all__ = ["Basis", "BASIC", "AT_LOWER", "AT_UPPER", "FREE", "FIXED"]
@@ -131,13 +134,19 @@ def _eta_btran(start, idx, val, piv, rows, n_eta, v):
 class Basis:
     """A basis over ``[A | -I]`` with FTRAN, BTRAN and a product-form update."""
 
-    def __init__(self, prob, refactor_freq: int = 60, lu_tol: float = 0.01):
+    def __init__(self, prob, refactor_freq: int = 60, lu_tol: float = 0.01,
+                 update: str = "pfi"):
         self.prob = prob
         self.m = prob.m
         self.n = prob.n
         self.N = prob.n + prob.m
         self.refactor_freq = refactor_freq
         self.lu_tol = lu_tol
+        if update not in ("pfi", "ft"):
+            raise ValueError(f"unknown basis update {update!r}")
+        self.update_mode = update
+        self.ft = None
+        self.n_ft_refused = 0
 
         m, n, N = self.m, self.n, self.N
 
@@ -259,6 +268,8 @@ class Basis:
             try:
                 self.lu = lu_factor(cp, ci, cx, m, tol=self.lu_tol)
                 self._n_eta = 0
+                if self.update_mode == "ft":
+                    self.ft = FTFactor(self.lu, max_updates=self.refactor_freq + 2)
                 self.n_factorizations += 1
                 self._sync_positions()
                 return
@@ -295,12 +306,16 @@ class Basis:
 
     @property
     def needs_refactorization(self) -> bool:
+        if self.ft is not None:
+            return self.ft.n_updates >= self.refactor_freq
         return self._n_eta >= self.refactor_freq
 
     # -- solves ------------------------------------------------------------- #
 
     def ftran(self, v):
         """``v <- B^-1 v``, in place."""
+        if self.ft is not None:
+            return self.ft.ftran(v, out=v)
         self.lu.ftran(v, out=v)
         if self._n_eta:
             _eta_ftran(self._eta_start, self._eta_idx, self._eta_val,
@@ -309,6 +324,8 @@ class Basis:
 
     def btran(self, v):
         """``v <- B^-T v``, in place."""
+        if self.ft is not None:
+            return self.ft.btran(v, out=v)
         if self._n_eta:
             _eta_btran(self._eta_start, self._eta_idx, self._eta_val,
                        self._eta_piv, self._eta_row, self._n_eta, v)
@@ -331,6 +348,25 @@ class Basis:
         piv = alpha[r]
         if piv == 0.0 or not np.isfinite(piv):
             raise LUSingular(r, "zero pivot in basis update")
+
+        if self.ft is not None:
+            if entering < self.n:
+                idx, val = self.prob.A.col(entering)
+            else:
+                idx = np.array([entering - self.n], dtype=IDX)
+                val = np.array([-1.0], dtype=VAL)
+            try:
+                self.ft.update(r, idx, val)
+            except LUSingular:
+                self.n_ft_refused += 1
+                raise
+            leaving = int(self.basic[r])
+            self.basic[r] = entering
+            self.pos_in_basis[leaving] = -1
+            self.pos_in_basis[entering] = r
+            self.status[entering] = BASIC
+            self.n_updates += 1
+            return leaving
 
         nz = np.flatnonzero(alpha)
         nz = nz[nz != r]
@@ -404,6 +440,8 @@ class Basis:
             "factorizations": self.n_factorizations,
             "updates": self.n_updates,
             "repairs": self.n_repairs,
-            "etas": self._n_eta,
+            "etas": self.ft.n_eta if self.ft is not None else self._n_eta,
             "lu_nnz": self.lu.nnz if self.lu is not None else 0,
+            "update": self.update_mode,
+            "ft_refused": self.n_ft_refused,
         }

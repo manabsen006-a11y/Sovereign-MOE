@@ -100,6 +100,15 @@ class SimplexParams:
     pivot_tol: float = 1e-9
     harris_relax: float = 1e-9
 
+    basis_update: str = "pfi"
+    """``"pfi"`` (product form of the inverse) or ``"ft"`` (Forrest-Tomlin).
+
+    Forrest-Tomlin is 2.4x cheaper per pivot at a budget of 1000 than the
+    product form at the same budget, and no cheaper than the product form at
+    150 -- and its path takes more pivots on most instances. The default is
+    the measured winner; see :mod:`sovopt.numerics.ft` and
+    docs/NEGATIVE-RESULTS.md."""
+
     refactor_freq: int = 150
     """Pivots between refactorisations of the basis.
 
@@ -445,7 +454,8 @@ class _Simplex:
     def __init__(self, prob: Problem, params: SimplexParams):
         self.p = params
         self.prob = prob
-        self.B = Basis(prob, refactor_freq=params.refactor_freq)
+        self.B = Basis(prob, refactor_freq=params.refactor_freq,
+                       update=params.basis_update)
         self.m, self.n, self.N = prob.m, prob.n, prob.n + prob.m
         self.iters = 0
         self.degenerate_run = 0
