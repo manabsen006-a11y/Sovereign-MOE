@@ -54,10 +54,14 @@ src/sovopt/
   core/       sparse structures (CSR+CSC), JIT shim, CPU/GPU backend, problem
               and solution types, named tolerances
   io/         MPS (read/write, QUADOBJ), CPLEX-LP, Netlib expander, QPLIB
-  numerics/   scaling, Markowitz LU, Forrest-Tomlin update (opt-in), RCM
-              ordering, hypersparse FTRAN/BTRAN, iterative refinement
+  numerics/   scaling (objective scale sees Q), Markowitz LU, symmetric LDLᵀ
+              for quasi-definite KKT, Forrest-Tomlin update (opt-in), AMD and
+              RCM ordering with symbolic fill, hypersparse FTRAN/BTRAN,
+              iterative refinement
   lp/         dual & primal simplex, node-LP kernel, basis, interior point
-              (LP and convex QP), crossover, sensitivity, PDLP (CPU+GPU)
+              (LP and convex QP; LDLᵀ on the ordering race, static
+              regularisation, proximal-point opt-in), crossover,
+              sensitivity, PDLP (CPU+GPU)
   qp/         proximal PDHG for convex QP (the GPU path) and the dispatcher
   mip/        propagation, branching, cuts, heuristics, tree (threaded),
               BNR, safe bounds (LP and QP), conflict analysis, symmetry, MIQP
