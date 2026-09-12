@@ -51,15 +51,27 @@ solver's source. You cannot un-read it, and the claim is then gone.
 
 ```
 src/sovopt/
-  core/      sparse structures, JIT shim, problem/solution types
-  io/        MPS / LP / QPS readers and writers
-  numerics/  scaling, Markowitz LU, hypersparse FTRAN/BTRAN, refinement
-  lp/        dual & primal simplex, PDLP (CPU+GPU), crossover, presolve
-  mip/       propagation, branching, cuts, heuristics, tree, BNR, safe bounds
-  globalopt/ McCormick / RLT / OBBT / spatial branch-and-bound for pooling
-bench/       harness, independent verifier, instance manifests
-tests/       unit + regression
-ui/          thin CLI and a minimal local interface
+  core/       sparse structures (CSR+CSC), JIT shim, CPU/GPU backend, problem
+              and solution types, named tolerances
+  io/         MPS (read/write, QUADOBJ), CPLEX-LP, Netlib expander, QPLIB
+  numerics/   scaling, Markowitz LU, Forrest-Tomlin update (opt-in), RCM
+              ordering, hypersparse FTRAN/BTRAN, iterative refinement
+  lp/         dual & primal simplex, node-LP kernel, basis, interior point
+              (LP and convex QP), crossover, sensitivity, PDLP (CPU+GPU)
+  qp/         proximal PDHG for convex QP (the GPU path) and the dispatcher
+  mip/        propagation, branching, cuts, heuristics, tree (threaded),
+              BNR, safe bounds (LP and QP), conflict analysis, symmetry, MIQP
+  globalopt/  McCormick / OBBT / spatial branch-and-bound for pooling;
+              non-convex QP (McCormick reformulation, aBB opt-in)
+  models/     refinery templates, Haverly pooling (p and pq)
+  presolve.py fixed/singleton/redundant reductions and postsolve (opt-in)
+  cli.py      routing by model class; demo.py
+bench/        harness, independent verifier, comparator (HiGHS, quarantined),
+              fetch, Netlib, QPLIB, scale study, non-convex QP ladder,
+              basis-update comparison
+tests/        unit + regression, one file per module, plus fixtures/
+tools/        check_provenance.py
+ui/           minimal local interface (server.py)
 ```
 
 ## Conventions
@@ -79,7 +91,9 @@ ui/          thin CLI and a minimal local interface
 
 ```bash
 python -m sovopt.cli solve model.mps          # solve an instance
-python -m bench.harness --set netlib         # run a benchmark set
+python -m bench.harness --mode lp            # the MIPLIB LP/MIP set
+python -m bench.netlib --fetch && python -m bench.netlib    # Netlib
+python -m bench.qplib --fetch --run          # QPLIB
 python -m bench.verify model.mps sol.json    # independent feasibility check
 python -m pytest tests/                      # unit tests
 python tools/check_provenance.py             # citation-header lint
