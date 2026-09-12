@@ -234,6 +234,13 @@ def cmd_solve(a):
                 prob.col_names or [f"C{i}" for i in range(prob.n)], sol.x)}
             if a.named else [float(v) for v in sol.x],
         }
+        if sol.y is not None and len(sol.y) == prob.m:
+            # the duals let the verifier certify optimality, not just
+            # feasibility: bench.verify computes a bound from them that
+            # holds whatever the solver did
+            payload["y"] = ({n: float(v) for n, v in zip(
+                prob.row_names or [f"R{i}" for i in range(prob.m)], sol.y)}
+                if a.named else [float(v) for v in sol.y])
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=1)
         print(f"  wrote       {a.out}")

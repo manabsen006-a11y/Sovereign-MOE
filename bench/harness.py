@@ -90,8 +90,15 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
         chk = "-"
         if sol.x is not None:
             v = verify(prob, sol.x, sol.objective,
-                       feas_tol=1e-6, int_tol=1e-6)
-            chk = "ok" if v.ok else "BAD"
+                       feas_tol=1e-6, int_tol=1e-6,
+                       y=(getattr(sol, "y", None) if mode == "lp" else None))
+            # feasibility is the verdict; optimality, when duals are there,
+            # is reported beside it and counted separately below
+            feas = [c for c in v.checks if c[0] != "optimality"]
+            opt = [c for c in v.checks if c[0] == "optimality"]
+            chk = "ok" if all(c[1] for c in feas) else "BAD"
+            if chk == "ok" and opt:
+                chk = "opt" if opt[0][1] else "ok"
 
         print(f"{name:<14} {prob.m:>6} {prob.n:>6} {prob.nnz:>8} "
               f"{sol.status.name:<10} "
@@ -111,7 +118,7 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
     if not n:
         return rows
     solved = [r for r in rows if r["status"] == Status.OPTIMAL]
-    verified = [r for r in rows if r["check"] == "ok"]
+    verified = [r for r in rows if r["check"] in ("ok", "opt")]
     close = [r for r in rows if np.isfinite(r["relerr"]) and r["relerr"] < 1e-4]
     bad = [r for r in rows if r["check"] == "BAD"]
 
@@ -119,6 +126,9 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
     print(f"  instances            {n}")
     print(f"  status OPTIMAL       {len(solved)}/{n}")
     print(f"  verifier accepted    {len(verified)}/{n}")
+    if mode == "lp":
+        cert = [r for r in rows if r["check"] == "opt"]
+        print(f"  certified optimal    {len(cert)}/{n}   (duals bound the optimum within 1e-9)")
     print(f"  within 1e-4 of ref   {len(close)}/{sum(1 for r in rows if r['ref'] is not None)}")
     print(f"  shifted geomean time {shifted_geomean([r['time'] for r in rows], shift):.3f}s "
           f"(shift {shift:g}s)")

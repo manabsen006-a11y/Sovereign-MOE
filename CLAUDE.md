@@ -99,7 +99,7 @@ python -m sovopt.cli solve model.mps          # solve an instance
 python -m bench.harness --mode lp            # the MIPLIB LP/MIP set
 python -m bench.netlib --fetch && python -m bench.netlib    # Netlib
 python -m bench.qplib --fetch --run          # QPLIB
-python -m bench.verify model.mps sol.json    # independent feasibility check
+python -m bench.verify model.mps sol.json    # independent feasibility + optimality check
 python -m pytest tests/                      # unit tests
 python tools/check_provenance.py             # citation-header lint
 ```

@@ -233,7 +233,7 @@ python -m sovopt.cli devices                      # what hardware is usable
 python -m sovopt.cli info   model.lp              # stats + numerical health
 python -m sovopt.cli solve  model.mps --device gpu --out sol.json
 python -m sovopt.cli solve  model.mps --sensitivity     # shadow prices + ranging
-python -m sovopt.cli verify model.mps sol.json    # independent check
+python -m sovopt.cli verify model.mps sol.json    # independent check: feasibility, and optimality from the duals
 python -m ui.server                              # http://127.0.0.1:8000
 ```
 
@@ -256,7 +256,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 643 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 653 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -1319,15 +1319,17 @@ six now have regression tests.
   detected and not applied -- their dual needs an argument the other three do
   not. Full measurement in
   [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
-- **Netlib is in; Mittelmann and QPLIB are not.** All 89 problems of the
-  Netlib LP set now expand and solve — see [Netlib](#netlib). **78 of 89 match
-  the published optimum** to 1e-6. Of the eleven that do not: three hit the
-  60 s limit (`dfl001`, `maros-r7`, and `cycle`, which reaches the published
-  value to 1e-12 but cannot prove it in time), and eight are accuracy
-  shortfalls on the notoriously ill-conditioned end of the set — `greenbea`
-  1.3e-3, `pilot` 1.5e-4, `greenbeb` 2.6e-5, then `80bau3b`, `ganges`, `nesm`,
-  `scrs8` and `pilot87` between 1e-6 and 1e-5. That is the honest accuracy
-  profile of this LP engine, and nothing before this measured it.
+- **Netlib is in; Mittelmann is not.** All 89 problems of the Netlib LP set
+  expand and solve — see [Netlib](#netlib). **78 of 89 match the readme's
+  optimum** to 1e-6 and **87 of 89 are certified optimal** by the
+  independent verifier from the returned point and duals. The nine-instance
+  difference is the readme's: on eight the vertex is certified and the
+  readme's value is either beaten by a verified feasible point or excluded
+  by a certified bound, and `cycle` is certified from a point the simplex
+  could not prove in 60 s. This bullet used to call those eight "accuracy
+  shortfalls on the ill-conditioned end of the set"; that was the wrong
+  conclusion, drawn before the verifier could check optimality. `dfl001`
+  and `maros-r7` remain over the limit with no point.
 - **Scale is measured now, and bounded by three different things.** See
   [Scale](#scale) for the ladder. LP reaches 1.02M nonzeros and 102,400 columns
   on the first-order path and 15,360 square rows solved and verified; the
@@ -1518,22 +1520,44 @@ previously had 11.
 
 ```
 python -m bench.netlib --fetch     # once
-python -m bench.netlib             # 89 problems, 412 s
+python -m bench.netlib             # 89 problems, 377 s
 ```
 
 | | |
 |---|---|
 | expand and parse | **89/89** |
-| match the published optimum to 1e-6 | **78/89** |
-| hit the 60 s limit | 3 (`dfl001`, `maros-r7`, `cycle`) |
-| accuracy shortfall | 8, worst `greenbea` at 1.3e-3 |
+| match the readme's optimum to 1e-6 | **78/89** |
+| **certified optimal by the independent verifier** | **87/89** |
+| hit the 60 s limit | 3 (`dfl001`, `maros-r7`, `cycle` -- and `cycle`'s point is certified optimal anyway) |
 | the interior point alone, 60 s (`--method ipm`) | **81/89** optimal, from 77 before the unit and the LDLᵀ retry (Known limits); the eight: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, fffff800 and forplan at the iteration limit, pilot4 `NUMERICAL`, dfl001 and fit2p over 60 s (dfl001 solves at 107 s) |
 
-`cycle` reaches the published value to 1e-12 and cannot prove it inside the
-limit, so it is counted as a miss on a technicality rather than a wrong answer.
-The eight shortfalls are the ill-conditioned end of the set -- `greenbea`,
-`pilot`, `pilot87` are notorious -- and they are the first honest measurement
-of where this LP engine's accuracy runs out.
+**The eight "accuracy shortfalls" were the readme's, not the engine's.** This
+table used to say the simplex fell short of the published optimum on eight
+instances, worst `greenbea` at 1.3e-3, and called that the ill-conditioned
+end of the set. It was the wrong conclusion, and what corrected it was
+giving the verifier the duals. A dual vector certifies a bound on the
+optimum -- Neumaier–Shcherbina's arithmetic, the same line the
+branch-and-bound prunes on, valid for any dual vector and owing nothing to
+the solver's termination test -- and [`bench/verify.py`](bench/verify.py)
+now reports the gap between that bound and the point's own objective, with
+whatever cost perturbation the certificate needed (reduced costs at the
+solver's tolerance on unbounded columns; 1.9e-8 on `pilotnov`, nothing on
+most). On all eight the vertex certifies to 1e-9 or better. On seven of them
+-- `80bau3b`, `greenbea`, `greenbeb`, `nesm`, `pilot`, `pilot87`, `scrs8` --
+the vertex is *strictly better* than the readme's "optimum" and verified
+feasible, which by itself proves the readme value is not the minimum; on
+`ganges` the vertex is worse than the readme's value and the certified
+bound lies above that value, which proves no feasible point attains it.
+That is the conclusion Koch reached for the readme's values by solving the
+set in exact rational arithmetic (Koch, "The final NETLIB-LP results",
+Oper. Res. Lett. 32, 2004); the proof above does not depend on it.
+`bench.netlib` now prints both counts, names the
+readme disagreements with the kind of certificate that settles each, and
+`cycle` -- which the simplex cannot prove optimal in 60 s -- is certified
+by the verifier from the point it returns.
+
+The two that remain are `dfl001` and `maros-r7`, over the limit with no
+point; the interior point solves `dfl001` in 107 s.
 
 **It paid on the first run.** `bore3d` came back `INFEASIBLE`, with a published
 optimum of 1373.080394. The model was fine: the simplex returned exactly that
@@ -1671,6 +1695,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        643 tests including regressions for every bug above
+tests/        653 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

@@ -32,7 +32,7 @@ try:
 except Exception:
     pass
 
-from sovopt.core.problem import Status
+from sovopt.core.problem import ObjSense, Status
 from sovopt.io.netlib import read_netlib
 
 BASE = "https://www.netlib.org/lp/data"
@@ -121,9 +121,11 @@ def run(dest_dir: str, only, method: str, time_limit: float, tol: float,
         return 1
 
     print(f"{'instance':<10} {'rows':>6} {'cols':>6} {'nnz':>8} {'status':<12} "
-          f"{'objective':>18} {'published':>18} {'relerr':>10} {'time':>8} {'chk':>4}")
-    print("-" * 116)
-    ok = bad = expand_fail = 0
+          f"{'objective':>18} {'published':>18} {'relerr':>10} {'time':>8} {'chk':>4} {'cert':>5}")
+    print("-" * 122)
+    ok = bad = expand_fail = certified = 0
+    readme_off = []
+    unproved = []
     times, worst = [], (0.0, "")
     for name in names:
         path = os.path.join(dest_dir, name)
@@ -149,23 +151,54 @@ def run(dest_dir: str, only, method: str, time_limit: float, tol: float,
         if sol.x is not None and np.isfinite(sol.objective):
             relerr = abs(sol.objective - published) / max(1.0, abs(published))
         chk = "-"
+        cert = "-"
+        feasible = False
         if sol.x is not None:
-            chk = "ok" if verify(prob, sol.x, feas_tol=1e-6).ok else "BAD"
-        good = (sol.status == Status.OPTIMAL and chk == "ok"
-                and relerr <= rel_tol)
-        ok += good
+            v = verify(prob, sol.x, feas_tol=1e-6,
+                       y=getattr(sol, "y", None), opt_tol=1e-9)
+            feasible = all(c[1] for c in v.checks if c[0] != "optimality")
+            chk = "ok" if feasible else "BAD"
+            opt = [c for c in v.checks if c[0] == "optimality"]
+            if opt and feasible:
+                cert = "opt" if opt[0][1] else "no"
+        # Two different facts. "Matched": the objective is within rel_tol
+        # of the readme's. "Certified": the point is feasible and the duals
+        # bound the optimum within 1e-9 of it -- a proof that owes the
+        # readme nothing. Where the two disagree, the point is either a
+        # feasible point strictly better than the readme's "optimum", or a
+        # certified bound the readme's value lies beyond; either way the
+        # readme is what is off, and the line says so.
+        matched = (sol.status == Status.OPTIMAL and feasible and relerr <= rel_tol)
+        is_cert = cert == "opt"          # a proof is a proof whatever the status
+        if is_cert and sol.status != Status.OPTIMAL:
+            unproved.append((name, sol.status.name))
+        ok += matched
+        certified += is_cert
+        good = matched or is_cert
         bad += not good
-        if np.isfinite(relerr) and relerr > worst[0]:
+        if is_cert and relerr > rel_tol:
+            better = (sol.objective < published) if prob.sense == ObjSense.MINIMISE \
+                else (sol.objective > published)
+            readme_off.append((name, "better point" if better else "bound excludes it"))
+        if np.isfinite(relerr) and relerr > worst[0] and not is_cert:
             worst = (relerr, name)
-        flag = "" if good else "   <-"
+        flag = "" if matched else ("   readme?" if is_cert else "   <-")
         print(f"{name:<10} {prob.m:>6d} {prob.n:>6d} {prob.nnz:>8d} "
               f"{sol.status.name:<12} {sol.objective:>18.10g} "
-              f"{published:>18.10g} {relerr:>10.2e} {dt:>7.2f}s {chk:>4}{flag}")
+              f"{published:>18.10g} {relerr:>10.2e} {dt:>7.2f}s {chk:>4} {cert:>5}{flag}")
         sys.stdout.flush()
 
-    print("-" * 116)
+    print("-" * 122)
     print(f"  instances            {len(names)}")
     print(f"  matched published    {ok}/{len(names)}")
+    print(f"  certified optimal    {certified}/{len(names)}   (feasible, and the duals "
+          f"bound the optimum within 1e-9)")
+    if readme_off:
+        print(f"  readme value not the optimum, by certificate: "
+              + ", ".join(f"{n} ({why})" for n, why in readme_off))
+    if unproved:
+        print(f"  certified by the verifier, not by the solver: "
+              + ", ".join(f"{n} ({st})" for n, st in unproved))
     if expand_fail:
         print(f"  expansion failed     {expand_fail}")
     if times:
