@@ -51,9 +51,15 @@ Sherman-Morrison, is itself numerically delicate. The augmented form is larger
 but inherits A's sparsity directly, and with the two regularisation terms below
 it is *quasi-definite* in Vanderbei's sense: a factorisation exists for **any**
 symmetric permutation, so the pivot order may be chosen for sparsity alone
-without a stability veto. That is what lets this reuse
-:func:`sovopt.numerics.lu.lu_factor` -- the same threshold-Markowitz code the
-simplex depends on -- instead of needing a separate sparse Cholesky.
+without a stability veto. That is what :mod:`sovopt.numerics.ldl` exploits:
+a symmetric LDLᵀ that takes exactly the pivots the ordering names, so the
+fill is the fill that was predicted, at half an LU's arithmetic. It is the
+default; :func:`sovopt.numerics.lu.lu_factor` -- the threshold-Markowitz
+code the simplex depends on -- stays as the fallback for the iterate where a
+1e-8 regularisation is not enough against the dynamic range of ``Θ`` and a
+pivot would have to be corrected, which pivoting handles and a fixed order
+cannot. Measured: mod010 runs 18 of 19 iterations on the LDLᵀ and hands the
+last to the LU.
 
 Regularisation is not optional here. A free variable has no finite bound, so
 its ``Θx⁻¹`` is exactly zero and the (1,1) block is singular; an equality row
@@ -101,6 +107,7 @@ import numpy as np
 from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import IDX, VAL
 from ..core.tolerances import DEFAULT, INF, Tolerances
+from ..numerics.ldl import LDLSingular, LDLSymbolic
 from ..numerics.lu import LUSingular, lu_factor
 from ..numerics.lu import _column_order
 from ..numerics.ordering import amd_order, rcm_order, symbolic_fill
@@ -158,6 +165,14 @@ class IPMParams:
     both residuals already converged -- the floor on the complementarity
     gaps, not the model, is what holds the gap there. See the loop."""
 
+    factorisation: str = "auto"
+    """``"ldl"`` -- symmetric LDLᵀ taking the pivots the ordering names, the
+    factorisation the regularised KKT's quasi-definiteness licenses (see
+    :mod:`sovopt.numerics.ldl`); ``"lu"`` -- the threshold-pivoting LU the
+    simplex shares; ``"auto"`` -- LDLᵀ, falling back to the LU race for the
+    rest of the solve if a pivot comes out exactly zero or the inertia is
+    not the ``n`` negative, ``m`` positive that Vanderbei guarantees."""
+
     ordering: str = "auto"
     """Fill-reducing ordering for the KKT: ``"auto"``, ``"amd"``, ``"rcm"``
     or ``"none"``.
@@ -201,12 +216,23 @@ class _KKT:
     computed once here and the per-iteration cost is two array writes.
     """
 
-    def __init__(self, A, ordering="auto", Q=None):
+    def __init__(self, A, ordering="auto", Q=None, factorisation="auto"):
         self.A = A
         self.Q = Q
         self.order = None
         self._ordering = ordering
         self._pending = None
+        self.factorisation = factorisation
+        self.ldl_sym = None
+        self.ldl_name = "none"
+        self.ldl_failures = 0
+        self.ldl_corrected = 0
+        self.ldl_used = 0
+        self.ldl_delta = 1e-8
+        # the sign every pivot must have: the x block is negative definite,
+        # the slack block positive definite
+        self.pivot_sign = np.concatenate([np.full(A.n, -1, dtype=np.int64),
+                                          np.full(A.m, 1, dtype=np.int64)])
         m, n = A.m, A.n
         self.m, self.n = m, n
         nk = n + m
@@ -301,7 +327,8 @@ class _KKT:
         self._choose(ordering, self.kp, self.ki, nk)
 
     def _choose(self, ordering, kp, ki, nk):
-        """Fix the ordering, or line the candidates up for the race."""
+        """Fix the ordering, or line the candidates up for the race; then
+        set up the symmetric factorisation on the predicted winner."""
         self.chosen = "none"
         if ordering == "rcm":
             self.order = rcm_order(kp, ki, nk)
@@ -325,7 +352,8 @@ class _KKT:
             scored = []
             best = None
             for name, order in cands:
-                est_order = order if order is not None else                     _column_order(kp, ki, nk, nk)
+                est_order = order if order is not None else \
+                    _column_order(kp, ki, nk, nk)
                 f = symbolic_fill(kp, ki, nk, est_order,
                                   cap=None if best is None else 4 * best)
                 if f is None:
@@ -337,10 +365,49 @@ class _KKT:
             self._pending = [(name, order) for f, name, order in scored
                              if f <= 1.5 * scored[0][0]]
 
+        # The symmetric factorisation takes exactly the pivots the ordering
+        # names, so its fill *is* the symbolic count; it goes first, on the
+        # ordering predicted best, and the LU race stays behind it as the
+        # fallback for a matrix that turns out not to be quasi-definite
+        # enough (a pivot exactly zero, or an inertia that is not n negative
+        # and m positive).
+        if self.factorisation in ("auto", "ldl"):
+            if self._pending is not None:
+                name, order = self._pending[0]
+            else:
+                name, order = self.chosen, self.order
+            perm = order if order is not None else np.arange(nk, dtype=IDX)
+            self.ldl_sym = LDLSymbolic(kp, ki, nk, perm)
+            self.ldl_name = name
+
     def factor(self, dx, ds, pivot_tol, drop):
         """Revalue the diagonals and factorise. ``dx``, ``ds`` are positive."""
         self.kx[self.diag_x] = -(self.q_diag + dx)
         self.kx[self.diag_s] = ds
+        if self.ldl_sym is not None:
+            try:
+                f = self.ldl_sym.factor(self.kx, sign=self.pivot_sign,
+                                        delta=self.ldl_delta)
+                self.ldl_corrected += f.n_corrected
+                if f.n_neg == self.n and f.n_corrected == 0:
+                    self.chosen = "ldl-" + self.ldl_name
+                    self.ldl_used += 1
+                    return f
+                # A corrected pivot means a 1e-8 regularisation was not
+                # enough against the dynamic range of Θ at this iterate: the
+                # factorisation is of a matrix perturbed where it is most
+                # sensitive, and two rounds of refinement do not recover it.
+                # Measured: mod010 with 189 corrections went NUMERICAL, misc07
+                # with 83 came back INFEASIBLE_OR_UNBOUNDED. The LU pivots its
+                # way through those iterates, so it takes over.
+                reason = (f"{f.n_corrected} pivots corrected" if f.n_corrected
+                          else f"inertia {f.n_neg} negative, expected {self.n}")
+            except LDLSingular as e:
+                reason = str(e)
+            self.ldl_failures += 1
+            if self.factorisation == "ldl":
+                raise LUSingular(-1, f"LDL refused: {reason}")
+            self.ldl_sym = None                 # the LU takes over for good
         if self._pending is not None:
             # The incumbent is factorised in full; every challenger is then
             # capped at the incumbent's factor count, so a trial that cannot
@@ -362,9 +429,11 @@ class _KKT:
                 if lu.nnz < best.nnz:
                     best, best_order, best_name = lu, cand, name
             self.order = best_order
-            self.chosen = best_name
+            self.chosen = "lu-" + best_name
             self._pending = None
             return best
+        if not self.chosen.startswith("lu-"):
+            self.chosen = "lu-" + self.chosen
         return lu_factor(self.kp, self.ki, self.kx, self.nk,
                          tol=pivot_tol, drop=drop, order=self.order)
 
@@ -584,7 +653,9 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
                        np.zeros(n), Status.OPTIMAL, 0, t0, params, "ipm")
 
     # ---- starting point ---------------------------------------------------- #
-    kkt = _KKT(A, ordering=params.ordering, Q=Q)
+    kkt = _KKT(A, ordering=params.ordering, Q=Q,
+               factorisation=params.factorisation)
+    kkt.ldl_delta = max(params.reg_primal, params.reg_dual)
     try:
         z, y, zl, zu = _initial_point(kkt, A, cz, lo, hi, fixed,
                                       has_lo, has_hi, free_lo, free_hi,
@@ -787,13 +858,17 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
     d_s = (zl - zu)[:n]
     sol = _finish(prob, work, scaled, sc, flip, x_s, y, d_s,
                   status, it, t0, params, "ipm", ordering=kkt.chosen,
-                  gap=history[-1][4] if history else None)
+                  gap=history[-1][4] if history else None,
+                  kkt_failures=(kkt.ldl_failures, kkt.ldl_corrected,
+                                kkt.ldl_used)
+                  if (kkt.ldl_failures or kkt.ldl_corrected) else 0)
     sol.log = history
     return sol
 
 
 def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
-            status, iterations, t0, params, method, ordering="n/a", gap=None):
+            status, iterations, t0, params, method, ordering="n/a", gap=None,
+            kkt_failures=0):
     """Unscale, verify absolutely, and report."""
     x = sc.unscale_primal(x_scaled)
     np.clip(x, prob.col_lb, prob.col_ub, out=x)
@@ -838,6 +913,10 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
     sol.work_units = float(iterations)
     sol.info = {"iterations": iterations, "worst_violation": worst,
                 "scaling": sc.method, "kkt_ordering": ordering}
+    if kkt_failures:
+        sol.info["ldl_failures"] = kkt_failures[0]
+        sol.info["ldl_corrected"] = kkt_failures[1]
+        sol.info["ldl_iterations"] = kkt_failures[2]
     if gap is not None:
         sol.info["gap"] = gap
     return sol.drop_objective_if_unsolved()

@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 583 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 600 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -290,7 +290,7 @@ python -m pytest tests/               # 583 tests; the 15 GPU ones skip without 
 | Refinery model templates + Haverly pooling | `models/` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
 | **Convex QP** (interior point; proximal PDHG as the GPU path) | `lp/ipm.py`, `qp/proximal.py` | done |
-| **Interior point** (Mehrotra predictor-corrector, LP and QP) | `lp/ipm.py` | done |
+| **Interior point** (Mehrotra predictor-corrector, LP and QP; LDLᵀ on AMD/RCM) | `lp/ipm.py`, `numerics/ldl.py` | done |
 | QPLIB reader and benchmark | `io/qplib.py`, `bench/qplib.py` | done |
 | **MIQP** (branch-and-bound over convex QP nodes, certified bounds) | `mip/miqp.py` | done |
 | **Non-convex (MI)QP** (McCormick reformulation → spatial B&B; αBB opt-in) | `globalopt/nonconvex_qp.py`, `globalopt/alphabb.py` | done |
@@ -1085,10 +1085,10 @@ six now have regression tests.
 - **Convex QP is limited by the factorisation's fill, not by the method.**
   `sovopt.qp` now routes to the interior point (see [QPLIB](#qplib) for why),
   which solves QPLIB's convex instances to 1e-8 in 1-14 s up to 39,204
-  variables — when the KKT factorises. `QPLIB_8559` (10,000 variables, 5,000
-  rows, a 70k-nonzero `Q`) does not: a 900 s solve completed **two
-  iterations**, with minimum degree chosen (see the bullet on it below). The
-  proximal method remains as
+  variables — when the interior point converges. `QPLIB_8559` (10,000
+  variables, 5,000 rows, a 70k-nonzero `Q`) now factorises in 7 s per
+  iteration instead of hundreds, and does 87 iterations in 600 s without
+  converging (see the bullet on it below). The proximal method remains as
   `method="proximal"` — matrix-free, so it is the GPU path and the one that
   survives a `Q` too dense to factorise — and it is the one that reaches
   ~1e-8 rather than 1e-9. Neither returns a basis, so no ranging on a QP.
@@ -1126,21 +1126,31 @@ six now have regression tests.
   solve, which is the opposite of the economics that make it pay in the
   interior point. Recorded in
   [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
-- **Minimum degree does not move the QPLIB wall, and the measurement says
-  why.** AMD was the named gap behind `QPLIB_8559` (10,000 variables, 5,000
-  rows, a 70k-nonzero `Q`), and it is built now: on that KKT its symbolic
-  fill is 87x against RCM's 334x and the natural order's 505x, so the race
-  picks it. But the LU is an *unsymmetric* factorisation with threshold
-  pivoting, and it follows a symmetric ordering only while the diagonal
-  passes the threshold. With unit diagonals it delivers 63x from AMD's order
-  in 22 s; with the interior point's actual diagonals -- `-(Q_jj + Θ)`
-  against the entries of `A` -- it pivots off the diagonal, the ordering's
-  structure is lost, and one factorisation takes hundreds of seconds: a
-  900 s solve completed two iterations. The ordering is right and the
-  factorisation cannot use it. What would move this is a symmetric LDLᵀ
-  that takes the pivots the ordering names -- legitimate here, because the
-  regularised KKT is quasi-definite (Vanderbei), so any symmetric
-  permutation factorises without pivoting -- and that is the next piece.
+- **The QPLIB wall moved from the factorisation to the iteration count.**
+  `QPLIB_8559` (10,000 variables, 5,000 rows, a 70k-nonzero `Q`) was the
+  named gap behind AMD; AMD gave the right order (87x symbolic fill against
+  RCM's 334x) and the LU could not use it, pivoting away from a diagonal of
+  `-(Q_jj + Θ)` toward the entries of `A` and taking hundreds of seconds per
+  factorisation. The symmetric LDLᵀ (`numerics/ldl.py`) takes exactly the
+  pivots the ordering names -- legitimate because the regularised KKT is
+  quasi-definite (Vanderbei), so every symmetric permutation factorises
+  without pivoting, and the count of negative pivots is a check the
+  factorisation makes on itself -- and it is the interior point's default:
+  QPLIB 8845 9.3 s -> 1.3 s, blend k=16 99 s -> 28 s, plan k=16 81 s ->
+  46 s, the MIPLIB LP set 0.094 s -> 0.068 s geomean. On 8559 a factorisation
+  is now 7 s, and the solve does **87 iterations in 600 s without
+  converging**: the dual residual bounces between 1e-1 and 1e2 while the
+  objective creeps toward the published value. The regularised factorisation
+  is a poor preconditioner for the unregularised system on that instance --
+  refinement gains 15% per round where it usually gains everything -- and
+  the known answer is to make the regularisation part of the method (a
+  proximal-point formulation, Friedlander & Orban) rather than something
+  refined away. When a 1e-8 regularisation is not enough against the
+  dynamic range of `Θ` at an iterate, a pivot would have to be corrected;
+  the LDLᵀ refuses instead and the LU takes the rest of the solve -- mod010
+  runs 18 of 19 iterations on the LDLᵀ -- because a corrected pivot was
+  measured to be worse than no factorisation: mod010 with 189 corrections
+  went `NUMERICAL`, misc07 with 83 came back `INFEASIBLE_OR_UNBOUNDED`.
 - **The interior-point method returns no basis and no certificate.** It solves
   all 11 instances to the published value at a 0.140 s shifted geomean, but it
   detects infeasibility by *stagnation* rather than by a Farkas certificate --
@@ -1217,29 +1227,29 @@ failure and not a time.
 
 | model | rows | cols | nnz | simplex | interior point | PDLP |
 |---|---|---|---|---|---|---|
-| blend k=1 | 130 | 400 | 4.0k | 0.48 s | **0.32 s** | 1.06 s |
-| blend k=2 | 260 | 1,600 | 16k | **0.51 s** | 0.35 s | 4.28 s |
-| blend k=4 | 520 | 6,400 | 64k | 2.19 s | **1.36 s** | 1.67 s |
-| blend k=8 | 1,040 | 25,600 | 256k | 7.04 s | 10.5 s | **2.16 s** |
-| blend k=16 | 2,080 | 102,400 | 1.02M | 102.5 s | 99.5 s | **3.65 s** |
+| blend k=1 | 130 | 400 | 4.0k | 0.48 s | **0.30 s** | 1.06 s |
+| blend k=2 | 260 | 1,600 | 16k | 0.51 s | **0.08 s** | 4.28 s |
+| blend k=4 | 520 | 6,400 | 64k | 2.19 s | **0.50 s** | 1.67 s |
+| blend k=8 | 1,040 | 25,600 | 256k | 7.04 s | 3.35 s | **2.16 s** |
+| blend k=16 | 2,080 | 102,400 | 1.02M | 102.5 s | 28.3 s | **3.65 s** |
 | plan k=1 | 240 | 240 | 1.4k | 0.14 s | **0.01 s** | 1.86 s |
-| plan k=2 | 960 | 960 | 9.9k | 1.76 s | **0.05 s** | 4.11 s |
-| plan k=4 | 3,840 | 3,840 | 73k | 53.2 s | **0.56 s** | 7.49 s |
-| plan k=8 | 15,360 | 15,360 | 564k | timeout | **5.57 s** | 45.6 s |
-| plan k=16 | 61,440 | 61,440 | 4.42M | timeout | **81.4 s** | timeout |
+| plan k=2 | 960 | 960 | 9.9k | 1.76 s | **0.03 s** | 4.11 s |
+| plan k=4 | 3,840 | 3,840 | 73k | 53.2 s | **0.34 s** | 7.49 s |
+| plan k=8 | 15,360 | 15,360 | 564k | timeout | **3.26 s** | 45.6 s |
+| plan k=16 | 61,440 | 61,440 | 4.42M | timeout | **46.4 s** | timeout |
 
-The interior-point column is measured with the ordering race described
-below in its current form -- three candidates ranked by symbolic fill. Its
-history is the point: before any ordering, `plan k=4` took 14.9 s and
-`plan k=8` failed outright; with RCM raced against the natural order,
-`plan k=4` 1.59 s, `plan k=8` 81.5 s, `blend k=8` 26.4 s and `plan k=16`
-*did not finish*; with AMD added and the race ranked by prediction rather
-than factorised in a fixed order, `plan k=8` 5.6 s, `blend k=8` 10.5 s, and
-`plan k=16` **solved**. On `plan k=8` the 81.5 s was almost entirely the
-natural-order incumbent being factorised in full before RCM was tried.
+The interior-point column is measured with the symmetric LDLᵀ on the
+ordering the race predicts. Its history is the point: before any ordering,
+`plan k=4` took 14.9 s and `plan k=8` failed outright; with RCM raced
+against the natural order, `plan k=4` 1.59 s, `plan k=8` 81.5 s, `blend
+k=8` 26.4 s and `plan k=16` *did not finish*; with AMD added and the race
+ranked by symbolic fill rather than factorised in a fixed order, `plan k=8`
+5.6 s, `blend k=8` 10.5 s, `plan k=16` 81 s; with the LDLᵀ taking the pivots
+the ordering names instead of the LU pivoting away from them, `plan k=8`
+3.3 s, `blend k=8` 3.4 s, `blend k=16` 28 s, `plan k=16` 46 s.
 
 **The largest LP solved and verified is 61,440 x 61,440 with 4.42M nonzeros,
-in 81 s, by the interior point; the widest is 2,080 x 102,400 with 1.02M
+in 46 s, by the interior point; the widest is 2,080 x 102,400 with 1.02M
 nonzeros in 3.65 s, by PDLP.** That reaches the "thousands" the benchmark
 names and passes a million nonzeros. It is not millions of variables.
 
@@ -1471,13 +1481,13 @@ convention exists because two published tables were found not to reproduce; see
 src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer, Netlib expander, QPLIB reader
-  numerics/   scaling, LU, Forrest–Tomlin update, AMD/RCM ordering, symbolic fill, refinement
+  numerics/   scaling, LU, LDLᵀ, Forrest–Tomlin update, AMD/RCM ordering, symbolic fill, refinement
   lp/         revised simplex, node-LP kernel, basis, interior point, crossover, first-order LP
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        583 tests including regressions for every bug above
+tests/        600 tests including regressions for every bug above
 ui/           local single-page interface
 ```

@@ -157,7 +157,7 @@ def test_ipm_reports_and_honours_its_ordering_choice():
     auto = solve_ipm(p, IPMParams(ordering="auto"))
     none = solve_ipm(p, IPMParams(ordering="none"))
     rcm = solve_ipm(p, IPMParams(ordering="rcm"))
-    assert auto.info["kkt_ordering"] in ("amd", "rcm", "none")
+    assert auto.info["kkt_ordering"].split("-")[-1] in ("amd", "rcm", "none")
     for s in (auto, none, rcm):
         assert s.status.name == "OPTIMAL"
         assert abs(s.objective - none.objective) <= 1e-6 * max(1.0, abs(none.objective))
@@ -333,7 +333,7 @@ def test_the_ipm_race_ranks_by_symbolic_fill_and_reports_the_pick():
                 col_lb=np.zeros(n), col_ub=np.ones(n), name="ord")
     s = solve_ipm(p, IPMParams(ordering="auto"))
     assert s.status.name == "OPTIMAL"
-    assert s.info["kkt_ordering"] in ("amd", "rcm", "none")
+    assert s.info["kkt_ordering"].split("-")[-1] in ("amd", "rcm", "none")
     a = solve_ipm(p, IPMParams(ordering="amd"))
-    assert a.info["kkt_ordering"] == "amd"
+    assert a.info["kkt_ordering"].endswith("amd")
     assert abs(a.objective - s.objective) <= 1e-7 * max(1.0, abs(s.objective))
