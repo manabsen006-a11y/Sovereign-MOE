@@ -188,12 +188,25 @@ class IPMParams:
     pmm_floor: float = 1e-10
     pmm_cap: float = 1e-8
 
-    refine_rounds: int = 2
-    """Iterative-refinement passes per KKT solve, against the unregularised
-    matrix. Two is enough to recover the digits regularisation costs; the
-    residual is checked, so a converged solve stops early. Under ``"pmm"``
-    one pass against the regularised matrix itself polishes the
-    factorisation's rounding and nothing more."""
+    refine_rounds: int = 8
+    """Cap on iterative-refinement passes per KKT solve, against the
+    unregularised matrix. Two always run; a further pass runs only while
+    the last one gained a factor of ten, so a well-conditioned iterate
+    stops at two or three and an ill-conditioned one (pilot: eight passes
+    of 10x each to reach working precision) gets what it needs. The gate
+    is there because more is not always better: the unregularised matrix
+    is the ill-conditioned one, and on boeing2 eight unconditional passes
+    refine toward a direction of norm 1e9 and the solve goes from 37
+    iterations to the limit. Under ``"pmm"`` one pass against the
+    regularised matrix itself polishes the factorisation's rounding and
+    nothing more."""
+
+    refine_rounds_boosted: int = 8
+    """Refinement passes when the factorisation is of a *shifted* matrix
+    (``ldl_boosts``), toward the base-regularised system: the shift is
+    larger than the base regularisation and takes more passes to refine
+    away."""
+
 
     fraction_to_boundary: float = 0.9995
     """How far along the Newton direction a step may go before it would touch
@@ -215,9 +228,38 @@ class IPMParams:
     """``"ldl"`` -- symmetric LDLᵀ taking the pivots the ordering names, the
     factorisation the regularised KKT's quasi-definiteness licenses (see
     :mod:`sovopt.numerics.ldl`); ``"lu"`` -- the threshold-pivoting LU the
-    simplex shares; ``"auto"`` -- LDLᵀ, falling back to the LU race for the
-    rest of the solve if a pivot comes out exactly zero or the inertia is
-    not the ``n`` negative, ``m`` positive that Vanderbei guarantees."""
+    simplex shares; ``"auto"`` -- LDLᵀ, retried with the blocks shifted
+    (``ldl_boosts``) and then handed to the LU race for *that iteration* if
+    a pivot comes out exactly zero, needs correcting, or the inertia is not
+    the ``n`` negative, ``m`` positive that Vanderbei guarantees; the LDLᵀ
+    is tried again at the next iterate."""
+
+    bound_scaling: bool = True
+    """Change variables by the size of their box before equilibrating; see
+    :func:`sovopt.numerics.scaling.scale_problem`. Built for QPLIB_9002."""
+
+    lu_fill_cap: float = 4.0
+    lu_min_nnz: int = 2_000_000
+    """When the LDLᵀ refuses an iterate, the LU takes over for the rest of
+    the solve if its factors stay within ``lu_fill_cap`` times the LDLᵀ's
+    fill or under ``lu_min_nnz`` nonzeros -- a factorisation that size
+    costs seconds, and a pivoted factorisation of the right matrix is the
+    accurate answer: on pilot it converges in 78 iterations where the
+    shifted factorisations stall for 200. Past both the LU is abandoned as
+    soon as it proves too big and never asked again: dfl001's LU is 10x
+    the LDLᵀ's fill, 18M nonzeros, and 147 s against 2 s."""
+
+    ldl_boosts: tuple = (1e-6, 1e-4)
+    """Uniform regularisation added to *both* diagonal blocks when the
+    LDLᵀ at the iterate's own regularisation refuses and the LU is over its
+    cap, tried in this order. A whole-block shift keeps the matrix
+    quasi-definite by construction, unlike the per-pivot correction that
+    was measured harmful (mod010 189 corrections -> NUMERICAL), and the
+    refinement toward the base-regularised system pays it back -- with
+    more passes (``refine_rounds_boosted``). Measured on dfl001: with the
+    LU taking over for good at the first refusal the solve hit the time
+    limit at 31 iterations; shifted, OPTIMAL in 49 iterations and 107 s.
+    Empty disables the shift, so the uncapped LU takes the iteration."""
 
     ordering: str = "auto"
     """Fill-reducing ordering for the KKT: ``"auto"``, ``"amd"``, ``"rcm"``
@@ -274,7 +316,15 @@ class _KKT:
         self.ldl_failures = 0
         self.ldl_corrected = 0
         self.ldl_used = 0
+        self.ldl_boosted = 0
+        self.last_boost = 0.0
+        self.refine_gain = 10.0
+        self.min_rounds = 2
         self.ldl_delta = 1e-8
+        self.ldl_boosts = (1e-6, 1e-4)      # see IPMParams.ldl_boosts
+        self.lu_fill_cap = 4.0              # see IPMParams.lu_fill_cap
+        self.lu_min_nnz = 2_000_000
+        self.lu_abandoned = False
         # the sign every pivot must have: the x block is negative definite,
         # the slack block positive definite
         self.pivot_sign = np.concatenate([np.full(A.n, -1, dtype=np.int64),
@@ -411,6 +461,7 @@ class _KKT:
             self._pending = [(name, order) for f, name, order in scored
                              if f <= 1.5 * scored[0][0]]
 
+        self.lu_name = self.chosen
         # The symmetric factorisation takes exactly the pivots the ordering
         # names, so its fill *is* the symbolic count; it goes first, on the
         # ordering predicted best, and the LU race stays behind it as the
@@ -426,34 +477,82 @@ class _KKT:
             self.ldl_sym = LDLSymbolic(kp, ki, nk, perm)
             self.ldl_name = name
 
+    def _try_ldl(self, dx, ds, boost):
+        """One symmetric factorisation with ``boost`` added to both blocks.
+
+        Returns the factor, or the reason it was refused.
+        """
+        self.kx[self.diag_x] = -(self.q_diag + dx + boost)
+        self.kx[self.diag_s] = ds + boost
+        try:
+            f = self.ldl_sym.factor(self.kx, sign=self.pivot_sign,
+                                    delta=max(self.ldl_delta, boost))
+        except LDLSingular as e:
+            return None, str(e)
+        self.ldl_corrected += f.n_corrected
+        if f.n_neg == self.n and f.n_corrected == 0:
+            return f, None
+        # A corrected pivot means the regularisation was not enough against
+        # the dynamic range of Θ at this iterate: the factorisation is of a
+        # matrix perturbed where it is most sensitive, and two rounds of
+        # refinement do not recover it. Measured: mod010 with 189
+        # corrections went NUMERICAL, misc07 with 83 came back
+        # INFEASIBLE_OR_UNBOUNDED. So it is a refusal.
+        return None, (f"{f.n_corrected} pivots corrected" if f.n_corrected
+                      else f"inertia {f.n_neg} negative, expected {self.n}")
+
     def factor(self, dx, ds, pivot_tol, drop):
-        """Revalue the diagonals and factorise. ``dx``, ``ds`` are positive."""
-        self.kx[self.diag_x] = -(self.q_diag + dx)
-        self.kx[self.diag_s] = ds
+        """Revalue the diagonals and factorise. ``dx``, ``ds`` are positive.
+
+        The LDLᵀ first. When it refuses -- a pivot on the wrong side, or
+        too small to divide by -- the LU takes over for the rest of the
+        solve *if it is affordable*: it is tried with a cap on its fill
+        (``lu_fill_cap`` times the LDLᵀ's, or ``lu_min_nnz``, whichever is
+        larger) and abandoned as soon as it proves bigger. A pivoted
+        factorisation of the right matrix is the accurate answer, and on
+        pilot it is what converges (78 iterations) where the shifted
+        factorisations below stall for 200. Past the cap the LU is not
+        asked again: both blocks are shifted by each of ``ldl_boosts`` in
+        turn and the LDLᵀ retried -- dfl001, where the LU is 147 s against
+        the LDLᵀ's 2 s -- and the uncapped LU is the last resort for an
+        iterate every shift refuses.
+        """
+        self.last_boost = 0.0
         if self.ldl_sym is not None:
-            try:
-                f = self.ldl_sym.factor(self.kx, sign=self.pivot_sign,
-                                        delta=self.ldl_delta)
-                self.ldl_corrected += f.n_corrected
-                if f.n_neg == self.n and f.n_corrected == 0:
+            f, reason = self._try_ldl(dx, ds, 0.0)
+            if f is not None:
+                self.chosen = "ldl-" + self.ldl_name
+                self.ldl_used += 1
+                return f
+            self.ldl_failures += 1
+            if self.factorisation == "auto" and not self.lu_abandoned:
+                cap = max(int(self.lu_fill_cap * (self.ldl_sym.lnz + self.nk)),
+                          int(self.lu_min_nnz))
+                try:
+                    lu = self._lu(dx, ds, pivot_tol, drop, max_nnz=cap)
+                except LUSingular:
+                    self.lu_abandoned = True    # too big, or singular: shift
+                else:
+                    self.ldl_sym = None         # the LU takes over for good
+                    return lu
+            for boost in self.ldl_boosts:
+                f, reason = self._try_ldl(dx, ds, boost)
+                if f is not None:
+                    self.ldl_boosted += 1
+                    self.last_boost = boost
                     self.chosen = "ldl-" + self.ldl_name
                     self.ldl_used += 1
                     return f
-                # A corrected pivot means a 1e-8 regularisation was not
-                # enough against the dynamic range of Θ at this iterate: the
-                # factorisation is of a matrix perturbed where it is most
-                # sensitive, and two rounds of refinement do not recover it.
-                # Measured: mod010 with 189 corrections went NUMERICAL, misc07
-                # with 83 came back INFEASIBLE_OR_UNBOUNDED. The LU pivots its
-                # way through those iterates, so it takes over.
-                reason = (f"{f.n_corrected} pivots corrected" if f.n_corrected
-                          else f"inertia {f.n_neg} negative, expected {self.n}")
-            except LDLSingular as e:
-                reason = str(e)
-            self.ldl_failures += 1
             if self.factorisation == "ldl":
                 raise LUSingular(-1, f"LDL refused: {reason}")
-            self.ldl_sym = None                 # the LU takes over for good
+        return self._lu(dx, ds, pivot_tol, drop)
+
+    def _lu(self, dx, ds, pivot_tol, drop, max_nnz=None):
+        """The threshold-pivoting LU on the raced ordering; ``max_nnz`` makes
+        a factorisation that would exceed it raise ``LUSingular`` instead of
+        running to completion."""
+        self.kx[self.diag_x] = -(self.q_diag + dx)
+        self.kx[self.diag_s] = ds
         if self._pending is not None:
             # The incumbent is factorised in full; every challenger is then
             # capped at the incumbent's factor count, so a trial that cannot
@@ -463,7 +562,8 @@ class _KKT:
             # choice was right and paying for it was not.
             name0, order0 = self._pending[0]
             best = lu_factor(self.kp, self.ki, self.kx, self.nk,
-                             tol=pivot_tol, drop=drop, order=order0)
+                             tol=pivot_tol, drop=drop, order=order0,
+                             max_nnz=max_nnz)
             best_order, best_name = order0, name0
             for name, cand in self._pending[1:]:
                 try:
@@ -475,13 +575,14 @@ class _KKT:
                 if lu.nnz < best.nnz:
                     best, best_order, best_name = lu, cand, name
             self.order = best_order
+            self.lu_name = best_name
             self.chosen = "lu-" + best_name
             self._pending = None
             return best
-        if not self.chosen.startswith("lu-"):
-            self.chosen = "lu-" + self.chosen
+        self.chosen = "lu-" + self.lu_name
         return lu_factor(self.kp, self.ki, self.kx, self.nk,
-                         tol=pivot_tol, drop=drop, order=self.order)
+                         tol=pivot_tol, drop=drop, order=self.order,
+                         max_nnz=max_nnz)
 
     def matvec(self, dx_diag, ds_diag, v):
         """``K v`` for the *unregularised* K, used by iterative refinement."""
@@ -495,15 +596,24 @@ class _KKT:
         return out
 
     def solve(self, lu, dx_diag, ds_diag, rhs, rounds):
-        """Solve ``K u = rhs`` and refine against the unregularised ``K``."""
+        """Solve ``K u = rhs`` and refine against the unregularised ``K``.
+
+        A converged solve -- residual at working precision -- stops early;
+        otherwise every pass runs. Stopping on a pass that fails to shrink
+        the max-norm residual was tried and loses pilot: the max-norm sits
+        on components that hardly move while the ones that matter converge.
+        """
         u = lu.ftran(rhs.copy())
         if rounds <= 0:
             return u
         scale = max(1.0, float(np.abs(rhs).max(initial=0.0)))
-        for _ in range(rounds):
+        prev = np.inf
+        for k in range(rounds):
             resid = rhs - self.matvec(dx_diag, ds_diag, u)
-            if float(np.abs(resid).max(initial=0.0)) <= 1e-14 * scale:
+            r = float(np.abs(resid).max(initial=0.0)) / scale
+            if r <= 1e-14 or (k >= self.min_rounds and r * self.refine_gain > prev):
                 break
+            prev = r
             u += lu.ftran(resid)
         return u
 
@@ -675,7 +785,8 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
             work.Q.rx = -work.Q.rx
         work.sense = ObjSense.MINIMISE
 
-    scaled, sc = scale_problem(work, method="ruiz")
+    scaled, sc = scale_problem(work, method="ruiz",
+                               bound_scaling=params.bound_scaling)
     A = scaled.A
     Q = scaled.Q if (scaled.Q is not None and scaled.Q.nnz > 0) else None
     m, n = A.m, A.n
@@ -693,7 +804,14 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
 
     cz = np.zeros(nk, dtype=VAL)
     cz[:n] = scaled.c
+    # The dual residual is judged against the gradient's scale, which for
+    # a quadratic is c + Qx and not c alone: with c = 0 and a Q diagonal
+    # spanning 1e-11..2 (QPLIB_9002, after scaling 1e-5..1e5) a residual
+    # of 1e-6 is machine precision for the terms being cancelled, and
+    # measured against ``1 + 0`` it never passes.
     c_norm = 1.0 + float(np.abs(cz).max(initial=0.0))
+    if Q is not None:
+        c_norm += float(np.abs(Q.diagonal()).max(initial=0.0))
 
     if ncomp == 0:
         # Every variable pinned: there is nothing for a barrier to do.
@@ -705,6 +823,9 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
     kkt = _KKT(A, ordering=params.ordering, Q=Q,
                factorisation=params.factorisation)
     kkt.ldl_delta = max(params.reg_primal, params.reg_dual)
+    kkt.ldl_boosts = tuple(params.ldl_boosts)
+    kkt.lu_fill_cap = params.lu_fill_cap
+    kkt.lu_min_nnz = params.lu_min_nnz
     try:
         z, y, zl, zu = _initial_point(kkt, A, cz, lo, hi, fixed,
                                       has_lo, has_hi, free_lo, free_hi,
@@ -726,7 +847,7 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
     best_pres = np.inf
     stall = 0
     mu_stall = 0
-    mu_prev = np.inf
+    mu_best = np.inf
 
     for it in range(1, params.max_iter + 1):
         if time.perf_counter() - t0 > params.time_limit:
@@ -786,8 +907,13 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
         # QPLIB_8938: 140 iterations of mu = 4.872e-08 exactly. A gap that has
         # stopped moving with the residuals converged is the accuracy this
         # arithmetic can reach, and it is reported as such in info["gap"].
-        mu_stall = mu_stall + 1 if mu >= mu_prev * (1.0 - 1e-3) else 0
-        mu_prev = mu
+        # Stalled means no 10% improvement on the best mu seen: dfl001's mu
+        # wanders between 3.1e-11 and 3.3e-11 with the gap at 5e-8, and a
+        # step-to-step test that resets on every 0.1% dip never fires.
+        if mu < mu_best * 0.9:
+            mu_best, mu_stall = mu, 0
+        else:
+            mu_stall += 1
         if (mu_stall >= 5 and pres <= params.eps_p and dres <= params.eps_d
                 and gap <= params.gap_stall_accept):
             status = Status.OPTIMAL
@@ -860,6 +986,12 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
                 # the regularised system is the system: polish the
                 # factorisation's rounding against it and take the step
                 u = kkt.solve(lu, dxd, dsd, rhs, min(params.refine_rounds, 1))
+            elif kkt.last_boost:
+                # A shifted factorisation is refined toward the system a
+                # base iterate solves -- the 1e-8-regularised one -- not
+                # toward the unregularised matrix, which may be singular;
+                # the shift is the only thing being refined away.
+                u = kkt.solve(lu, dxd, dsd, rhs, params.refine_rounds_boosted)
             else:
                 u = kkt.solve(lu, dxd - rho, dsd - delta, rhs,
                               params.refine_rounds)
@@ -920,7 +1052,7 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
                   status, it, t0, params, "ipm", ordering=kkt.chosen,
                   gap=history[-1][4] if history else None,
                   kkt_failures=(kkt.ldl_failures, kkt.ldl_corrected,
-                                kkt.ldl_used)
+                                kkt.ldl_used, kkt.ldl_boosted)
                   if (kkt.ldl_failures or kkt.ldl_corrected) else 0)
     sol.log = history
     return sol
@@ -972,11 +1104,13 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
     sol.dual_bound = obj
     sol.work_units = float(iterations)
     sol.info = {"iterations": iterations, "worst_violation": worst,
-                "scaling": sc.method, "kkt_ordering": ordering}
+                "scaling": sc.method, "scaling_unit": sc.unit,
+                "kkt_ordering": ordering}
     if kkt_failures:
         sol.info["ldl_failures"] = kkt_failures[0]
         sol.info["ldl_corrected"] = kkt_failures[1]
         sol.info["ldl_iterations"] = kkt_failures[2]
+        sol.info["ldl_boosted"] = kkt_failures[3]
     if gap is not None:
         sol.info["gap"] = gap
     return sol.drop_objective_if_unsolved()

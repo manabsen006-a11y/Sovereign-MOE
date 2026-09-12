@@ -29,6 +29,20 @@ Three heuristics, in increasing cost:
     the variables whose rounding is least certain. Costs one LP per round, so it
     runs only where the cheaper two have failed.
 
+``dive``
+    Depth-first descent through the LP: fix one fractional variable, propagate,
+    re-solve the relaxation from the parent's basis, repeat until the LP point
+    is integral. A dual simplex re-solve after one fixing is a handful of
+    pivots, so a dive of several hundred fixings costs seconds, and the LP
+    decides the rest of the variables at each step instead of a rounding
+    rule. Two selection rules: *fractional* (the variable nearest an integer,
+    rounded toward it) and *vector length* (the cheapest rounding per row the
+    variable touches, which on set-partitioning rows fixes the row for the
+    least objective). A limited backtrack budget turns a dead end into the
+    other rounding at the most recent decision. This is what found the first
+    incumbent on the 1,536-binary scheduling model, where rounding,
+    fix-and-propagate and the pump had all failed.
+
 References
 ----------
 Luteberget & Sandvik, "Feasibility jump: an LP-free Lagrangian MIP heuristic",
@@ -42,6 +56,11 @@ Berthold, "RENS -- the optimal rounding", Math. Prog. Computation 6 (2014)
   33-54.
 Danna, Rothberg & Le Pape, "Exploring relaxation induced neighborhoods to
   improve MIP solutions", Math. Prog. 102 (2005) 71-90 -- RINS.
+Berthold, "Primal Heuristics for Mixed Integer Programs", Diploma thesis, TU
+  Berlin (2006), ch. 3 -- diving heuristics: fractional, coefficient,
+  vector-length diving, and the one-level backtrack.
+Achterberg, "Constraint Integer Programming", PhD thesis, TU Berlin (2007),
+  ch. 9 -- diving inside a branch-and-bound with propagation.
 """
 
 from __future__ import annotations
@@ -54,7 +73,7 @@ from ..core.tolerances import INF
 from .propagate import propagate
 
 __all__ = ["feasibility_jump", "fix_and_propagate", "feasibility_pump",
-           "HeuristicStats"]
+           "dive", "HeuristicStats"]
 
 
 class HeuristicStats:
@@ -357,3 +376,131 @@ def feasibility_pump(prob, int_mask, lo, hi, lp_solve, x_lp=None,
             return None
 
     return None
+
+
+# --------------------------------------------------------------------------- #
+# diving                                                                       #
+# --------------------------------------------------------------------------- #
+
+
+def dive(prob, int_mask, lo, hi, node_solve, x_lp, basis=None,
+         rule: str = "vectorlength", max_lp: int | None = None,
+         max_backtracks: int = 20, deadline: float | None = None,
+         feas_tol: float = 1e-9, int_tol: float = 1e-6):
+    """LP diving: fix, propagate, re-solve, until the relaxation is integral.
+
+    ``node_solve(lo, hi, warm_basis)`` must return an object with ``status``,
+    ``x`` and ``basis`` -- :meth:`sovopt.lp.simplex.NodeSolver.solve` is the
+    intended one. ``rule`` is ``"fractional"`` or ``"vectorlength"``. Returns
+    a point feasible for ``prob`` or None; the search is bounded by
+    ``max_lp`` relaxations (default: twice the integer count), by
+    ``max_backtracks`` returns to the other rounding of an earlier decision,
+    and by ``deadline`` (``time.perf_counter()`` units).
+
+    A dead end -- both roundings of the chosen variable infeasible after
+    propagation or in the LP -- backtracks to the most recent decision whose
+    other rounding is untried, restoring that decision's bounds and basis.
+    That is a depth-first search with a budget, which is what a dive is; the
+    budget keeps it a heuristic.
+    """
+    import time as _time
+
+    from ..core.problem import Status
+
+    A = prob.A
+    idx = np.flatnonzero(int_mask)
+    if idx.size == 0 or x_lp is None:
+        return None
+    if max_lp is None:
+        max_lp = 2 * int(idx.size)
+
+    if rule == "vectorlength":
+        col_nnz = np.diff(A.cp).astype(VAL)
+        c = prob.c
+    elif rule != "fractional":
+        raise ValueError(f"unknown diving rule {rule!r}")
+
+    def _choose(x, fr, cand):
+        if rule == "fractional":
+            k = int(np.argmin(fr))
+            j = int(cand[k])
+            return j, bool(x[j] - np.floor(x[j]) > 0.5)
+        fd = x[cand] - np.floor(x[cand])
+        up_cost = c[cand] * (1.0 - fd)
+        dn_cost = -c[cand] * fd
+        up = up_cost <= dn_cost
+        score = np.where(up, up_cost, dn_cost) / (col_nnz[cand] + 1.0)
+        k = int(np.argmin(score))
+        return int(cand[k]), bool(up[k])
+
+    def _place(l, h, x, basis):
+        """Every integer fixed: let one LP place the continuous part."""
+        xx = x.copy()
+        xx[idx] = np.round(xx[idx])
+        l2, h2 = l.copy(), h.copy()
+        l2[idx] = h2[idx] = np.clip(xx[idx], l[idx], h[idx])
+        r = node_solve(l2, h2, basis)
+        if r.status == Status.OPTIMAL and r.x is not None:
+            xx = r.x.copy()
+            xx[idx] = np.round(xx[idx])
+        rv, bv, iv = prob.violation(xx)
+        if max(rv, bv) > 1e-6 or iv > int_tol:
+            return None
+        return xx
+
+    l = np.array(lo, dtype=VAL, copy=True)
+    h = np.array(hi, dtype=VAL, copy=True)
+    x = np.asarray(x_lp, dtype=VAL)
+    # the decision stack: (bounds before, basis before, j, value, alternative)
+    stack: list = []
+    n_lp = 0
+    backtracks = 0
+
+    while True:
+        if deadline is not None and _time.perf_counter() > deadline:
+            return None
+        fr = np.abs(x[idx] - np.round(x[idx]))
+        cand = idx[fr > int_tol]
+        if cand.size == 0:
+            return _place(l, h, x, basis)
+        j, up = _choose(x, fr[fr > int_tol], cand)
+        first = np.ceil(x[j]) if up else np.floor(x[j])
+        alt = np.floor(x[j]) if up else np.ceil(x[j])
+        first = float(np.clip(first, l[j], h[j]))
+        alt = float(np.clip(alt, l[j], h[j]))
+        stack.append((l.copy(), h.copy(), basis, j, first,
+                      alt if alt != first else None))
+
+        while True:
+            l0, h0, b0, j, val, other = stack[-1]
+            l, h = l0.copy(), h0.copy()
+            l[j] = h[j] = val
+            res = propagate(A, prob.row_lb, prob.row_ub, l, h, int_mask,
+                            max_rounds=3, feas_tol=feas_tol, inplace=True)
+            ok = False
+            if not res.infeasible:
+                if n_lp >= max_lp:
+                    return None
+                r = node_solve(l, h, b0)
+                n_lp += 1
+                if r.status == Status.OPTIMAL and r.x is not None:
+                    x, basis = r.x, r.basis
+                    ok = True
+            if ok:
+                break
+            # this rounding failed: the other one at this decision, else
+            # unwind to the nearest decision with an alternative left
+            if other is not None:
+                stack[-1] = (l0, h0, b0, j, other, None)
+                continue
+            backtracks += 1
+            if backtracks > max_backtracks:
+                return None
+            stack.pop()
+            while stack and stack[-1][5] is None:
+                stack.pop()
+            if not stack:
+                return None
+            l0, h0, b0, j, val, other = stack[-1]
+            stack[-1] = (l0, h0, b0, j, other, None)
+

@@ -53,8 +53,8 @@ from .bnr import BNRConfig, BNREngine
 from .conflict import ConflictAnalyzer
 from .cuts import (Cut, CutPool, append_cuts, generate_cover,
                    generate_gomory, generate_mir)
-from .heuristics import (HeuristicStats, feasibility_jump, feasibility_pump,
-                         fix_and_propagate)
+from .heuristics import (HeuristicStats, dive, feasibility_jump,
+                         feasibility_pump, fix_and_propagate)
 from .propagate import propagate
 from .symmetry import breaking_constraints, detect_symmetry
 
@@ -225,6 +225,24 @@ class MIPParams:
 
     symmetry_time: float = 2.0
     fj_iterations: int = 30_000
+
+    dive_backtracks: int = 100
+    """Backtracks a dive may spend before giving up. Twenty was not enough
+    on 10teams, where the vector-length dive dead-ends repeatedly and finds
+    968 (optimum 924) after 100 in 17 s -- the first incumbent any heuristic
+    has produced on that model; a thousand finds nothing more."""
+
+    heuristic_time_frac: float = 0.5
+    """Share of the time limit the primal heuristics may spend in total
+    *while no incumbent exists*, root and restarts together; once there is
+    one, the dives keep running as improvement heuristics every
+    ``heuristic_restart`` nodes within the cut/heuristic share
+    ``cut_time_frac``, a fiftieth of the limit per round. A tree without
+    an incumbent prunes nothing, so its nodes are worth less than a dive
+    that could end that: 10teams spent 60 s on 5,400 nodes and found no
+    point, while the vector-length dive finds one in 17 s and was being cut
+    off at 8. Each restart round without an incumbent gets a tenth of the
+    limit."""
     device: str = "auto"
 
     verbose: bool = False
@@ -589,6 +607,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             root_bound = rr.objective / sc.obj
             root_x = rr.x
             root_basis = rr.basis
+        precut = (root_x, root_basis)
 
         if params.cut_rounds > 0:
             before = root_bound
@@ -714,13 +733,14 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     heur = HeuristicStats()
     last_heuristic = 0
     heur_spent = 0.0
-    heur_budget = params.cut_time_frac * params.time_limit
-    """Total wall time the heuristics may consume, root and restarts together.
+    heur_budget = params.heuristic_time_frac * params.time_limit
+    """Total wall time the heuristics may consume while no incumbent exists,
+    root and restarts together.
 
-    Needed because none of them accept a deadline: they stop on iteration
-    counts, so a call cannot be cut short once entered and the between-trial
-    check cannot bound one that is already running. Without this cap the
-    restarts turned a 600 s limit into a 5,445 s run."""
+    Needed because most of them do not accept a deadline: they stop on
+    iteration counts, so a call cannot be cut short once entered and the
+    between-trial check cannot bound one that is already running. Without
+    this cap the restarts turned a 600 s limit into a 5,445 s run."""
     if params.heuristics:
         def _lp_at(l, h, obj=None):
             saved = None
@@ -736,8 +756,14 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                     scaled.c = saved
                     node_lp.S.B.cost[:n] = saved
 
-        def _heuristic_round(x0, hl, hh, deadline, cheap_only=False):
+        def _heuristic_round(x0, hl, hh, deadline, cheap_only=False,
+                             basis0=None, improve=False):
             """Run the primal heuristics from one point and box.
+
+            ``improve``: there is an incumbent, and the round is looking
+            for a better one -- the dives only, from a node whose bound is
+            below it, and a point that does not beat the incumbent is not
+            worth the time.
 
             Callable more than once, which it needs to be. Run only at the
             root, all three failed on dcmulti -- ``0/1`` apiece -- and the
@@ -750,7 +776,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             """
             nonlocal best_x, incumbent, heur_spent
             _h0 = time.perf_counter()
-            trials = [
+            trials = [] if improve else [
                 ("fix_and_propagate",
                  lambda: fix_and_propagate(scaled, x0, int_mask, hl, hh,
                                            tol.primal_feas,
@@ -760,34 +786,63 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                  lambda: feasibility_jump(scaled, int_mask, hl, hh, x0=x0,
                                           max_iter=params.fj_iterations)),
             ]
-            # The pump costs up to 40 LP solves and has no internal time
-            # bound, so it runs at the root only. None of these take a
-            # deadline -- they stop on iteration counts -- which means one call
+            # The dives re-solve the node LP from the parent's basis after
+            # each fixing, so they cost a few milliseconds per step and take
+            # the deadline; a restart round tries the cheaper fractional one
+            # first, the root the vector-length one (more pivots per fixing,
+            # and the one that finds 10teams). The pump costs
+            # up to 40 LP solves and has no internal time bound, so it runs
+            # at the root only. Of these only the dives take a deadline --
+            # the rest stop on iteration counts -- which means one call
             # cannot be cut short, and that is what makes the budget below
             # necessary rather than tidy.
-            if not use_bnr and not cheap_only:
+            if not use_bnr:
+                for rule in (("vectorlength", "fractional") if not cheap_only
+                             else ("fractional", "vectorlength")):
+                    trials.append((f"dive[{rule}]", lambda rule=rule: dive(
+                        scaled, int_mask, hl, hh, node_lp.solve, x0, basis0,
+                        rule=rule, max_backtracks=params.dive_backtracks,
+                        deadline=deadline, feas_tol=tol.primal_feas,
+                        int_tol=tol.integrality)))
+            if not use_bnr and not cheap_only and not improve:
                 trials.append(("feasibility_pump",
                                lambda: feasibility_pump(scaled, int_mask, hl, hh,
                                                         _lp_at, x_lp=x0)))
             try:
                 for name, fn in trials:
-                    if np.isfinite(incumbent):
+                    if np.isfinite(incumbent) and not improve:
                         break
                     if time.perf_counter() > deadline:
                         break
+                    _t1 = time.perf_counter()
                     try:
                         cand = fn()
                     except Exception:
                         cand = None
                     got = _accept(cand) if cand is not None else None
                     heur.record(name, got is not None)
+                    if params.verbose:
+                        print(f"  heuristic {name:20s} "
+                              f"{'obj %.6g' % got[1] if got else 'nothing':>16s}"
+                              f"  {time.perf_counter() - _t1:6.2f}s"
+                              f"  budget left {deadline - time.perf_counter():6.1f}s")
                     if got is not None and got[1] < incumbent:
                         best_x, incumbent = got[0], got[1]
             finally:
                 heur_spent += time.perf_counter() - _h0
 
-        _heuristic_round(root_x, lo0, hi0,
-                         t0 + params.cut_time_frac * params.time_limit)
+        root_deadline = t0 + max(params.cut_time_frac,
+                                 params.heuristic_time_frac) * params.time_limit
+        _heuristic_round(root_x, lo0, hi0, root_deadline, basis0=root_basis)
+        # A dive's fate hangs on the vertex it starts from: on 10teams the
+        # vector-length dive finds 968 from the uncut root vertex and
+        # nothing from the vertex one Gomory cut later. The cuts only
+        # removed a fractional vertex of the same polytope, so the uncut one
+        # is a second, legitimate start.
+        if (not np.isfinite(incumbent) and not use_bnr and n_cuts
+                and precut[0] is not root_x):
+            _heuristic_round(precut[0], lo0, hi0, root_deadline,
+                             cheap_only=True, basis0=precut[1])
 
     while frontier:
         now = time.perf_counter()
@@ -983,17 +1038,30 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             # again, from this node's relaxation point and box rather than the
             # root's. Cheap rounding has now failed on hundreds of vertices, so
             # the expensive ones have earned another attempt.
-            if (params.heuristics and not np.isfinite(incumbent)
-                    and params.heuristic_restart
-                    and heur_spent < heur_budget
+            #
+            # With an incumbent the dives still run, on a smaller budget, as
+            # improvement heuristics: a dive from a node whose bound sits
+            # below the incumbent lands on a point near that bound if it
+            # lands at all. gt2 is why -- on one path through it the bound
+            # reaches the optimum at the root and the tree wanders 43,000
+            # degenerate nodes without ever finding the point that attains
+            # it, holding an incumbent 40% above; a dive from any of those
+            # nodes finds it.
+            if (params.heuristics and params.heuristic_restart
                     and nodes - last_heuristic >= params.heuristic_restart):
-                last_heuristic = nodes
-                _heuristic_round(
-                    xv, l, h,
-                    min(t0 + params.time_limit,
-                        time.perf_counter()
-                        + max(1.0, min(5.0, 0.02 * params.time_limit))),
-                    cheap_only=True)
+                have = np.isfinite(incumbent)
+                budget = (params.cut_time_frac if have
+                          else params.heuristic_time_frac) * params.time_limit
+                if heur_spent < budget:
+                    last_heuristic = nodes
+                    _heuristic_round(
+                        xv, l, h,
+                        min(t0 + params.time_limit,
+                            time.perf_counter() + (budget - heur_spent),
+                            time.perf_counter()
+                            + max(1.0, (0.02 if have else 0.1) * params.time_limit)),
+                        cheap_only=True, improve=have,
+                        basis0=warm_cache.get(nd._order) if not use_bnr else None)
 
             # ---- branch ---------------------------------------------------
             idx = np.flatnonzero(int_mask)

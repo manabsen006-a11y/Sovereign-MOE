@@ -227,6 +227,7 @@ versions and whether the CUDA kernels actually compiled, which is the fact a
 solve depends on.
 
 ```bash
+python -m sovopt.cli warmup                       # once on a fresh machine: compile every kernel
 python -m sovopt.cli demo                         # the whole story, end to end
 python -m sovopt.cli devices                      # what hardware is usable
 python -m sovopt.cli info   model.lp              # stats + numerical health
@@ -240,7 +241,10 @@ Models are read from MPS or CPLEX LP, plain or `.gz`/`.bz2`/`.xz`; the reader is
 chosen by extension. A `QUADOBJ` section is parsed and, if the Hessian is
 positive semi-definite, solved as a convex QP.
 
-Presenting this? [`docs/DEMO.md`](docs/DEMO.md) is the runbook.
+Presenting this? [`docs/DEMO.md`](docs/DEMO.md) is the runbook -- and run
+`warmup` first. Numba compiles each kernel on its first call and caches the
+machine code next to the source, so on a fresh checkout the first solve of
+each kind carries the compile: about 50 s cold, about 5 s once cached.
 
 ```bash
 python -m bench.fetch --set small     # download MIPLIB instances
@@ -252,7 +256,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 607 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 631 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -286,7 +290,7 @@ python -m pytest tests/               # 607 tests; the 15 GPU ones skip without 
 | Conflict analysis (LP-infeasibility clauses) | `mip/conflict.py` | done |
 | Sensitivity: shadow prices, cost and RHS ranging | `lp/sensitivity.py` | done |
 | **Global bilinear pooling** (McCormick + spatial B&B + OBBT) | `globalopt/` | done |
-| Feasibility Jump, fix-and-propagate, feasibility pump | `mip/heuristics.py` | done |
+| Feasibility Jump, fix-and-propagate, feasibility pump, diving (fractional, vector length) | `mip/heuristics.py` | done |
 | Refinery model templates + Haverly pooling | `models/` | done |
 | CLI, web UI, verifier, harness | `cli.py`, `ui/`, `bench/` | done |
 | **Convex QP** (interior point; proximal PDHG as the GPU path) | `lp/ipm.py`, `qp/proximal.py` | done |
@@ -940,6 +944,19 @@ six now have regression tests.
    be closed leaves the status at `NODE_LIMIT` with the certified gap that
    remains, rather than `OPTIMAL`.
 
+7. **The web interface reported a 19x GPU speed-up on a CPU simplex.** A
+   small LP routes to the simplex whatever device is asked for, so the
+   page's "GPU" run of the blending template was the CPU simplex a second
+   time -- and the second time was faster because the first had paid the
+   JIT compile. The comparison card then said "GPU 19.05x faster". Found the
+   first time the page was driven end to end in a browser, which had not
+   happened before this commit; `tests/test_ui.py` now runs the app
+   in-process. The GPU run of an LP is PDLP, the engine that actually runs
+   there, and the card names the engine on each side and declines to
+   compare two runs of the same one. Measured after the fix, on the same
+   40x48 model: CPU simplex 0.45 s, GPU PDLP 2.5 s, "CPU 5.7x faster --
+   this model is too small to fill the GPU", which is the truth.
+
 ---
 
 ## Known limits
@@ -1071,9 +1088,40 @@ six now have regression tests.
   | 10teams | 230 | 2025 | 264 | 120 / 1750 | **1 of 40** |
 
   qnet1 therefore runs its entire tree on the uncut relaxation -- root gain
-  0.0 -- and finishes 28.7% off. 10teams never finds a feasible point at all,
-  with every heuristic failing (`fix_and_propagate` 0/2, `feasibility_jump`
-  0/2, `feasibility_pump` 0/1) across 703 nodes.
+  0.0 -- and finished 28.7% off; with the dives running as improvement
+  heuristics through the tree it finishes 13.2% off, on the same bound.
+  10teams used to find no feasible point at
+  all, with every heuristic failing (`fix_and_propagate` 0/2,
+  `feasibility_jump` 0/2, `feasibility_pump` 0/1) across 703 nodes; see the
+  diving bullet below for what changed.
+- **Primal heuristics were the MILP wall, and diving moved it.** The
+  1,536-binary scheduling model and 10teams had the same failure: rounding,
+  fix-and-propagate, feasibility jump and the pump all returned nothing, and
+  a tree with no incumbent prunes nothing. `mip/heuristics.py` now dives:
+  fix one fractional variable, propagate, re-solve the node LP from the
+  parent's basis (a handful of dual pivots), repeat until the relaxation is
+  integral, with a backtrack budget that turns a dead end into the other
+  rounding at the most recent decision. Two selection rules, *fractional*
+  and *vector length*. The heuristics' time budget while there is no
+  incumbent is now half the limit rather than a quarter, because nodes
+  searched without one are worth less than a dive that could end that.
+  Measured, 120 s:
+
+  | model | before | after |
+  |---|---|---|
+  | sched k=8 (1,536 binaries) | no incumbent | **1,726,631, gap 1.2%**, verified |
+  | sched k=16 (6,144 binaries, 18,400 rows) | not attempted | **7,170,956, gap 0.4%**, verified |
+  | sched k=2 | OPTIMAL, 45.6 s | OPTIMAL, 16.9 s |
+  | dcmulti, misc07, mas76, qnet1 | incumbents from the tree | dives find one at the root in 0.1-1 s; qnet1's final incumbent 21760 -> 18152 (optimum 16030) with dives through the tree |
+  | 10teams | no incumbent | 968-980 (optimum 924) in two runs of five, none in the other three |
+
+  10teams is the honest limit: its vector-length dive dead-ends repeatedly,
+  needs a hundred backtracks and 13-21 s, and whether it lands depends on
+  the vertex it starts from -- from the uncut root vertex it finds 968,
+  from the vertex one Gomory cut later nothing, so the root round now
+  tries both, and at a 120 s limit it produced an incumbent in two of five
+  runs. The pump, which the literature reports finding 10teams, does not
+  here in 40 rounds.
 
   **This is not a mis-tuned constant.** qnet1's *sparsest* candidate touches
   712 of 1541 columns, so it fails even the looser `0.4n` branch of the cap at
@@ -1157,12 +1205,57 @@ six now have regression tests.
   iterations and 104 s at 4e-12. Both are recorded in
   [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md). When a 1e-8 regularisation is not enough against the
   dynamic range of `Θ` at an iterate, a pivot would have to be corrected;
-  the LDLᵀ refuses instead and the LU takes the rest of the solve -- mod010
-  runs 18 of 19 iterations on the LDLᵀ -- because a corrected pivot was
-  measured to be worse than no factorisation: mod010 with 189 corrections
-  went `NUMERICAL`, misc07 with 83 came back `INFEASIBLE_OR_UNBOUNDED`.
+  the LDLᵀ refuses instead, because a corrected pivot was measured to be
+  worse than no factorisation (mod010 with 189 corrections went
+  `NUMERICAL`, misc07 with 83 came back `INFEASIBLE_OR_UNBOUNDED`). What
+  happens next depends on what the LU costs. **dfl001 was the case where
+  the old rule -- the LU takes the rest of the solve -- was the wall**: its
+  LDLᵀ is 2 s per iteration on AMD's order and the pivoting LU on the same
+  order is 147 s, so the first refusal at iteration 27 handed the remaining
+  twenty-odd iterations to a factorisation seventy times slower, and the
+  solve hit 600 s. Now the LU is tried with a cap on its fill (4x the
+  LDLᵀ's, or 2M nonzeros) and abandoned as soon as it proves bigger; past
+  the cap both diagonal blocks are shifted uniformly (1e-6, then 1e-4 --
+  a whole-block shift keeps the matrix quasi-definite, unlike a per-pivot
+  correction) and the LDLᵀ retried, with the shift refined away toward
+  the base-regularised system. **dfl001 solves: OPTIMAL in 49-53
+  iterations and 107 s** (the time varies with what else the machine is
+  doing), to the published 1.1266396047e7 at 1e-9. On mod010, misc07,
+  pilot the LU is small and still takes over, as before. Refinement is
+  also no longer a fixed two passes: it continues while a pass gains a
+  factor of ten, up to eight, which pilot's ill-conditioned iterates need
+  (eight passes of 10x to reach working precision) and boeing2 must not
+  have unconditionally (eight passes refine toward a direction of norm
+  1e9 and the solve goes from 37 iterations to the limit).
+- **Variables have a unit now, and it is the largest single change to the
+  interior point's reach on Netlib.** Matrix equilibration sees
+  coefficients and not bounds. `QPLIB_9002` has bounds of 1e11 on every
+  column, so its iterates sat at 1e11 against a complementarity floor of
+  1e-12 -- the gap `x - l` was rounding noise, the barrier could not
+  approach the bounds, and the interior point returned 1.49e15 and called
+  the model infeasible. The interior point now divides every column, and
+  every row, by the power of two nearest the geometric mean of the finite
+  bound magnitudes (`IPMParams.bound_scaling`; a uniform factor leaves `A`
+  and its equilibration exactly as they were). 9002 then converges in 19
+  iterations to a gap of 1e-9 at **5.698e9** -- and is still reported
+  `NUMERICAL`, because the point's row violation is 4.5e-5 absolute on sums
+  of terms at 1e10, which is machine precision for those sums and a
+  hundred times the absolute 1e-6 the verifier demands. The status is
+  correct under this project's rule that the engine never claims what the
+  verifier would refuse; the yardstick is what cannot be met at that
+  magnitude in double precision. On Netlib the unit is what moved the
+  interior point from 77 to 81 of 89 at a 60 s limit: ganges and shell
+  went from a wrong `INFEASIBLE_OR_UNBOUNDED` to `OPTIMAL`, greenbea and
+  greenbeb from the limit to `OPTIMAL`, pilot from 78 iterations and 25 s
+  to 40 and 3 s, maros 52 to 24 iterations. It costs two: forplan (5% of
+  its columns bounded, at 2.6e5, and the unit taken from those few) and
+  pilot4 no longer converge. A unit taken from a minority of the columns
+  is the weak point, and the statistics do not separate the two sides:
+  pilot4 draws its unit from 25% of its columns, exactly as 9002 does,
+  and ganges and shell from 24% and 21%. A rule that kept the wins
+  without the losses was not found.
 - **The interior-point method returns no basis and no certificate.** It solves
-  all 11 instances to the published value at a 0.140 s shifted geomean, but it
+  all 11 instances to the published value at a 0.061 s shifted geomean, but it
   detects infeasibility by *stagnation* rather than by a Farkas certificate --
   so it reports `INFEASIBLE_OR_UNBOUNDED` where the simplex reports
   `INFEASIBLE`. That needs a homogeneous self-dual formulation, which this is
@@ -1216,6 +1309,19 @@ six now have regression tests.
   refactorisation budget moved from 60 to 59 or 61. The 10teams and dcmulti
   rows went the other way and now solve. The MILP table below is what the
   set looks like with the kernel and one thread; treat gt2 as a coin.
+  Re-tossed at this commit, with the dives: budgets 59, 60 and 73 solve in
+  1.5-2.9 s and 319-511 nodes; 61 and 53 hit the limit at 40,000+ nodes,
+  and they fail *differently*. At 53 the optimum 21166 is in hand from the
+  first seconds and the bound stalls at 21158 (a 0.04% gap the root cuts of
+  that path -- 98 of them against 83 -- do not close). At 61 the bound is
+  21166 exactly, the optimum, from the root, and the tree wanders 42,000
+  degenerate nodes without finding the point that attains it, holding
+  24501; the dives, which now also run as improvement heuristics every 400
+  nodes when an incumbent exists, land 83 times in 87 on that path and
+  never below 24501, because a dive from a node whose LP value is the
+  optimum lands on *a* feasible point of that node and not on the one
+  worth 21166. General-integer degeneracy is the mechanism; nothing here
+  fixes it, and the honest table entry is still a coin.
 - GPU fp64 on a laptop RTX 3050 runs at 1/32 rate; a datacentre card changes the
   crossover point substantially.
 
@@ -1321,23 +1427,32 @@ The MIPLIB set with the node-LP kernel, one thread, before and after
 | flugpl, gr4x6, khb05250, mod010, p0201 | optimal | optimal, 1.3-2x faster |
 | **optimal** | **6/11** | **7/11** |
 
-And the refinery scheduling ladder, which predates the kernel:
+At the current commit -- four threads, the diving heuristics -- the same run
+gives 7/11: dcmulti 38 s, gt2 1.5 s (the coin landed; see Known limits),
+misc07 at the limit on 2810, mas76 and qnet1 at the limit with incumbents,
+10teams at the limit with or without one depending on the run.
+
+And the refinery scheduling ladder, with the diving heuristics
+(`python -m bench.scale --mode mip` regenerates it):
 
 | model | rows | cols | binaries | status | gap | nodes | time |
 |---|---|---|---|---|---|---|---|
-| sched k=1 | 70 | 48 | 24 | OPTIMAL | 0 | 20 | 1.32 s |
-| sched k=2 | 284 | 192 | 96 | OPTIMAL | 5.5e-05 | 1,565 | 45.6 s |
-| sched k=4 | 1,144 | 768 | 384 | TIME_LIMIT | 1.2% | 1,087 | 131 s |
-| sched k=8 | 4,592 | 3,072 | 1,536 | TIME_LIMIT | no incumbent | 447 | 122 s |
+| sched k=1 | 70 | 48 | 24 | OPTIMAL | 0 | 10 | 0.9 s |
+| sched k=2 | 284 | 192 | 96 | OPTIMAL | 0 | 5,001 | 16.9 s |
+| sched k=4 | 1,144 | 768 | 384 | TIME_LIMIT | 1.9% | 8,959 | 121 s |
+| sched k=8 | 4,592 | 3,072 | 1,536 | TIME_LIMIT | 1.2% | 2,495 | 123 s |
+| sched k=16 | 18,400 | 12,288 | 6,144 | TIME_LIMIT | 0.4% | 511 | 121 s |
 
-**MILP proves optimality to about 100 binaries, returns a plan within 1.2% to
-about 400, and finds nothing at all at 1,536.** `unit_scheduling` is big-M with
-minimum up-time, which is the weak-relaxation formulation refinery scheduling
-actually uses, so this is a fair test rather than a flattering one -- but it is
-one model family. The honest reading is that MILP scale here is bounded by the
-**primal heuristics and not by node throughput**: at k=8 the tree explored 447
-nodes and every heuristic failed, which is the same failure mode as 10teams on
-the MIPLIB set.
+**MILP proves optimality to about 100 binaries and returns a verified plan
+within 2% up to 6,144.** Before the dives the same ladder found nothing at
+all at 1,536 (447 nodes, every heuristic failing); the incumbents at k=8 and
+k=16 come from a vector-length dive at the root in a few seconds, and the
+tree then spends the limit closing the gap from above and below.
+`unit_scheduling` is big-M with minimum up-time, which is the weak-relaxation
+formulation refinery scheduling actually uses, so this is a fair test rather
+than a flattering one -- but it is one model family, and the remaining gap
+is the relaxation's, not the heuristics': at k=16 the bound moves through
+511 nodes and the incumbent does not.
 
 ## Netlib
 
@@ -1364,6 +1479,7 @@ python -m bench.netlib             # 89 problems, 412 s
 | match the published optimum to 1e-6 | **78/89** |
 | hit the 60 s limit | 3 (`dfl001`, `maros-r7`, `cycle`) |
 | accuracy shortfall | 8, worst `greenbea` at 1.3e-3 |
+| the interior point alone, 60 s (`--method ipm`) | **81/89** optimal, from 77 before the unit and the LDLᵀ retry (Known limits); the eight: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, fffff800 and forplan at the iteration limit, pilot4 `NUMERICAL`, dfl001 and fit2p over 60 s (dfl001 solves at 107 s) |
 
 `cycle` reaches the published value to 1e-12 and cannot prove it inside the
 limit, so it is counted as a miss on a technicality rather than a wrong answer.
@@ -1422,7 +1538,7 @@ python -m bench.qplib --run --time-limit 60 --max-vars 6000
 | parsed | **29/29** (32/32 with the three box-only giants) |
 | published point verified | **28/29** (`9002` publishes none) |
 | certified bound never above the published value | **24/24** |
-| convex, continuous: optimal to 1e-8 | **9/10** — `8845` 1.9 s, `8938` 1.2 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 6.6 s, `8790` (39,204) 2.2 s, `8515` (16,002) 5.7 s; `8559` (10,000 vars, 5,000 rows) 93 s, `8567` (10,000, 7,500 rows) 104 s; `9002` wrong status, below |
+| convex, continuous: optimal to 1e-8 | **9/10** — `8845` 1.2 s, `8938` 1.4 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 4.6 s, `8790` (39,204) 1.9 s, `8515` (16,002) 6.1 s; `8559` (10,000 vars, 5,000 rows) 12 iterations, `8567` (10,000, 7,500 rows) 10 iterations, both about 100 s; `9002` solved to a 1e-9 gap and refused by the absolute yardstick, below |
 | convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 3.6% / 1.6% in 60 s; `10069` closed |
 | non-convex: published value reached | 1/18 (`10042`); `5881` within 0.5%, `0031`/`0032` within 4-6% |
 
@@ -1449,8 +1565,14 @@ a gap that has stopped moving with the residuals converged is now accepted
 and reported in `info["gap"]`.
 
 Where the engine is genuinely short: `9002` (bounds of 1e11, a diagonal `Q`
-spanning 1e-11 to 2) defeats the starting point and is reported
-`INFEASIBLE_OR_UNBOUNDED`, which is wrong; the row-constrained 10,000-variable
+spanning 1e-11 to 2) used to defeat the barrier outright -- iterates at
+1e11 against a complementarity floor of 1e-12 -- and was reported
+`INFEASIBLE_OR_UNBOUNDED`, which was wrong; with the variables in their own
+unit (Known limits) it converges in 19 iterations to a gap of 1e-9 at
+5.698e9, and is reported `NUMERICAL` because the point violates its rows by
+4.5e-5 absolute, which is rounding on sums of terms at 1e10 and forty times
+the verifier's absolute 1e-6. That yardstick cannot be met at that
+magnitude in double precision; the row-constrained 10,000-variable
 instances `8559` and `8567` solve, but at 93 s and 104 s they are outside
 this run's 60 s limit -- a factorisation on AMD's order is 7 s there, and
 that is the cost of the fill, not of the iteration count (15 and 11); the
@@ -1500,6 +1622,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        607 tests including regressions for every bug above
-ui/           local single-page interface
+tests/        631 tests including regressions for every bug above
+ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

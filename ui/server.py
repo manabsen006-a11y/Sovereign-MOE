@@ -189,9 +189,11 @@ $('go').onclick=async()=>{
     const a=d.results[0],b=d.results[1];
     const f=a.time/b.time, wide=Math.max(a.time,b.time);
     html+='<div class="card"><h2>cpu vs gpu</h2>'
-      +'<div>CPU '+a.time.toFixed(3)+'s</div><div class="bar" style="background:var(--cpu);width:'+(100*a.time/wide)+'%"></div>'
-      +'<div>GPU '+b.time.toFixed(3)+'s</div><div class="bar" style="background:var(--gpu);width:'+(100*b.time/wide)+'%"></div>'
-      +'<div class="muted">'+(f>=1?('GPU '+f.toFixed(2)+'x faster'):('CPU '+(1/f).toFixed(2)+'x faster — this model is too small to fill the GPU'))
+      +'<div>CPU '+esc(a.method)+' '+a.time.toFixed(3)+'s</div><div class="bar" style="background:var(--cpu);width:'+(100*a.time/wide)+'%"></div>'
+      +'<div>GPU '+esc(b.method)+' '+b.time.toFixed(3)+'s</div><div class="bar" style="background:var(--gpu);width:'+(100*b.time/wide)+'%"></div>'
+      +'<div class="muted">'+(a.method===b.method
+          ?'both runs used the same engine, so there is no device comparison to make'
+          :(f>=1?('GPU '+f.toFixed(2)+'x faster'):('CPU '+(1/f).toFixed(2)+'x faster — this model is too small to fill the GPU')))
       +'. Objectives agree to '+d.agreement.toExponential(1)+'.</div></div>';
   }
   const withHist=d.results.find(r=>r.history&&r.history.length>1);
@@ -271,8 +273,16 @@ async def api_solve(request: Request):
         tl = float(body.get("time_limit", 30))
         results = []
         for dev in devices:
+            # A small LP routes to the simplex whatever the device, so a
+            # "GPU" run of it is the CPU simplex a second time -- and the
+            # second time is faster because the first paid the JIT, which
+            # the page then reported as a 19x GPU speed-up. The GPU run of
+            # an LP is PDLP, the engine that actually runs there; a MILP's
+            # tree takes the device through its node solver as before.
+            method = "pdlp" if (dev == "gpu" and not prob.is_mip
+                                and not prob.is_qp) else "auto"
             t = time.perf_counter()
-            sol = solve(prob, device=dev, time_limit=tl)
+            sol = solve(prob, method=method, device=dev, time_limit=tl)
             dt = time.perf_counter() - t
             rv, bv, iv = (prob.violation(sol.x) if sol.x is not None
                           else (float("nan"),) * 3)

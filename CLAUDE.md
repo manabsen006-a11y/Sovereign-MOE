@@ -63,7 +63,7 @@ src/sovopt/
               regularisation, proximal-point opt-in), crossover,
               sensitivity, PDLP (CPU+GPU)
   qp/         proximal PDHG for convex QP (the GPU path) and the dispatcher
-  mip/        propagation, branching, cuts, heuristics, tree (threaded),
+  mip/        propagation, branching, cuts, heuristics (incl. diving), tree (threaded),
               BNR, safe bounds (LP and QP), conflict analysis, symmetry, MIQP
   globalopt/  McCormick / OBBT / spatial branch-and-bound for pooling;
               non-convex QP (McCormick reformulation, aBB opt-in)
@@ -94,6 +94,7 @@ ui/           minimal local interface (server.py)
 ## Commands
 
 ```bash
+python -m sovopt.cli warmup                  # once per machine: compile every kernel
 python -m sovopt.cli solve model.mps          # solve an instance
 python -m bench.harness --mode lp            # the MIPLIB LP/MIP set
 python -m bench.netlib --fetch && python -m bench.netlib    # Netlib

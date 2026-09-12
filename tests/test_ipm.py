@@ -315,6 +315,40 @@ def test_a_quadratic_with_no_linear_term_is_scaled_by_its_hessian():
     assert s.iterations <= ss.iterations + 3
 
 
+def test_variables_at_1e10_are_solved_in_their_own_unit():
+    """The 9002 shape in miniature: ``c = 0``, a diagonal ``Q`` spanning
+    ten decades, equality rows with a zero right-hand side, boxes at 1e10.
+    In QPLIB_9002's own units the complementarity floor is rounding noise
+    and the barrier cannot approach the bounds; in the box's unit it is an
+    ordinary QP. This miniature is not hard enough to fail without the
+    unit, so what is checked is that the unit is taken and the answer is
+    the hand-scaled copy's -- the objective is quadratic, so it scales by
+    the unit squared."""
+    rng = np.random.default_rng(11)
+    n, m = 30, 12
+    cols = np.repeat(np.arange(n), 2)
+    rows = rng.integers(0, m, cols.size)
+    A = SparseMatrix.from_triplets(rows, cols, rng.choice([-1.0, 1.0], cols.size), m, n)
+    Q = SparseMatrix.from_dense(np.diag(10.0 ** rng.uniform(-11, 0.3, n)))
+    U = 1e10
+    p = Problem(A=A, c=np.zeros(n), row_lb=np.zeros(m), row_ub=np.zeros(m),
+                col_lb=np.full(n, -U), col_ub=np.full(n, U), Q=Q)
+    # a nonzero optimum: pin one variable away from zero
+    p.col_lb[0] = p.col_ub[0] = 0.7 * U
+    s = solve_ipm(p, IPMParams(eps_p=1e-8, eps_d=1e-8, eps_gap=1e-8))
+    Qs = Q.copy()
+    Qs.cx *= U * U
+    Qs.rx *= U * U
+    ps = Problem(A=A, c=np.zeros(n), row_lb=np.zeros(m), row_ub=np.zeros(m),
+                 col_lb=p.col_lb / U, col_ub=p.col_ub / U, Q=Qs)
+    ss = solve_ipm(ps, IPMParams(eps_p=1e-8, eps_d=1e-8, eps_gap=1e-8))
+    assert ss.status == Status.OPTIMAL
+    assert s.status == Status.OPTIMAL
+    assert abs(s.objective - ss.objective) <= 1e-6 * max(1.0, abs(ss.objective))
+    assert np.abs(s.x / U - ss.x).max() <= 1e-6
+    assert s.info["scaling_unit"] == 2.0 ** 33
+
+
 # --------------------------------------------------------------------------- #
 # a real instance, end to end                                                  #
 # --------------------------------------------------------------------------- #

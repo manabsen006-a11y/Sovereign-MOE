@@ -261,3 +261,37 @@ def test_sparse_diagonal_is_read_off_the_columns():
     assert np.array_equal(S.diagonal(), [1.5, -2.0, 0.25])
     assert np.array_equal(SparseMatrix.from_dense(M.T).diagonal(), [1.5, -2.0, 0.25])
 
+
+def test_bound_scaling_changes_the_unit_and_leaves_a_lone_wide_column_alone():
+    """QPLIB_9002's shape: every variable lives at 1e11 and the barrier's
+    1e-12 complementarity floor is rounding noise there. The unit is the
+    log-mean of the finite bound magnitudes; one wide column among unit
+    ones (mas76's shape) barely moves it."""
+    from sovopt.core.problem import Problem
+    from sovopt.numerics.scaling import scale_problem
+    from sovopt.core.tolerances import INF
+
+    n = 30
+    B, _ = _random_sparse(n, 3, seed=9, spread=1)
+    A = SparseMatrix.from_dense(B)
+    big = Problem(A=A, c=np.zeros(n), row_lb=np.zeros(n), row_ub=np.zeros(n),
+                  col_lb=np.full(n, -1e11), col_ub=np.full(n, 1e11))
+    off, sc = scale_problem(big, method="ruiz")
+    on, sc_on = scale_problem(big, method="ruiz", bound_scaling=True)
+    assert np.abs(off.col_ub).max() > 1e9
+    assert np.abs(on.col_ub).max() < 1e2
+    # the equilibration is unchanged by a uniform unit: the scaled matrix
+    # entries are the same
+    assert np.allclose(np.sort(np.abs(on.A.cx)), np.sort(np.abs(off.A.cx)))
+    # and a point maps back where it came from
+    x = np.linspace(-1e10, 1e10, n)
+    assert np.allclose(sc_on.unscale_primal(sc_on.scale_primal(x)), x)
+
+    ub = np.ones(n)
+    ub[0] = 1e12
+    lone = Problem(A=A, c=np.zeros(n), row_lb=np.zeros(n), row_ub=np.zeros(n),
+                   col_lb=np.zeros(n), col_ub=ub)
+    a, _ = scale_problem(lone, method="ruiz")
+    b, _ = scale_problem(lone, method="ruiz", bound_scaling=True)
+    assert b.col_ub[0] >= a.col_ub[0] / 4          # the unit is still ~1
+

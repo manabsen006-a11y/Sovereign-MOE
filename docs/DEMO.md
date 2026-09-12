@@ -4,8 +4,13 @@ One command carries the whole story. Everything else here is for answering
 follow-up questions without improvising.
 
 ```bash
+python -m sovopt.cli warmup     # the night before: compiles and caches every kernel
 python -m sovopt.cli demo
 ```
+
+The first solve of each kind on a fresh machine pays Numba's compile --
+about 50 s for everything, most of it the node-LP kernel -- and `warmup`
+pays it once, ahead of time. Cached, the same command takes about 5 s.
 
 Eight stages, ~90 seconds, each guarded so a stage that cannot run on the day
 says so and the demo keeps going. Nothing in it can be the reason the demo

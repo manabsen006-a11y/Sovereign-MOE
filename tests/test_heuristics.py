@@ -13,7 +13,7 @@ from sovopt.core.problem import ObjSense, Problem, Status, VarKind
 from sovopt.core.sparse import SparseMatrix
 from sovopt.core.tolerances import INF
 from sovopt.lp.simplex import NodeSolver, SimplexParams
-from sovopt.mip.heuristics import (feasibility_jump, feasibility_pump,
+from sovopt.mip.heuristics import (dive, feasibility_jump, feasibility_pump,
                                   fix_and_propagate)
 
 
@@ -161,6 +161,81 @@ def test_feasibility_pump_output_is_always_feasible():
                          scaled.col_ub, lp_solve, max_rounds=25)
     if x is not None:
         assert _feasible(scaled, x)
+
+
+# --------------------------------------------------------------------------- #
+# diving                                                                       #
+# --------------------------------------------------------------------------- #
+
+
+def _node(p):
+    from sovopt.numerics.scaling import scale_problem
+    scaled, sc = scale_problem(p, method="pdlp")
+    node = NodeSolver(scaled, SimplexParams())
+    r = node.solve(scaled.col_lb, scaled.col_ub)
+    assert r.status == Status.OPTIMAL
+    return scaled, sc, node, r
+
+
+@pytest.mark.parametrize("rule", ["fractional", "vectorlength"])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_dive_output_is_always_feasible(rule, seed):
+    for p in (set_cover_mip(seed), knapsack_mip(seed), equality_mip(seed)[0]):
+        scaled, sc, node, r = _node(p)
+        x = dive(scaled, scaled.integer_mask, scaled.col_lb, scaled.col_ub,
+                 node.solve, r.x, r.basis, rule=rule)
+        if x is not None:
+            assert _feasible(scaled, x)
+            assert _feasible(p, sc.unscale_primal(x), tol=1e-5)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_dive_finds_a_point_on_set_covering(seed):
+    """Rounding the LP up is always feasible on covering rows, so a dive that
+    re-solves after each fixing must get there."""
+    p = set_cover_mip(seed, n=40, m=20)
+    scaled, sc, node, r = _node(p)
+    x = dive(scaled, scaled.integer_mask, scaled.col_lb, scaled.col_ub,
+             node.solve, r.x, r.basis, rule="vectorlength")
+    assert x is not None
+    assert _feasible(scaled, x)
+
+
+def test_dive_backtracks_out_of_a_dead_end():
+    """A planted equality system where the first rounding of the most
+    integral variable is wrong: without backtracking the dive dead-ends,
+    with it the other rounding is taken and the dive completes."""
+    for seed in range(20):
+        p, x_true = equality_mip(seed, n=16, m=5)
+        scaled, sc, node, r = _node(p)
+        none = dive(scaled, scaled.integer_mask, scaled.col_lb, scaled.col_ub,
+                    node.solve, r.x, r.basis, rule="fractional",
+                    max_backtracks=0)
+        some = dive(scaled, scaled.integer_mask, scaled.col_lb, scaled.col_ub,
+                    node.solve, r.x, r.basis, rule="fractional",
+                    max_backtracks=50)
+        if none is None and some is not None:
+            assert _feasible(scaled, some)
+            return
+    pytest.fail("no seed exercised the backtrack")
+
+
+def test_dive_respects_its_deadline():
+    import time
+    p = set_cover_mip(1, n=60, m=40)
+    scaled, sc, node, r = _node(p)
+    t0 = time.perf_counter()
+    dive(scaled, scaled.integer_mask, scaled.col_lb, scaled.col_ub,
+         node.solve, r.x, r.basis, deadline=time.perf_counter() - 1.0)
+    assert time.perf_counter() - t0 < 0.5
+
+
+def test_dive_refuses_an_unknown_rule():
+    p = set_cover_mip(0)
+    scaled, sc, node, r = _node(p)
+    with pytest.raises(ValueError):
+        dive(scaled, scaled.integer_mask, scaled.col_lb, scaled.col_ub,
+             node.solve, r.x, r.basis, rule="guided")
 
 
 # --------------------------------------------------------------------------- #

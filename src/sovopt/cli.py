@@ -277,6 +277,70 @@ def _cuda_ver(v: int) -> str:
     return f"{v // 1000}.{(v % 1000) // 10}"
 
 
+def cmd_warmup(a):
+    """Compile every kernel once, so the first real solve does not pay.
+
+    Numba compiles a kernel the first time it is called and caches the
+    machine code next to the source, so on a fresh machine (or after a
+    source change) the first solve of each kind carries the compile cost:
+    measured cold at 15 s for the node-LP kernel alone and about a minute
+    for everything, against a few seconds warm. Before a live demo, run
+    this once. Each engine is exercised on a model small enough that the
+    solve itself is negligible; what is reported is the compile.
+    """
+    from .lp.ipm import IPMParams, solve_ipm
+    from .lp.pdlp import PDLPParams, solve_pdlp
+    from .lp.simplex import SimplexParams, solve_simplex
+    from .mip.tree import MIPParams, solve_mip
+    from .models.refinery import blending, unit_scheduling
+    from .qp import QPParams, solve_qp
+    from .globalopt.nonconvex_qp import NonconvexQPParams, solve_nonconvex_qp
+    from .core.sparse import SparseMatrix
+
+    lp = blending(n_components=6, n_products=2)
+    mip = unit_scheduling(n_units=2, n_periods=3)
+    n = 3
+    q = Problem(A=SparseMatrix.from_dense(np.ones((1, n))), c=-np.ones(n),
+                row_lb=np.array([-INF]), row_ub=np.array([2.0]),
+                col_lb=np.zeros(n), col_ub=np.ones(n),
+                Q=SparseMatrix.from_dense(np.eye(n)))
+    nq = q.copy()
+    nq.Q = SparseMatrix.from_dense(np.eye(n) - 2.0 * np.ones((n, n)) / n)
+    steps = [
+        ("simplex, sensitivity",
+         lambda: solve_simplex(lp.copy(), SimplexParams(sensitivity=True))),
+        ("interior point",
+         lambda: solve_ipm(lp.copy(), IPMParams())),
+        ("PDLP (CPU)",
+         lambda: solve_pdlp(lp.copy(), PDLPParams(device="cpu", time_limit=5.0))),
+        ("branch-and-bound: node kernel, cuts, heuristics, dives",
+         lambda: solve_mip(mip, MIPParams(time_limit=20.0, threads=1))),
+        ("convex QP: interior point and proximal",
+         lambda: (solve_qp(q.copy(), QPParams()),
+                  solve_qp(q.copy(), QPParams(method="proximal")))),
+        ("non-convex QP: McCormick, spatial branch-and-bound",
+         lambda: solve_nonconvex_qp(nq, NonconvexQPParams(time_limit=20.0))),
+    ]
+    if a.gpu and gpu_available():
+        steps.append(("PDLP (GPU)",
+                      lambda: solve_pdlp(lp.copy(), PDLPParams(device="gpu",
+                                                               time_limit=5.0))))
+    total = 0.0
+    print("  warming every engine (first call compiles, later calls are cached)")
+    for name, fn in steps:
+        t0 = time.perf_counter()
+        try:
+            fn()
+            note = ""
+        except Exception as e:                       # noqa: BLE001
+            note = f"  ({type(e).__name__}: {str(e)[:50]})"
+        dt = time.perf_counter() - t0
+        total += dt
+        print(f"    {name:<56s} {dt:6.1f} s{note}")
+    print(f"    {'total':<56s} {total:6.1f} s")
+    return 0
+
+
 def cmd_devices(a):
     from .core._jit import HAVE_NUMBA, NUMBA_THREADS
     print("  CPU")
@@ -351,6 +415,11 @@ def main(argv=None):
 
     p = sub.add_parser("devices", help="show available compute")
     p.set_defaults(fn=cmd_devices)
+
+    p = sub.add_parser("warmup", help="compile and cache every kernel (run "
+                                      "once on a fresh machine)")
+    p.add_argument("--gpu", action="store_true", help="also compile the GPU path")
+    p.set_defaults(fn=cmd_warmup)
 
     a = ap.parse_args(argv)
     return a.fn(a)

@@ -70,6 +70,7 @@ class Scaling:
     col: np.ndarray
     obj: float = 1.0
     rhs: float = 1.0
+    unit: float = 1.0
     method: str = "none"
     before: tuple[float, float] = (0.0, 0.0)
     after: tuple[float, float] = (0.0, 0.0)
@@ -371,16 +372,49 @@ def compute_scaling(A: SparseMatrix, method: str = "auto",
 
 
 def scale_problem(prob: Problem, method: str = "auto",
-                  scale_obj: bool = True) -> tuple[Problem, Scaling]:
+                  scale_obj: bool = True,
+                  bound_scaling: bool = False) -> tuple[Problem, Scaling]:
     """Return a scaled copy of ``prob`` and the :class:`Scaling` used.
 
     Infinite bounds stay infinite; only finite ones are transformed. Integer,
     binary and semi-continuous columns are pinned to a scale factor of 1 so
     integrality is preserved exactly.
+
+    ``bound_scaling`` changes the *unit* of the variables: every column is
+    divided by the power of two nearest the geometric mean of the finite,
+    nonzero bound magnitudes (when that is above 1) and every row by the
+    same, which leaves ``A`` and its equilibration untouched. Continuous
+    models only: an integer column cannot change unit.
+    Matrix equilibration sees coefficients and not bounds, and a model
+    whose variables live at 1e11 (QPLIB_9002, bounds of 1e11 on every
+    column) is then solved by a barrier whose complementarity floor is
+    1e-12: the gap ``x - l`` is rounding noise at that scale, the iterate
+    cannot approach its bounds, and the interior point returned a point at
+    1.49e15 and called the model infeasible where the optimum is 5.7e9. A
+    per-column factor fed to the equilibration was tried and is wrong: one
+    column bounded by 1e12 among columns bounded by 1 (mas76's shape)
+    pulled the equilibration to a fixed point the solve could not use, and
+    that case is the starting point's to handle, not this one's -- a single
+    wide column moves a log-mean by nothing, so the unit stays 1 there.
     """
     from ..core.problem import VarKind
     pinned = prob.kind != VarKind.CONTINUOUS
+    unit = 1.0
+    if bound_scaling and not pinned.any():
+        mag = np.maximum(np.where(prob.col_lb > -INF, np.abs(prob.col_lb), 0.0),
+                         np.where(prob.col_ub < INF, np.abs(prob.col_ub), 0.0))
+        mag = mag[mag > 0.0]
+        if mag.size:
+            unit = float(np.exp2(np.rint(np.mean(np.log2(mag)))))
     sc = compute_scaling(prob.A, method=method, unscaled_cols=pinned)
+    if unit > 1.0:
+        # x = unit * x' with every row divided by the unit: A itself is
+        # unchanged, so the equilibration above is exactly what it would
+        # have been, and the unit lands on the bounds, the right-hand side,
+        # the costs and (twice) the Hessian.
+        sc.col = sc.col * unit
+        sc.row = sc.row / unit
+    sc.unit = unit
 
     A = prob.A.copy()
     A.scale(sc.row, sc.col)

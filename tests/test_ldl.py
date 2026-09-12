@@ -5,8 +5,9 @@ pivoting (Vanderbei) -- so random permutations are as good a test as the
 ordering it was built for -- and the inertia is exactly the block sizes. Its
 fill is exactly what the symbolic count predicted, because it takes the
 pivots the ordering names. And inside the interior point it reaches the
-LU's answer on every instance, falling back to the LU when a pivot has to be
-corrected rather than returning a factorisation of the wrong matrix.
+LU's answer on every instance, shifting both blocks and trying again when a
+pivot would have to be corrected, and handing the iteration to the LU rather
+than returning a factorisation of the wrong matrix when even that refuses.
 """
 
 import os
@@ -164,9 +165,12 @@ def test_the_interior_point_reaches_the_same_answer_with_either_factorisation(se
     assert ldl.info["kkt_ordering"].startswith("ldl-")
 
 
-def test_auto_falls_back_to_the_lu_when_a_pivot_needs_correcting():
-    """mod010 is the instance: 18 iterations on the LDLᵀ, then a corrected
-    pivot, then the LU for the last one -- and the LU's answer."""
+def test_a_refused_pivot_hands_the_solve_to_an_affordable_lu():
+    """mod010 is the instance: 18 iterations on the LDLᵀ, then a pivot that
+    would need correcting. Correcting it was measured harmful. The LU is
+    small here, so it takes the rest of the solve; told it is not
+    affordable, the LDLᵀ is retried with both blocks shifted instead and
+    reaches the same answer; forced and unshifted, it fails."""
     path = os.path.join(DATA, "mod010.mps")
     if not os.path.exists(path):
         pytest.skip("instance not fetched")
@@ -175,8 +179,17 @@ def test_auto_falls_back_to_the_lu_when_a_pivot_needs_correcting():
     assert s.status == Status.OPTIMAL
     assert abs(s.objective - 6532.083333) <= 1e-5 * 6532
     assert s.info["kkt_ordering"].startswith("lu-")
-    assert s.info["ldl_iterations"] >= 10
-    forced = solve_ipm(p, IPMParams(factorisation="ldl"))
+    assert s.info["ldl_failures"] >= 1
+    assert s.info["ldl_boosted"] == 0
+    assert s.info["ldl_iterations"] < s.iterations
+    shifted = solve_ipm(p, IPMParams(factorisation="auto", lu_fill_cap=0.0,
+                                     lu_min_nnz=0))
+    assert shifted.status == Status.OPTIMAL
+    assert abs(shifted.objective - s.objective) <= 1e-6 * 6532
+    assert shifted.info["kkt_ordering"].startswith("ldl-")
+    assert shifted.info["ldl_boosted"] >= 1
+    assert shifted.info["ldl_iterations"] == shifted.iterations
+    forced = solve_ipm(p, IPMParams(factorisation="ldl", ldl_boosts=()))
     assert forced.status != Status.OPTIMAL       # the reason auto exists
 
 

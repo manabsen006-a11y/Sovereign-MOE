@@ -337,6 +337,49 @@ off by default, so the table above can be regenerated.
 
 ---
 
+## Around the LDLᵀ refusal: five rules that lost before one won
+
+**The question.** When the symmetric LDLᵀ refuses an iterate (a pivot on
+the wrong side, or too small), what should take that iterate? The rule
+that shipped with the LDLᵀ -- the pivoting LU takes the rest of the solve
+-- was measured to be the wall on dfl001: 2 s per LDLᵀ, 147 s per LU on
+the same ordering, the time limit at 31 iterations. Every rule below was
+run over Netlib plus the MIPLIB LP relaxations (100 instances, 60 s), and
+the count of `OPTIMAL` is the score. The rule that shipped scores 88.
+
+| rule | score | what it lost |
+|---|---|---|
+| shift both blocks (1e-6, 1e-4) and retry; refine 2 passes toward `K` | 88 | pilot: 159 shifted iterates, dual residual stuck at 2e-8 |
+| same, refine 8 passes unconditionally | 89 | boeing2: eight passes refine toward a direction of norm 1e9, 37 iterations become 200 |
+| same, refine while a pass halves the residual | 88 | pilot: the max-norm residual sits on a few huge right-hand-side entries and stalls while the direction still improves |
+| shifted factor's solve checked by its last correction, LU if inaccurate | (not scored) | on the instances it was built for it lost both ways -- pilot: every shifted solve passes the check and the iteration still stalls; dfl001: every solve fails it, the LU is taken, the wall is back |
+| the LU first whenever its fill is within 8x the LDLᵀ's | 89 | dfl001: the LU fits the cap at 10x the LDLᵀ's fill and 70x its time, and the wall is back |
+| **the LU first if it fits 4x the fill or 2M nonzeros, else shift; refine while a pass gains 10x** | **92** | forplan, pilot4 -- and those to the unit below, not to this rule |
+
+The last line is what shipped, and with it dfl001 solves (49-53 iterations,
+107 s). What the table says about pilot: the instance is ill-conditioned
+enough that it wants the pivoting LU's accuracy at the refused iterates and
+eight refinement passes at the others, and a shifted LDLᵀ never recovers
+once its iterates drift. What it says about boeing2: refining hard toward
+the *unregularised* matrix is not always better, because that matrix is the
+near-singular one, and a two-pass refinement was acting as a regulariser.
+Both are recorded in the parameter docstrings of `lp/ipm.py`.
+
+**A per-column unit was wrong; a uniform one was the biggest win.** The
+unit (below) was first built per column -- each column divided by the
+power of two nearest its own bound magnitude, then the equilibration run
+on `A D`. On a column bounded by 1e12 among columns bounded by 1 (the
+mas76 shape, a regression test) the equilibration was pulled to a fixed
+point the solve could not use and the model came back
+`INFEASIBLE_OR_UNBOUNDED`. Feeding the equilibration a diagonally
+prescaled matrix changes which fixed point it converges to, and not
+predictably. A uniform unit, applied to every column and every row, leaves
+`A` untouched and the equilibration exactly what it was; it took the
+interior point from 77 to 81 of 89 on Netlib and fixed the 9002 wall, at
+the price of forplan and pilot4. See the README's Known limits.
+
+---
+
 ## Presolve (built, correct, does not pay -- kept opt-in)
 
 The README named presolve, with a Forrest-Tomlin update, as what was left to
