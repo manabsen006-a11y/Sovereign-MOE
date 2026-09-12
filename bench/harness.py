@@ -47,14 +47,22 @@ def shifted_geomean(values, shift):
 
 
 def run(mode, paths, time_limit, device, tol, gap, verbose=False,
-        method=None):
+        method=None, repeat=1):
+    """``repeat`` > 1 solves each instance that many times and reports the
+    *median* wall time and the spread (min-max) beside it. One draw on a
+    laptop is not a measurement -- background load alone has produced 2.3x
+    swings on repeated runs of the same instance -- and the median of three
+    is what the README's tables now quote. The objective, status and
+    verifier verdict are those of the first run; the algorithms are
+    deterministic and every run agrees on them (asserted below)."""
     from sovopt.cli import solve
 
     rows = []
+    spread_col = f" {'spread':>13}" if repeat > 1 else ""
     print(f"{'instance':<14} {'rows':>6} {'cols':>6} {'nnz':>8} "
           f"{'status':<10} {'objective':>16} {'reference':>16} "
-          f"{'relerr':>9} {'time':>8} {'chk':>4}")
-    print("-" * 118)
+          f"{'relerr':>9} {'time':>8} {'chk':>4}{spread_col}")
+    print("-" * (118 + len(spread_col)))
 
     for path in paths:
         name = os.path.splitext(os.path.basename(path))[0]
@@ -72,16 +80,35 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
         else:
             target = ref.get("best_soln")
 
-        t = time.perf_counter()
         chosen = method or ("auto" if mode == "lp" else "bnb")
-        try:
-            sol = solve(prob, method=chosen,
-                        device=device, time_limit=time_limit, gap=gap, tol=tol,
-                        verbose=verbose)
-        except Exception as e:
-            print(f"{name:<14} SOLVER FAILED  {type(e).__name__}: {str(e)[:50]}")
+        times = []
+        sol = None
+        failed = False
+        for _ in range(max(1, repeat)):
+            t = time.perf_counter()
+            try:
+                s = solve(prob, method=chosen,
+                          device=device, time_limit=time_limit, gap=gap,
+                          tol=tol, verbose=verbose)
+            except Exception as e:
+                print(f"{name:<14} SOLVER FAILED  {type(e).__name__}: {str(e)[:50]}")
+                failed = True
+                break
+            times.append(time.perf_counter() - t)
+            if sol is None:
+                sol = s
+            elif s.status != sol.status or (
+                    s.x is not None and sol.x is not None
+                    and abs(s.objective - sol.objective) > 1e-6 * max(1.0, abs(sol.objective))
+                    and mode == "lp"):
+                # an LP solve is deterministic; a MIP with a time limit is
+                # not, and only the LP disagreement is worth a line
+                print(f"{name:<14} RUNS DISAGREE  {sol.status.name} {sol.objective} "
+                      f"vs {s.status.name} {s.objective}")
+        if failed:
             continue
-        dt = time.perf_counter() - t
+        dt = float(np.median(times))
+        spread = (f" {min(times):>6.2f}-{max(times):<6.2f}" if repeat > 1 else "")
 
         relerr = float("nan")
         if target is not None and sol.x is not None and np.isfinite(sol.objective):
@@ -104,7 +131,7 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
               f"{sol.status.name:<10} "
               f"{sol.objective if sol.x is not None else float('nan'):>16.8g} "
               f"{target if target is not None else float('nan'):>16.8g} "
-              f"{relerr:>9.2e} {dt:>7.2f}s {chk:>4}")
+              f"{relerr:>9.2e} {dt:>7.2f}s {chk:>4}{spread}")
 
         rows.append({
             "name": name, "status": sol.status, "obj": sol.objective,
@@ -124,6 +151,8 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
 
     shift = 1.0 if mode == "lp" else 10.0
     print(f"  instances            {n}")
+    if repeat > 1:
+        print(f"  runs per instance    {repeat}   (times are medians)")
     print(f"  status OPTIMAL       {len(solved)}/{n}")
     print(f"  verifier accepted    {len(verified)}/{n}")
     if mode == "lp":
@@ -155,6 +184,8 @@ def main(argv=None):
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--max-nnz", type=int, default=10**9)
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="solve each instance this many times; report the median time")
     a = ap.parse_args(argv)
 
     paths = sorted(glob.glob(os.path.join(a.dir, "*.mps")))
@@ -167,10 +198,11 @@ def main(argv=None):
         return 1
 
     print(f"SOVOPT benchmark  mode={a.mode}  method={a.method or 'auto'}  "
-          f"device={a.device}  time-limit={a.time_limit}s  tol={a.tol:g}")
+          f"device={a.device}  time-limit={a.time_limit}s  tol={a.tol:g}"
+          + (f"  repeat={a.repeat}" if a.repeat > 1 else ""))
     print()
     run(a.mode, paths, a.time_limit, a.device, a.tol, a.gap, a.verbose,
-        method=a.method)
+        method=a.method, repeat=a.repeat)
     return 0
 
 

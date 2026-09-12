@@ -19,58 +19,58 @@ validated against **published MIPLIB reference values** and an **independent
 verifier** that recomputes feasibility from the original model.
 
 Reproduce with `python -m bench.harness --mode lp --method pdlp --device cpu
---time-limit 90 --tol 1e-8`. **Every timing in this README was measured on the
-machine described under [Measurement conditions](#measurement-conditions)**;
+--time-limit 90 --tol 1e-8 --repeat 3`. **Every timing in this README was
+measured on the machine described under [Measurement conditions](#measurement-conditions)**;
 quote the ratios rather than the seconds if you are comparing against your own
-hardware.
+hardware. The tables in this section are **medians of three runs** with the
+min-max spread beside each (`--repeat 3`); a single draw on this laptop has
+been seen to swing 2.3x under background load, and one draw is what every
+other table in this README still is.
 
 ```
-SOVOPT benchmark  mode=lp  method=pdlp  device=cpu  time-limit=90s  tol=1e-8
+SOVOPT benchmark  mode=lp  method=pdlp  device=cpu  time-limit=90.0s  tol=1e-08  repeat=3
 
-instance         rows   cols      nnz status            objective        reference    relerr     time  chk
-10teams           230   2025    12150 OPTIMAL           917.00001              nan       nan    0.61s   ok
-dcmulti           290    548     1315 OPTIMAL           183975.54        183975.54  5.61e-11    2.67s   ok
-flugpl             18     18       46 OPTIMAL           1167185.7        1167185.7  4.29e-09    0.34s   ok
-gr4x6              34     48       96 OPTIMAL              185.55              nan       nan    0.29s   ok
-gt2                29    188      376 OPTIMAL           13460.233        13460.233  3.07e-11    0.04s   ok
-khb05250          101   1350     2700 OPTIMAL            95919464         95919464  7.60e-13    6.90s   ok
-mas76              12    151     1640 OPTIMAL           38893.904              nan       nan   16.28s   ok
-misc07            212    260     8619 OPTIMAL                1415              nan       nan    0.45s   ok
-mod010            146   2655    11203 OPTIMAL           6532.0833          6532.08  5.08e-07    1.52s   ok
-p0201             133    201     1923 OPTIMAL                6875             6875  1.11e-11    0.16s   ok
-qnet1             503   1541     4622 OPTIMAL           14274.103        14274.103  1.12e-10    2.83s   ok
-
+instance         rows   cols      nnz status            objective        reference    relerr     time  chk        spread
+10teams           230   2025    12150 OPTIMAL           917.00001              nan       nan    0.08s   ok   0.07-0.21  
+dcmulti           290    548     1315 OPTIMAL           183975.54        183975.54  5.61e-11    0.98s  opt   0.89-0.99  
+flugpl             18     18       46 OPTIMAL           1167185.7        1167185.7  4.29e-09    0.13s  opt   0.12-0.21  
+gr4x6              34     48       96 OPTIMAL              185.55              nan       nan    0.10s   ok   0.09-0.12  
+gt2                29    188      376 OPTIMAL           13460.233        13460.233  3.07e-11    0.01s  opt   0.01-0.01  
+khb05250          101   1350     2700 OPTIMAL            95919464         95919464  7.60e-13    2.63s  opt   2.51-2.73  
+mas76              12    151     1640 OPTIMAL           38893.904              nan       nan    5.91s   ok   5.63-7.33  
+misc07            212    260     8619 OPTIMAL                1415              nan       nan    0.21s   ok   0.20-0.21  
+mod010            146   2655    11203 OPTIMAL           6532.0833          6532.08  5.08e-07    0.94s  opt   0.81-0.95  
+p0201             133    201     1923 OPTIMAL                6875             6875  1.11e-11    0.10s   ok   0.10-0.11  
+qnet1             503   1541     4622 OPTIMAL           14274.103        14274.103  1.12e-10    2.65s   ok   2.53-2.81  
+  instances            11
+  runs per instance    3   (times are medians)
   status OPTIMAL       11/11
   verifier accepted    11/11
+  certified optimal    5/11   (duals bound the optimum within 1e-9)
   within 1e-4 of ref   7/7
-  shifted geomean time 1.496s (shift 1s)
-  total time           32.1s
+  shifted geomean time 0.797s (shift 1s)
+  total time           13.7s
   worst relative error 5.08e-07 (mod010)
 ```
 
 The other two engines solve the same set to the same published values, and
 considerably faster:
 
-| engine | optimal | verified | shifted geomean | total | worst rel. err |
+| engine | optimal | certified optimal | shifted geomean (median of 3) | total | worst rel. err |
 |---|---|---|---|---|---|
-| first-order (PDLP) | 11/11 | 11/11 | 1.496 s | 32.1 s | 5.08e-07 |
-| revised simplex | 11/11 | 11/11 | 0.258 s | 3.9 s | 5.10e-07 |
-| **interior point** | 11/11 | 11/11 | **0.140 s** | **1.6 s** | 5.10e-07 |
+| first-order (PDLP) | 11/11 | 5/11 (the rest to first-order accuracy) | 0.797 s | 13.7 s | 5.08e-07 |
+| revised simplex | 11/11 | 11/11 | 0.079 s | 0.9 s | 5.10e-07 |
+| **interior point** | 11/11 | 11/11 | **0.041 s** | **0.5 s** | 5.10e-07 |
 
-The simplex row predates the refactorisation-budget change described under
-[Known limits](#known-limits) and is therefore conservative; re-measuring it
-here would have meant re-measuring all four on a machine that had since drifted
-by more than the change is worth, which would have hidden it rather than shown
-it.
-
-All four rows above -- the PDLP listing and these three -- were re-measured
-back to back at an earlier commit, so they are comparable with each other and *not*
-with figures recorded earlier in this README: the same commands on this machine
-now run about twice the seconds they did in the sitting those were taken in,
-while every objective matches to the digit and the HiGHS ratio below reproduces
-exactly. **Read the ratios, not the seconds.** The one ratio that genuinely
-moved is the interior point's: it was at parity with the simplex until it was
-given a fill-reducing ordering, and is now about 1.8x faster on this set.
+All four rows above -- the PDLP listing and these three -- were measured
+back to back in one sitting, three runs each, medians quoted, so they are
+comparable with each other and *not* with figures recorded earlier in this
+README. **Read the ratios, not the seconds.** "Certified optimal" is the
+verifier's own line: the returned duals bound the optimum within 1e-9 of
+the point's objective (see [Netlib](#netlib) for what that settled). The
+interior point is about twice the simplex on this set now that it has a
+fill-reducing ordering, a symmetric factorisation and a unit for its
+variables; it was at parity before the first of those.
 
 Three engines agreeing to the published value on every instance is the point of
 having three. They fail differently: the simplex is exact but walks vertices and
@@ -249,6 +249,7 @@ each kind carries the compile: about 50 s cold, about 5 s once cached.
 ```bash
 python -m bench.fetch --set small     # download MIPLIB instances
 python -m bench.harness --mode lp                  # validate against published values
+python -m bench.harness --mode lp --repeat 3       # the same, medians of three with the spread
 python -m bench.harness --mode lp --method simplex  # force one engine
 python -m bench.harness --mode lp --method ipm      # the interior-point engine
 python -m bench.netlib --fetch        # download the Netlib LP set (once)
@@ -1145,15 +1146,21 @@ six now have regression tests.
   | sched k=16 (6,144 binaries, 18,400 rows) | not attempted | **7,170,956, gap 0.4%**, verified |
   | sched k=2 | OPTIMAL, 45.6 s | OPTIMAL, 16.9 s (7.5 s with bug 8 fixed) |
   | dcmulti, misc07, mas76, qnet1 | incumbents from the tree | dives find one at the root in 0.1-1 s; qnet1's final incumbent 21760 -> 18152 (optimum 16030) with dives through the tree |
-  | 10teams | no incumbent | 968-980 (optimum 924) in two runs of five, none in the other three |
+  | 10teams | no incumbent | 968-980 (optimum 924) in two runs of five with one dive per rule; 996 in four runs of four with the seeded re-draws below |
 
   10teams is the honest limit: its vector-length dive dead-ends repeatedly,
   needs a hundred backtracks and 13-21 s, and whether it lands depends on
   the vertex it starts from -- from the uncut root vertex it finds 968,
   from the vertex one Gomory cut later nothing, so the root round now
-  tries both, and at a 120 s limit it produced an incumbent in two of five
-  runs. The pump, which the literature reports finding 10teams, does not
-  here in 40 rounds.
+  tries both, and at a 120 s limit that produced an incumbent in two of
+  five runs. Since a dive's fate hangs on its early choices, the root round
+  now re-draws them: two more vector-length dives with their selection
+  scores jittered by up to 10% (`dive_seeds`), each a different path from
+  the same vertex. On 10teams the first re-draw lands on 996 from the root
+  vertex in four runs of four -- deterministically, because the jitter is
+  seeded, which is also why this is one more draw and not a proof that a
+  draw exists. The pump, which the literature reports finding 10teams,
+  does not here in 40 rounds.
 
   **This is not a mis-tuned constant.** qnet1's *sparsest* candidate touches
   712 of 1541 columns, so it fails even the looser `0.4n` branch of the cap at
@@ -1505,11 +1512,11 @@ The MIPLIB set with the node-LP kernel, one thread, before and after
 | **optimal** | **6/11** | **7/11** |
 
 At the current commit -- four threads, the diving heuristics, pseudocosts
-that learn (bug 8) -- the same run gives **8/11**: dcmulti 5.8 s, gt2 1.1 s
-(the coin landed; see Known limits), misc07 `OPTIMAL` in 101 s, mas76 and
-qnet1 at the limit with incumbents (qnet1's 0.6% above the optimum),
-10teams at the limit with or without one depending on the run; shifted
-geomean 19.0 s.
+that learn (bug 8) -- the same run gives **8/11**: dcmulti 5.8-7.2 s, gt2 1.0 s
+(the coin landed; see Known limits), misc07 `OPTIMAL` in 101-114 s -- a
+finish that close to the limit is one background process away from a
+miss -- mas76 and qnet1 at the limit with incumbents (qnet1's 0.6% above
+the optimum), 10teams at the limit holding 996; shifted geomean 19-20 s.
 
 And the refinery scheduling ladder, with the diving heuristics
 (`python -m bench.scale --mode mip` regenerates it):

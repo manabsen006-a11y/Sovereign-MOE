@@ -386,7 +386,7 @@ def feasibility_pump(prob, int_mask, lo, hi, lp_solve, x_lp=None,
 def dive(prob, int_mask, lo, hi, node_solve, x_lp, basis=None,
          rule: str = "vectorlength", max_lp: int | None = None,
          max_backtracks: int = 20, deadline: float | None = None,
-         feas_tol: float = 1e-9, int_tol: float = 1e-6):
+         feas_tol: float = 1e-9, int_tol: float = 1e-6, seed: int = 0):
     """LP diving: fix, propagate, re-solve, until the relaxation is integral.
 
     ``node_solve(lo, hi, warm_basis)`` must return an object with ``status``,
@@ -402,6 +402,12 @@ def dive(prob, int_mask, lo, hi, node_solve, x_lp, basis=None,
     other rounding is untried, restoring that decision's bounds and basis.
     That is a depth-first search with a budget, which is what a dive is; the
     budget keeps it a heuristic.
+
+    ``seed`` > 0 perturbs the selection scores by up to 10%, so that a
+    second dive from the same vertex takes a different path. A dive's
+    fate hangs on its early choices -- on 10teams the vector-length dive
+    finds 968 from one root vertex and nothing from a vertex one cut away
+    -- and a few differently seeded dives are cheaper than one long one.
     """
     import time as _time
 
@@ -419,10 +425,16 @@ def dive(prob, int_mask, lo, hi, node_solve, x_lp, basis=None,
         c = prob.c
     elif rule != "fractional":
         raise ValueError(f"unknown diving rule {rule!r}")
+    rng = np.random.default_rng(seed) if seed else None
+
+    def _jitter(score):
+        if rng is None:
+            return score
+        return score * (1.0 + 0.1 * rng.random(score.size))
 
     def _choose(x, fr, cand):
         if rule == "fractional":
-            k = int(np.argmin(fr))
+            k = int(np.argmin(_jitter(fr)))
             j = int(cand[k])
             return j, bool(x[j] - np.floor(x[j]) > 0.5)
         fd = x[cand] - np.floor(x[cand])
@@ -430,7 +442,9 @@ def dive(prob, int_mask, lo, hi, node_solve, x_lp, basis=None,
         dn_cost = -c[cand] * fd
         up = up_cost <= dn_cost
         score = np.where(up, up_cost, dn_cost) / (col_nnz[cand] + 1.0)
-        k = int(np.argmin(score))
+        # scores can be negative (a cost that falls); the jitter scales
+        # magnitudes, which keeps the order of signs
+        k = int(np.argmin(_jitter(score)))
         return int(cand[k]), bool(up[k])
 
     def _place(l, h, x, basis):

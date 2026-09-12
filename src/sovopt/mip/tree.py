@@ -237,6 +237,13 @@ class MIPParams:
     968 (optimum 924) after 100 in 17 s -- the first incumbent any heuristic
     has produced on that model; a thousand finds nothing more."""
 
+    dive_seeds: int = 2
+    """Extra vector-length dives with jittered scores after the plain ones
+    fail, each a different path from the same vertex. 10teams is the case:
+    whether the dive lands depends on its early choices, and re-drawing
+    them costs a few seconds where a tree without an incumbent costs the
+    whole limit."""
+
     heuristic_time_frac: float = 0.5
     """Share of the time limit the primal heuristics may spend in total
     *while no incumbent exists*, root and restarts together; once there is
@@ -810,6 +817,19 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                         rule=rule, max_backtracks=params.dive_backtracks,
                         deadline=deadline, feas_tol=tol.primal_feas,
                         int_tol=tol.integrality)))
+                # the same dives again with the scores jittered: a
+                # different path from the same vertex, while the budget
+                # lasts and nothing has landed -- not in an improvement
+                # round, where two dives per restart are enough and four
+                # cost misc07 its finish inside the limit
+                for seed in range(1, (0 if improve else params.dive_seeds) + 1):
+                    trials.append((f"dive[vectorlength#{seed}]",
+                                   lambda seed=seed: dive(
+                        scaled, int_mask, hl, hh, node_lp.solve, x0, basis0,
+                        rule="vectorlength",
+                        max_backtracks=params.dive_backtracks,
+                        deadline=deadline, feas_tol=tol.primal_feas,
+                        int_tol=tol.integrality, seed=seed)))
             if not use_bnr and not cheap_only and not improve:
                 trials.append(("feasibility_pump",
                                lambda: feasibility_pump(scaled, int_mask, hl, hh,
