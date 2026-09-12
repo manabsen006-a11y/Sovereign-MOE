@@ -398,6 +398,15 @@ class SparseMatrix:
         s, e = self.rp[i], self.rp[i + 1]
         return self.ri[s:e], self.rx[s:e]
 
+    def diagonal(self):
+        """``a_jj`` for every ``j < min(m, n)``, summed over duplicates."""
+        k = min(self.m, self.n)
+        cols = np.repeat(np.arange(self.n, dtype=IDX), np.diff(self.cp))
+        on = (self.ci == cols) & (cols < k)
+        d = np.zeros(k, dtype=VAL)
+        np.add.at(d, cols[on], self.cx[on])
+        return d
+
     def col_counts(self):
         return np.diff(self.cp).astype(IDX)
 

@@ -264,6 +264,79 @@ without it (`python -m bench.nonconvex_qp --relaxation alphabb`).
 
 ---
 
+## Proximal-point regularisation of the interior point (built, measured, kept opt-in)
+
+**Idea.** The interior point's KKT matrix is regularised -- `δp` on the
+(1,1) block, `δd` on the (2,2) -- so that a free column or an equality row
+cannot make it singular, and the perturbation is then refined away against
+the unregularised matrix. On `QPLIB_8559` that refinement was recovering 15%
+per round where it usually recovers everything, and the solve did 87
+iterations in 600 s without converging. The known answer (Friedlander &
+Orban; Pougkakiotis & Gondzio) is to make the regularisation *part of the
+method*: each iteration solves the Newton system of the proximal problem --
+the objective plus `ρ/2‖x − x_k‖²`, the constraints relaxed by `δ(y − y_k)`
+-- with the centres at the current iterate, so the proximal terms vanish at
+the linearisation point, the system is exactly the regularised one, and it
+is solved as-is. The method converges to the original problem's solution as
+`ρ, δ → 0`, and the accuracy of a step is no longer limited by what
+refinement can recover. Built as `IPMParams(regularisation="pmm")`, with
+`ρ = δ = clamp(μ, 1e-10, cap)`.
+
+**It is worse at every strength.** Netlib, 89 problems, 60 s limit, the
+interior point alone:
+
+| regularisation | optimal | iterations | LDLᵀ fallbacks to LU |
+|---|---|---|---|
+| static, refined away (default) | **78/89** | 3,269 | 20 |
+| proximal, cap 1e-8 | 77/89 | 3,437 | 29 |
+| proximal, cap 1e-6 | 70/89 | 4,358 | 39 |
+| proximal, cap 1e-4 | 53/89 | 5,626 | 31 |
+
+The MIPLIB LP set tells the same story in miniature: at a cap of 1e-4
+khb05250 comes back `INFEASIBLE_OR_UNBOUNDED`; at 1e-8 the iteration counts
+are the static method's to the iterate. The mechanism is visible in the
+failures, which are overwhelmingly `INFEASIBLE_OR_UNBOUNDED`: after a full
+proximal step the primal residual is `δ·dy`, not zero, so on an instance
+whose duals are large the residual plateaus while the dual side converges,
+and a stall test that expects the primal residual to fall reads the plateau
+as infeasibility. The variant built here re-centres every iteration, which
+is Friedlander & Orban's exact-regularisation form; the Pougkakiotis-Gondzio
+method lags the centres and moves them only when the residuals of the
+original problem have fallen below a multiple of `μ`, with its own
+termination and infeasibility tests built around that. Making it work would
+mean adopting those tests too, not just the direction.
+
+**The instance it was built for did not need it.** `QPLIB_8559` has `c = 0`
+and a Hessian whose diagonal runs from 4 to 95,000. The objective scale was
+taken from `c` alone -- the geometric mean of its nonzero magnitudes,
+rounded to a power of two -- and the scale of nothing is 1, so the interior
+point started with a dual residual of 1.7e5, drove the iterate onto its
+bounds before that residual was gone, and then crawled with the primal step
+length pinned near zero: the residual bouncing, the objective creeping, 87
+iterations without converging. A quadratic objective's scale is the scale of
+its gradient `c + Qx`, and the diagonal of the column-scaled `Q` is the
+curvature along each scaled unit direction, so it now joins the geometric
+mean. The same instance then converges in **15 iterations, 93 s**, to the
+published value at 1.6e-9; `QPLIB_8567`, the same family with 7,500 rows,
+in 11 iterations and 104 s at 4e-12. Neither the AMD ordering nor the LDLᵀ
+built for this instance was wasted -- each factorisation is still 7 s
+rather than hundreds -- but the wall they were built against was a scaling
+error. What found it was the pair of trajectories: with either
+regularisation the primal step was pinned from the first iteration, `μ`
+reached 1e-9 with the primal residual still at 1e-4, which is an iterate
+on the boundary and not a matrix solved badly, and the only thing wrong
+with the iterate was the size of its gradient.
+
+And with the scale fixed, the proximal form still loses on the instance it
+was built for: 19 iterations and 162 s at a cap of 1e-8 against the static
+method's 15 and 93 s, and at 1e-4 a time limit at 72 iterations with the gap
+at 1e-2.
+
+**Kept, not reverted.** `IPMParams(regularisation="pmm", pmm_cap=...)`,
+off by default, so the table above can be regenerated.
+
+---
+
 ## Presolve (built, correct, does not pay -- kept opt-in)
 
 The README named presolve, with a Forrest-Tomlin update, as what was left to

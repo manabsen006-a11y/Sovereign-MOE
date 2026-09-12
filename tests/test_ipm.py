@@ -263,6 +263,59 @@ def test_starting_point_corrects_a_bounded_point_not_a_minimum_norm_one():
 
 
 # --------------------------------------------------------------------------- #
+# regularisation                                                               #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_the_two_regularisations_reach_the_same_answer(seed):
+    """Static regularisation refined away against the unregularised matrix,
+    and the proximal-point form that solves the regularised system as the
+    system: different directions, one optimum."""
+    p = random_lp(seed=seed)
+    a = solve_ipm(p, IPMParams(regularisation="static"))
+    b = solve_ipm(p, IPMParams(regularisation="pmm"))
+    assert a.status == b.status == Status.OPTIMAL
+    assert abs(a.objective - b.objective) <= 1e-7 * max(1.0, abs(a.objective))
+    scale = max(1.0, float(np.abs(a.y).max(initial=0.0)))
+    assert np.abs(a.y - b.y).max() <= 1e-5 * scale
+
+
+def test_an_unknown_regularisation_is_refused():
+    with pytest.raises(ValueError):
+        solve_ipm(random_lp(seed=0), IPMParams(regularisation="dynamic"))
+
+
+def test_a_quadratic_with_no_linear_term_is_scaled_by_its_hessian():
+    """The 8559 shape in miniature: ``c = 0``, a diagonal ``Q`` spanning
+    four decades, equality rows, a box. The optimum does not depend on the
+    scale of the objective; the iteration count did, before the objective
+    scale looked at ``Q``."""
+    rng = np.random.default_rng(3)
+    n, m = 40, 20
+    cols = np.repeat(np.arange(n), 2)
+    rows = rng.integers(0, m, cols.size)
+    A = SparseMatrix.from_triplets(rows, cols, rng.integers(1, 5, cols.size).astype(float), m, n)
+    b = A.matvec(rng.uniform(0.5, 5.0, n))
+    Q = SparseMatrix.from_dense(np.diag(rng.uniform(4.0, 95000.0, n)))
+    p = Problem(A=A, c=np.zeros(n), row_lb=b, row_ub=b,
+                col_lb=np.full(n, 0.1), col_ub=np.full(n, 10.0), Q=Q)
+    s = solve_ipm(p)
+    assert s.status == Status.OPTIMAL
+    # the hand-scaled copy has the same argmin
+    Qs = Q.copy()
+    Qs.cx *= 1e-4
+    Qs.rx *= 1e-4
+    ps = Problem(A=A, c=np.zeros(n), row_lb=b, row_ub=b,
+                 col_lb=np.full(n, 0.1), col_ub=np.full(n, 10.0), Q=Qs)
+    ss = solve_ipm(ps)
+    assert ss.status == Status.OPTIMAL
+    assert abs(s.objective - 1e4 * ss.objective) <= 1e-6 * abs(s.objective)
+    assert np.abs(s.x - ss.x).max() <= 1e-5
+    assert s.iterations <= ss.iterations + 3
+
+
+# --------------------------------------------------------------------------- #
 # a real instance, end to end                                                  #
 # --------------------------------------------------------------------------- #
 

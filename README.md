@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 600 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 607 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -1084,11 +1084,10 @@ six now have regression tests.
   larger cap.
 - **Convex QP is limited by the factorisation's fill, not by the method.**
   `sovopt.qp` now routes to the interior point (see [QPLIB](#qplib) for why),
-  which solves QPLIB's convex instances to 1e-8 in 1-14 s up to 39,204
-  variables — when the interior point converges. `QPLIB_8559` (10,000
-  variables, 5,000 rows, a 70k-nonzero `Q`) now factorises in 7 s per
-  iteration instead of hundreds, and does 87 iterations in 600 s without
-  converging (see the bullet on it below). The proximal method remains as
+  which solves every convex continuous QPLIB instance fetched to 1e-8 —
+  1-7 s up to 39,204 variables, and `QPLIB_8559` / `8567` (10,000
+  variables, 5,000 / 7,500 rows, a 70k-nonzero `Q`) in 93 s and 104 s at
+  7 s per factorisation (see the bullet on them below). The proximal method remains as
   `method="proximal"` — matrix-free, so it is the GPU path and the one that
   survives a `Q` too dense to factorise — and it is the one that reaches
   ~1e-8 rather than 1e-9. Neither returns a basis, so no ranging on a QP.
@@ -1138,14 +1137,25 @@ six now have regression tests.
   factorisation makes on itself -- and it is the interior point's default:
   QPLIB 8845 9.3 s -> 1.3 s, blend k=16 99 s -> 28 s, plan k=16 81 s ->
   46 s, the MIPLIB LP set 0.094 s -> 0.068 s geomean. On 8559 a factorisation
-  is now 7 s, and the solve does **87 iterations in 600 s without
-  converging**: the dual residual bounces between 1e-1 and 1e2 while the
-  objective creeps toward the published value. The regularised factorisation
-  is a poor preconditioner for the unregularised system on that instance --
-  refinement gains 15% per round where it usually gains everything -- and
-  the known answer is to make the regularisation part of the method (a
-  proximal-point formulation, Friedlander & Orban) rather than something
-  refined away. When a 1e-8 regularisation is not enough against the
+  is now 7 s, and the solve then did **87 iterations in 600 s without
+  converging**: the dual residual bouncing between 1e-1 and 1e2 while the
+  objective crept toward the published value. That looked like the
+  regularised factorisation preconditioning the unregularised system badly
+  -- refinement gained 15% per round where it usually gains everything --
+  and the known answer to that is to make the regularisation part of the
+  method (a proximal-point formulation, Friedlander & Orban). It was built,
+  as `IPMParams(regularisation="pmm")`, and it is **worse at every
+  strength**: Netlib 78/89 static against 77, 70 and 53 of 89 at caps of
+  1e-8, 1e-6 and 1e-4, because after a proximal step the primal residual is
+  `δ·dy` rather than zero and the stall test reads the plateau as
+  infeasibility. The wall on 8559 was not the regularisation: the instance
+  has `c = 0` and a Hessian diagonal to 95,000, the objective scale was
+  taken from `c` alone, and the interior point started with a dual residual
+  of 1.7e5 and drove the iterate onto its bounds before that was gone. With
+  the diagonal of the scaled `Q` in the objective scale, **8559 converges in
+  15 iterations and 93 s** to the published value at 1.6e-9, and 8567 in 11
+  iterations and 104 s at 4e-12. Both are recorded in
+  [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md). When a 1e-8 regularisation is not enough against the
   dynamic range of `Θ` at an iterate, a pivot would have to be corrected;
   the LDLᵀ refuses instead and the LU takes the rest of the solve -- mod010
   runs 18 of 19 iterations on the LDLᵀ -- because a corrected pivot was
@@ -1412,7 +1422,7 @@ python -m bench.qplib --run --time-limit 60 --max-vars 6000
 | parsed | **29/29** (32/32 with the three box-only giants) |
 | published point verified | **28/29** (`9002` publishes none) |
 | certified bound never above the published value | **24/24** |
-| convex, continuous: optimal to 1e-8 | **6/7** — `8845` 14 s, `8938` 3 s, `8906` 1 s; `8991` (14,400 vars) 1.0 s, `8792` (15,129) 2.2 s, `8790` (39,204) 5.1 s |
+| convex, continuous: optimal to 1e-8 | **9/10** — `8845` 1.9 s, `8938` 1.2 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 6.6 s, `8790` (39,204) 2.2 s, `8515` (16,002) 5.7 s; `8559` (10,000 vars, 5,000 rows) 93 s, `8567` (10,000, 7,500 rows) 104 s; `9002` wrong status, below |
 | convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 3.6% / 1.6% in 60 s; `10069` closed |
 | non-convex: published value reached | 1/18 (`10042`); `5881` within 0.5%, `0031`/`0032` within 4-6% |
 
@@ -1441,8 +1451,10 @@ and reported in `info["gap"]`.
 Where the engine is genuinely short: `9002` (bounds of 1e11, a diagonal `Q`
 spanning 1e-11 to 2) defeats the starting point and is reported
 `INFEASIBLE_OR_UNBOUNDED`, which is wrong; the row-constrained 10,000-variable
-instances fill the factorisation 64× and cannot finish thirty of them in the
-limit; the convex binary instances reach the published optimum quickly and
+instances `8559` and `8567` solve, but at 93 s and 104 s they are outside
+this run's 60 s limit -- a factorisation on AMD's order is 7 s there, and
+that is the cost of the fill, not of the iteration count (15 and 11); the
+convex binary instances reach the published optimum quickly and
 then cannot close the last few percent with a first-order-quality bound at
 QP-node cost; and the dense non-convex ones -- 50 variables over a simplex,
 the standard quadratic program -- are a known hard class for envelopes and
@@ -1488,6 +1500,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        600 tests including regressions for every bug above
+tests/        607 tests including regressions for every bug above
 ui/           local single-page interface
 ```

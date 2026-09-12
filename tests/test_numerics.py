@@ -223,3 +223,41 @@ def test_integer_columns_are_never_scaled():
                 col_lb=np.zeros(40), col_ub=np.full(40, 10.0), kind=kind)
     _, sc = scale_problem(p)
     assert np.all(sc.col[kind == VarKind.INTEGER] == 1.0)
+
+
+def test_the_objective_scale_sees_the_hessian():
+    """QPLIB_8559 has ``c = 0`` and a ``Q`` whose diagonal runs to 95,000. An
+    objective scale taken from ``c`` alone is 1 there, so the interior point
+    started with a dual residual of 1.7e5, drove the iterate to its bounds
+    before that was gone, and crawled: 87 iterations in 600 s without
+    converging. The scale of a quadratic objective is the scale of its
+    gradient ``c + Qx``, and the diagonal of the column-scaled ``Q`` is the
+    curvature along each scaled unit direction, so it joins the geometric
+    mean: the same instance then takes 15 iterations."""
+    from sovopt.core.problem import Problem
+    from sovopt.numerics.scaling import scale_problem
+
+    n = 30
+    B, _ = _random_sparse(n, 3, seed=5, spread=1)
+    A = SparseMatrix.from_dense(B)
+    Q = SparseMatrix.from_dense(np.diag(np.geomspace(4.0, 95000.0, n)))
+    p = Problem(A=A, c=np.zeros(n), row_lb=np.ones(n), row_ub=np.ones(n),
+                col_lb=np.full(n, 0.1), col_ub=np.full(n, 10.0), Q=Q)
+    scaled, sc = scale_problem(p)
+    assert sc.obj < 1e-2                          # c alone would say 1
+    d = scaled.Q.diagonal()
+    assert 0.5 <= np.sqrt(d.max() * d.min()) <= 2.0
+    # the same model without its Hessian is an LP with no objective at all,
+    # and the scale of nothing is 1
+    lp = Problem(A=A, c=np.zeros(n), row_lb=np.ones(n), row_ub=np.ones(n),
+                 col_lb=np.full(n, 0.1), col_ub=np.full(n, 10.0))
+    assert scale_problem(lp)[1].obj == 1.0
+
+
+def test_sparse_diagonal_is_read_off_the_columns():
+    M = np.zeros((3, 5))
+    M[0, 0], M[1, 1], M[2, 2], M[0, 3], M[2, 4] = 1.5, -2.0, 0.25, 9.0, 9.0
+    S = SparseMatrix.from_dense(M)
+    assert np.array_equal(S.diagonal(), [1.5, -2.0, 0.25])
+    assert np.array_equal(SparseMatrix.from_dense(M.T).diagonal(), [1.5, -2.0, 0.25])
+

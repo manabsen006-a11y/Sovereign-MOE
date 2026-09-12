@@ -68,6 +68,16 @@ has a slack pinned between equal bounds, so its ``Θs`` is exactly zero and the
 primal and dual regularisation ``δp, δd`` keeps both blocks definite, and the
 perturbation it introduces is removed by iterative refinement against the
 *unregularised* matrix -- which is why the refinement loop is not a luxury.
+The alternative, in which the regularisation is the method rather than a
+perturbation -- the proximal-point form of Friedlander & Orban, where each
+Newton system is that of the objective plus ``ρ/2‖x − x_k‖²`` and the
+regularised matrix is the matrix to solve -- is built as
+``regularisation="pmm"`` and measured worse on Netlib at every strength
+(docs/NEGATIVE-RESULTS.md). The instance it was built for, QPLIB_8559, was
+not a regularisation problem at all: its objective has ``c = 0`` and a
+Hessian diagonal to 95,000, the objective scale saw only ``c``, and the
+interior point started with a dual residual of 1.7e5. With the diagonal of
+the scaled ``Q`` in the objective scale it converges in 15 iterations.
 
 What this does not do
 ---------------------
@@ -95,6 +105,13 @@ Gondzio, "Interior point methods 25 years later", European J. Oper. Res. 218
 Vanderbei, "LOQO: an interior point code for quadratic programming", Optim.
   Methods Softw. 11 (1999) 451-484 -- the quadratic block in the reduced KKT
   system and the Wolfe dual objective.
+Friedlander & Orban, "A primal-dual regularized interior-point method for
+  convex quadratic programs", Math. Prog. Comp. 4 (2012) 71-107 -- exact
+  primal-dual regularisation as a proximal-point method, the
+  ``regularisation="pmm"`` option.
+Pougkakiotis & Gondzio, "An interior point-proximal method of multipliers
+  for convex quadratic programming", Comput. Optim. Appl. 78 (2021) 307-351
+  -- the regularisation parameters tied to the barrier parameter.
 """
 
 from __future__ import annotations
@@ -138,16 +155,45 @@ class IPMParams:
     max_iter: int = 200
     time_limit: float = 600.0
 
+    regularisation: str = "static"
+    """How the two diagonal blocks are regularised.
+
+    ``"static"``: ``reg_primal`` and ``reg_dual`` are added to keep the
+    blocks definite and then refined away against the unregularised matrix.
+    A numerical device, and the default, because it measured best.
+
+    ``"pmm"``: the regularisation is the method. Each iteration solves the
+    Newton system of the *proximal* problem -- the objective plus
+    ``ρ/2 ‖x − x_k‖²`` and the constraints relaxed by ``δ(y − y_k)`` with the
+    centres at the current iterate -- so the proximal terms vanish at the
+    linearisation point, the system is exactly the regularised one, and it
+    is solved as-is rather than refined toward a matrix it is not. That is
+    the exact-regularisation form of Friedlander & Orban, a step of an
+    interior point-proximal method of multipliers; ``ρ = δ`` are tied to the
+    barrier parameter, ``clamp(pmm_scale · μ, pmm_floor, pmm_cap)``. It was
+    built for QPLIB_8559, whose trouble turned out to be the objective's
+    scale and not the regularisation, and on Netlib it is worse at every
+    cap: 78/89 static, 77/89 at a cap of 1e-8, 70/89 at 1e-6, 53/89 at
+    1e-4. The primal residual after a full step is ``δ·dy``, and a stall
+    test that expects the residual to fall reads that as infeasibility. See
+    docs/NEGATIVE-RESULTS.md. Kept so the measurement can be repeated."""
+
     reg_primal: float = 1e-8
     reg_dual: float = 1e-8
     """Static regularisation of the two diagonal blocks. Small enough not to
     bias the step, large enough to keep a free column or an equality row from
     making the block singular. Undone by refinement."""
 
+    pmm_scale: float = 1.0
+    pmm_floor: float = 1e-10
+    pmm_cap: float = 1e-8
+
     refine_rounds: int = 2
     """Iterative-refinement passes per KKT solve, against the unregularised
     matrix. Two is enough to recover the digits regularisation costs; the
-    residual is checked, so a converged solve stops early."""
+    residual is checked, so a converged solve stops early. Under ``"pmm"``
+    one pass against the regularised matrix itself polishes the
+    factorisation's rounding and nothing more."""
 
     fraction_to_boundary: float = 0.9995
     """How far along the Newton direction a step may go before it would touch
@@ -611,6 +657,9 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
     block indefinite, which the factorisation may or may not survive.
     """
     params = params or IPMParams()
+    if params.regularisation not in ("static", "pmm"):
+        raise ValueError(f"regularisation must be 'static' or 'pmm', "
+                         f"not {params.regularisation!r}")
     tol = params.tol
     t0 = time.perf_counter()
 
@@ -669,6 +718,8 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
         zu = np.where(free_hi, 1.0 + np.abs(cz), 0.0).astype(VAL)
     floor = 1e-12
     big = 1.0 / params.reg_primal
+    pmm = params.regularisation == "pmm"
+    rho, delta = params.reg_primal, params.reg_dual
     status = Status.ITERATION_LIMIT
     it = 0
     history = []
@@ -705,6 +756,10 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
         rd[fixed] = 0.0
 
         mu = float((g[free_lo] @ zl[free_lo] + t[free_hi] @ zu[free_hi]) / ncomp)
+        if pmm:
+            rho = delta = float(min(params.pmm_cap,
+                                    max(params.pmm_floor, params.pmm_scale * mu)))
+            kkt.ldl_delta = rho
 
         quad = 0.5 * float(z[:n] @ qx) if qx is not None else 0.0
         pobj = float(cz @ z) + quad
@@ -768,11 +823,11 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
         theta_inv[free_hi] += zu[free_hi] / t[free_hi]
         theta_inv[fixed] = big                    # pinned: force dz = 0
 
-        dxd = theta_inv[:n] + params.reg_primal
+        dxd = theta_inv[:n] + rho
         ti_s = theta_inv[n:]
         theta_s = np.where(ti_s > 1.0 / big, 1.0 / np.maximum(ti_s, 1e-300), big)
         theta_s[fixed[n:]] = 0.0                  # equality row: ds = 0
-        dsd = theta_s + params.reg_dual
+        dsd = theta_s + delta
 
         # The clock is checked here as well as at the top of the loop, because
         # a factorisation cannot be interrupted once it starts and at scale it
@@ -801,8 +856,13 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
             rhs = np.empty(nk, dtype=VAL)
             rhs[:n] = r_aug[:n]
             rhs[n:] = rp - theta_s * r_aug[n:]
-            u = kkt.solve(lu, dxd - params.reg_primal, dsd - params.reg_dual,
-                          rhs, params.refine_rounds)
+            if pmm:
+                # the regularised system is the system: polish the
+                # factorisation's rounding against it and take the step
+                u = kkt.solve(lu, dxd, dsd, rhs, min(params.refine_rounds, 1))
+            else:
+                u = kkt.solve(lu, dxd - rho, dsd - delta, rhs,
+                              params.refine_rounds)
             d_x, d_y = u[:n], u[n:]
 
             d_z = np.empty(nk, dtype=VAL)

@@ -388,7 +388,20 @@ def scale_problem(prob: Problem, method: str = "auto",
     c = prob.c * sc.col
     obj_scale = 1.0
     if scale_obj:
+        # The objective's scale is the scale of its gradient, and for a
+        # quadratic that is ``c + Qx``, not ``c``. QPLIB_8559 has ``c = 0``
+        # and a ``Q`` whose diagonal runs to 95,000: with the gradient left
+        # at that size the interior point started with a dual residual of
+        # 1.7e5, drove the iterate to its bounds before the residual was
+        # gone, and then crawled -- the primal step length pinned near
+        # zero, 87 iterations in 600 s without converging. With the
+        # diagonal of the column-scaled ``Q`` in the geometric mean the
+        # same instance takes 13 iterations. (The diagonal is the right
+        # summary: it is the curvature along each scaled unit direction.)
         nz = np.abs(c[c != 0.0])
+        if prob.Q is not None:
+            qd = np.abs(prob.Q.diagonal()) * sc.col * sc.col
+            nz = np.concatenate([nz, qd[qd != 0.0]])
         if nz.size:
             g = float(np.exp2(np.rint(np.log2(np.sqrt(nz.max() * nz.min())))))
             if g > 0 and np.isfinite(g):

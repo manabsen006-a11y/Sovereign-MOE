@@ -30,6 +30,11 @@ library. This document is the evidence for that claim.
 | `lp/basis.py` | Product form of the inverse, augmented form with logicals | Dantzig & Orchard-Hays 1954; Chvatal 1983 ch.7,24; Maros 2003 ch.5,9; Forrest & Tomlin 1972 |
 | `lp/simplex.py` | Bounded-variable primal and dual revised simplex, Harris two-pass ratio tests, Devex pricing, anti-degeneracy perturbation | Dantzig 1963; Harris 1973; Gill et al. 1989 (EXPAND); Forrest & Goldfarb 1992; Fourer 1994; Koberstein 2005; Maros 2003 |
 | `lp/pdlp.py` | Restarted average PDHG, adaptive step size, adaptive restarts, primal weight | Chambolle & Pock 2011; Applegate et al. NeurIPS 2021; Applegate et al. Math.Prog. 2023; Malitsky & Pock 2018 |
+| `lp/ipm.py` | Mehrotra predictor-corrector on the bounded-variable augmented system, LP and convex QP; static regularisation refined away, or proximal-point (opt-in) | Mehrotra 1992; Wright 1997; Vanderbei 1995, 1999; Altman & Gondzio 1999; Friedlander & Orban 2012; Pougkakiotis & Gondzio 2021 |
+| `numerics/ldl.py` | Up-looking LDLᵀ for quasi-definite matrices on a fixed ordering, elimination-tree reach | Vanderbei 1995; Davis 2006 ch.4; Liu 1990; Altman & Gondzio 1999 |
+| `numerics/ordering.py` | Approximate minimum degree, reverse Cuthill-McKee, symbolic fill | Amestoy-Davis-Duff 1996; George & Liu 1981; Cuthill & McKee 1969; Davis 2006 |
+| `numerics/ft.py` | Forrest-Tomlin update with a row file | Forrest & Tomlin 1972; Suhl & Suhl 1993; Chvátal 1983; Maros 2003 |
+| `globalopt/alphabb.py` | αBB underestimators with scaled Gershgorin α (opt-in) | Androulakis-Maranas-Floudas 1995; Adjiman et al. 1998; Neumaier & Shcherbina 2004; Horst & Tuy 1996 |
 | `mip/safebound.py` | Valid bounds from arbitrary duals | Neumaier & Shcherbina 2004; Cook et al. 2013; Althaus & Dumitriu 2012 |
 | `mip/propagate.py` | Activity-based bound tightening | Savelsbergh 1994; Brearley-Mitra-Williams 1975; Achterberg 2007 §7.1 |
 | `mip/tree.py` | Branch and bound, pseudocost branching | Land & Doig 1960; Achterberg-Koch-Martin 2005; Linderoth & Savelsbergh 1999 |
