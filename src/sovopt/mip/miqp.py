@@ -142,7 +142,7 @@ from ..core.tolerances import DEFAULT, INF, Tolerances
 from ..numerics.ldl import LDLSingular, LDLSymbolic
 from ..numerics.ordering import amd_order
 from ..qp import NotConvexError, QPParams, solve_qp
-from .heuristics import feasibility_jump, fix_and_propagate
+from .heuristics import dive, feasibility_jump, fix_and_propagate
 from .propagate import propagate
 from .safebound import safe_qp_bound
 from .tree import _Pseudocost
@@ -176,6 +176,16 @@ class MIQPParams:
     """Fix-and-propagate and the feasibility jump at the root, and again
     every ``heuristic_restart`` nodes while there is no incumbent."""
     heuristic_restart: int = 50
+
+    dive_at_node: int = 5
+    dive_time_frac: float = 0.4
+    """Share of the time limit the QP dive may spend. The
+    row-only heuristics find *a* point and know nothing of the objective;
+    the dive fixes one fractional variable at a time and re-solves the QP
+    relaxation, so what it lands on is shaped by the objective. A QP per
+    step is what it costs (QPLIB_3980: 235 binaries, about 0.1 s each).
+    Zero disables it; it runs when the ``dive_at_node``-th node is solved,
+    from the root's point, so a model the tree closes at once never pays."""
 
     branching: str = "pseudocost"
     """``"pseudocost"``: each variable's bound gain per unit of fractional
@@ -260,25 +270,25 @@ def _shifted(prob: Problem, d: float, binary) -> Problem:
 
 
 def _relaxation(prob: Problem, lo, hi, params: MIQPParams, deadline: float,
-                tighten: int = 0, fallback: Problem | None = None):
+                tighten: int = 0, fallback: Problem | None = None,
+                workspace=None, certified: bool = False):
     """Solve the node's continuous relaxation over ``[lo, hi]``.
 
     ``tighten`` re-solves with the tolerances divided by ``100**tighten`` and
     the iteration budget multiplied by ``4**tighten``; see the loop for when
     that is needed.
     """
-    node = prob.copy()
-    node.col_lb = lo
-    node.col_ub = hi
-    node.kind = np.zeros(prob.n, dtype=node.kind.dtype)   # relax integrality
+    node = prob.with_bounds(lo, hi)
+    node.kind = np.zeros(prob.n, dtype=prob.kind.dtype)    # relax integrality
     f = 100.0 ** tighten
     qp = QPParams(**{**vars(params.qp),
                      "eps_abs": params.qp.eps_abs / f,
                      "eps_rel": params.qp.eps_rel / f,
                      "max_iter": params.qp.max_iter * 4 ** tighten,
-                     "time_limit": max(0.0, deadline - time.perf_counter())})
+                     "time_limit": max(0.0, deadline - time.perf_counter()),
+                     "check_convex": params.qp.check_convex and not certified})
     try:
-        return solve_qp(node, qp)
+        return solve_qp(node, qp, workspace=workspace)
     except NotConvexError:
         if fallback is None:
             raise
@@ -286,9 +296,8 @@ def _relaxation(prob: Problem, lo, hi, params: MIQPParams, deadline: float,
         # (its smallest eigenvalue is the margin), and the dispatcher's
         # power-iteration estimate is an estimate. The unshifted model was
         # accepted at the root; its bound is the weaker one and still valid.
-        node = fallback.copy()
-        node.col_lb, node.col_ub = lo, hi
-        node.kind = np.zeros(prob.n, dtype=node.kind.dtype)
+        node = fallback.with_bounds(lo, hi)
+        node.kind = np.zeros(prob.n, dtype=prob.kind.dtype)
         return solve_qp(node, qp)
 
 
@@ -336,6 +345,11 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
                                            work.col_ub) == 0.0).all())
     shifted_cols = binary & (work.Q.diagonal() > 0.0)
     relax = _shifted(work, shift, shifted_cols)
+    # One scaling and one KKT analysis for every node: the matrices never
+    # change, only the boxes. The root is solved once here, outside the
+    # workspace, so that its convexity check runs on the model as given.
+    from ..qp import qp_workspace
+    ws = qp_workspace(relax, params.qp)
     root = propagate(work.A, work.row_lb, work.row_ub,
                      work.col_lb.astype(VAL), work.col_ub.astype(VAL),
                      int_mask, max_rounds=params.propagate_rounds,
@@ -351,6 +365,7 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
     leaf_lb = np.inf        # min certified bound over every closed node
     undecided = 0           # nodes closed without a bound that closes them
     prebound_pruned = 0     # children never solved: their free bound met the incumbent
+    root_point = None
     rc_fixed = 0            # binaries fixed by reduced cost
     heur_found = 0
     last_heur = 0
@@ -390,6 +405,32 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
                 cand = None
             if cand is not None and consider(cand):
                 heur_found += 1
+
+    class _QPNode:
+        __slots__ = ("status", "x", "basis")
+
+        def __init__(self, r):
+            self.status = r.status
+            self.x = r.x
+            self.basis = None
+
+    def _qp_dive(x0, lo, hi, until):
+        """The LP tree's dive with the QP relaxation as its node solver."""
+        nonlocal heur_found
+        if params.dive_time_frac <= 0.0:
+            return
+        idx = np.flatnonzero(int_mask)
+
+        def node_solve(l, h, _basis):
+            return _QPNode(_relaxation(relax, l, h, params, until, fallback=work,
+                                       workspace=ws, certified=certified))
+
+        cand = dive(work, int_mask, lo, hi, node_solve, x0, None,
+                    rule="fractional", max_lp=int(idx.size),
+                    max_backtracks=20, deadline=until,
+                    feas_tol=tol.primal_feas, int_tol=params.integrality)
+        if cand is not None and consider(cand):
+            heur_found += 1
 
     def _column_terms(dvec, lo, hi):
         """Each column's share of the certified bound, ``min(d·lo, d·hi)``;
@@ -439,7 +480,8 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
         lo, hi = pr.lo, pr.hi
 
         nodes += 1
-        r = _relaxation(relax, lo, hi, params, deadline, fallback=work)
+        r = _relaxation(relax, lo, hi, params, deadline, fallback=work,
+                        workspace=ws, certified=certified and nodes > 1)
         if r.status in (Status.INFEASIBLE, Status.INFEASIBLE_OR_UNBOUNDED):
             continue
         if r.x is None:
@@ -477,6 +519,22 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
                 nodes == 1 or nodes - last_heur >= params.heuristic_restart):
             last_heur = nodes
             _heuristics(x, lo, hi)
+        gap = max(params.gap_abs, params.gap_rel * abs(incumbent)) \
+            if np.isfinite(incumbent) else 0.0
+        if np.isfinite(incumbent) and node_bound >= incumbent - gap:
+            leaf_lb = min(leaf_lb, node_bound)
+            continue
+        if nodes == 1:
+            root_point = (x.copy(), lo.copy(), hi.copy())
+        if nodes == params.dive_at_node and params.heuristics and root_point is not None:
+            # The dive runs from the root's point whether or not the
+            # row-only heuristics found something: theirs is a point, its
+            # is a point the objective had a say in. It waits for a few
+            # nodes so that a model the tree closes at once does not pay for
+            # it: 10069 solves at its second node, and a dive over its 200
+            # binaries at the root cost 15 s for nothing.
+            _qp_dive(*root_point, min(deadline, time.perf_counter()
+                                      + params.dive_time_frac * params.time_limit))
             gap = max(params.gap_abs, params.gap_rel * abs(incumbent)) \
                 if np.isfinite(incumbent) else 0.0
             if np.isfinite(incumbent) and node_bound >= incumbent - gap:
@@ -560,7 +618,8 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
                 # only way to close it is to solve it better
                 for tighten in (1, 2):
                     r = _relaxation(relax, lo, hi, params, deadline, tighten,
-                                    fallback=work)
+                                    fallback=work, workspace=ws,
+                                    certified=certified)
                     if r.x is None:
                         break
                     x = np.asarray(r.x, dtype=VAL)

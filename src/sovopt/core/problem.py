@@ -246,6 +246,21 @@ class Problem:
             f"ratio {s['coeff_ratio']:.2e}"
         )
 
+    def with_bounds(self, col_lb, col_ub, row_lb=None, row_ub=None) -> "Problem":
+        """The same model with other bounds: matrices and costs *shared*, not
+        copied. A branch-and-bound builds one of these per node, and the
+        matrices are what a copy would spend its time on."""
+        return Problem(
+            A=self.A, c=self.c,
+            row_lb=self.row_lb if row_lb is None else np.asarray(row_lb, dtype=float),
+            row_ub=self.row_ub if row_ub is None else np.asarray(row_ub, dtype=float),
+            col_lb=np.asarray(col_lb, dtype=float), col_ub=np.asarray(col_ub, dtype=float),
+            kind=self.kind, Q=self.Q,
+            obj_offset=self.obj_offset, sense=self.sense, name=self.name,
+            col_names=self.col_names, row_names=self.row_names,
+            meta=self.meta,
+        )
+
     def copy(self) -> "Problem":
         return Problem(
             A=self.A.copy(), c=self.c.copy(),

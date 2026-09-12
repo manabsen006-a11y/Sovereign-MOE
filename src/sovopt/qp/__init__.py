@@ -17,10 +17,11 @@ from .proximal import NotConvexError, QPParams, check_convex
 from .proximal import solve_qp as solve_proximal_qp
 
 __all__ = ["QPParams", "solve_qp", "solve_proximal_qp", "NotConvexError",
-           "check_convex"]
+           "check_convex", "ipm_params", "qp_workspace"]
 
 
-def solve_qp(prob: Problem, params: QPParams | None = None) -> Solution:
+def solve_qp(prob: Problem, params: QPParams | None = None,
+             workspace=None) -> Solution:
     """Solve a convex QP with the engine ``params.method`` names."""
     params = params or QPParams()
     if params.method == "proximal":
@@ -37,11 +38,24 @@ def solve_qp(prob: Problem, params: QPParams | None = None) -> Solution:
         Q = Q.copy()                      # a concave maximisation is convex
         Q.cx = -Q.cx
         Q.rx = -Q.rx
-    check_convex(Q, prob.n, params.convexity_tol)
-    tol = max(params.eps_abs, params.eps_rel)
-    sol = solve_ipm(prob, IPMParams(
-        time_limit=params.time_limit,
-        eps_p=min(tol, 1e-9), eps_d=min(tol, 1e-9), eps_gap=min(tol, 1e-10),
-        verbose=params.verbose))
+    if params.check_convex:
+        check_convex(Q, prob.n, params.convexity_tol)
+    sol = solve_ipm(prob, ipm_params(params), workspace=workspace)
     sol.method = "qp[ipm]"
     return sol
+
+
+def ipm_params(params: QPParams):
+    """The interior-point settings the dispatcher derives from QP settings."""
+    from ..lp.ipm import IPMParams
+    tol = max(params.eps_abs, params.eps_rel)
+    return IPMParams(time_limit=params.time_limit,
+                     eps_p=min(tol, 1e-9), eps_d=min(tol, 1e-9),
+                     eps_gap=min(tol, 1e-10), verbose=params.verbose)
+
+
+def qp_workspace(prob, params: QPParams | None = None):
+    """An :class:`sovopt.lp.ipm.IPMWorkspace` for solving ``prob`` many
+    times with different bounds -- a branch-and-bound's node relaxations."""
+    from ..lp.ipm import IPMWorkspace
+    return IPMWorkspace(prob, ipm_params(params or QPParams()))

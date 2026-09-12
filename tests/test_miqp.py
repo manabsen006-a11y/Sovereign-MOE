@@ -375,3 +375,17 @@ def test_an_unknown_branching_rule_is_refused():
     with pytest.raises(ValueError):
         solve_miqp(binary_qp(0, n=6), MIQPParams(branching="strong"))
 
+
+def test_the_qp_dive_and_the_workspace_leave_the_answer_alone():
+    """The dive is a heuristic and the workspace a cache: neither may change
+    what the search proves. Brute force on a binary QP, with the dive on
+    and off, and the reported dive count is an integer either way."""
+    p = binary_qp(3, n=12)
+    ref = brute_force_binary(p)
+    with_dive = solve_miqp(p.copy(), MIQPParams(time_limit=120, dive_at_node=1))
+    without = solve_miqp(p.copy(), MIQPParams(time_limit=120, dive_time_frac=0.0))
+    for s in (with_dive, without):
+        assert s.status == Status.OPTIMAL
+        assert abs(s.objective - ref) <= 1e-6 * max(1.0, abs(ref))
+        assert isinstance(s.info["heuristic_incumbents"], int)
+

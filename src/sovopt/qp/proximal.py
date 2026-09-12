@@ -93,6 +93,10 @@ class QPParams:
     restart_beta: float = 0.2
     convexity_tol: float = 1e-7
     """How negative an eigenvalue may be before ``Q`` is called indefinite."""
+    check_convex: bool = True
+    """Estimate the smallest eigenvalue before solving. A caller that has
+    certified convexity itself -- the MIQP tree factorises ``Q − εI`` --
+    turns this off, and saves the power iteration at every node."""
     scaling: str = "pdlp"
     verbose: bool = False
 

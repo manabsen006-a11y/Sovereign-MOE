@@ -477,6 +477,16 @@ class _KKT:
             self.ldl_sym = LDLSymbolic(kp, ki, nk, perm)
             self.ldl_name = name
 
+    def reset(self):
+        """Forget one solve's history and keep the structure: the pattern,
+        the ordering, the symbolic factorisation and the race's verdict."""
+        self.ldl_failures = 0
+        self.ldl_corrected = 0
+        self.ldl_used = 0
+        self.ldl_boosted = 0
+        self.last_boost = 0.0
+        self.lu_abandoned = False
+
     def _try_ldl(self, dx, ds, boost):
         """One symmetric factorisation with ``boost`` added to both blocks.
 
@@ -758,21 +768,8 @@ def _max_step(v, dv, active):
     return float(np.minimum(1.0, (-v[bad] / dv[bad]).min()))
 
 
-def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
-    """Solve an LP or a convex QP by a primal-dual interior-point method.
-
-    Integer restrictions are ignored -- this solves the relaxation. Convexity
-    of ``Q`` is the caller's premise: :mod:`sovopt.qp` checks it before
-    routing here, and an indefinite ``Q`` handed in directly makes the (1,1)
-    block indefinite, which the factorisation may or may not survive.
-    """
-    params = params or IPMParams()
-    if params.regularisation not in ("static", "pmm"):
-        raise ValueError(f"regularisation must be 'static' or 'pmm', "
-                         f"not {params.regularisation!r}")
-    tol = params.tol
-    t0 = time.perf_counter()
-
+def _minimising(prob: Problem) -> tuple[bool, Problem]:
+    """The model as a minimisation; a maximisation is negated."""
     flip = prob.sense == ObjSense.MAXIMISE
     work = prob
     if flip:
@@ -784,9 +781,98 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
             work.Q.cx = -work.Q.cx
             work.Q.rx = -work.Q.rx
         work.sense = ObjSense.MINIMISE
+    return flip, work
 
-    scaled, sc = scale_problem(work, method="ruiz",
-                               bound_scaling=params.bound_scaling)
+
+class IPMWorkspace:
+    """What the interior point can keep between solves of one model whose
+    *bounds* differ: the scaling, the scaled matrices and costs, the KKT
+    pattern, its ordering, the race's verdict and the symbolic factorisation.
+
+    A branch-and-bound solves the same matrices thousands of times with
+    different boxes. Measured on QPLIB_3980 (235 variables), a node's QP
+    cost 190 ms of which 75 ms was rebuilding and re-analysing a KKT whose
+    pattern had not changed; with the workspace the node solve is the
+    numeric work alone. The scaling is fixed at construction -- including
+    the unit taken from the bounds -- so every node is solved in one set of
+    units, which is also what makes their bounds comparable.
+    """
+
+    def __init__(self, prob: Problem, params: IPMParams | None = None):
+        params = params or IPMParams()
+        self.flip, work = _minimising(prob)
+        self.c_ref = prob.c
+        self.n, self.m = prob.n, prob.m
+        self.nnz = (prob.A.nnz, prob.Q.nnz if prob.Q is not None else 0)
+        self.scaled, self.sc = scale_problem(work, method="ruiz",
+                                             bound_scaling=params.bound_scaling)
+        A = self.scaled.A
+        Q = self.scaled.Q if (self.scaled.Q is not None
+                              and self.scaled.Q.nnz > 0) else None
+        self.kkt = _KKT(A, ordering=params.ordering, Q=Q,
+                        factorisation=params.factorisation)
+
+    def matches(self, prob: Problem) -> bool:
+        return (prob.n == self.n and prob.m == self.m
+                and (prob.A.nnz, prob.Q.nnz if prob.Q is not None else 0) == self.nnz
+                and (prob.c is self.c_ref or np.array_equal(prob.c, self.c_ref)))
+
+    def scaled_for(self, prob: Problem):
+        """The cached scaled model with this ``prob``'s bounds, scaled the
+        same way. ``flip`` is the workspace's; the caller's sense must match."""
+        flip, work = _minimising(prob)
+        sc = self.sc
+
+        def _row(b, f):
+            out = b * f
+            out[b <= -INF] = -INF
+            out[b >= INF] = INF
+            return out
+
+        def _col(b, f):
+            out = b / f
+            out[b <= -INF] = -INF
+            out[b >= INF] = INF
+            return out
+
+        s = self.scaled.with_bounds(_col(work.col_lb, sc.col),
+                                    _col(work.col_ub, sc.col),
+                                    _row(work.row_lb, sc.row),
+                                    _row(work.row_ub, sc.row))
+        s.kind = np.zeros(self.n, dtype=self.scaled.kind.dtype)
+        return flip, work, s, sc
+
+
+def solve_ipm(prob: Problem, params: IPMParams | None = None,
+              workspace: IPMWorkspace | None = None) -> Solution:
+    """Solve an LP or a convex QP by a primal-dual interior-point method.
+
+    Integer restrictions are ignored -- this solves the relaxation. Convexity
+    of ``Q`` is the caller's premise: :mod:`sovopt.qp` checks it before
+    routing here, and an indefinite ``Q`` handed in directly makes the (1,1)
+    block indefinite, which the factorisation may or may not survive.
+
+    ``workspace``: an :class:`IPMWorkspace` built on a model with the same
+    matrices and costs, whose scaling and KKT analysis are reused; it is
+    ignored, with the analysis redone, if the model does not match it.
+    """
+    params = params or IPMParams()
+    if params.regularisation not in ("static", "pmm"):
+        raise ValueError(f"regularisation must be 'static' or 'pmm', "
+                         f"not {params.regularisation!r}")
+    tol = params.tol
+    t0 = time.perf_counter()
+
+    kkt = None
+    if workspace is not None and workspace.matches(prob) \
+            and (prob.sense == ObjSense.MAXIMISE) == workspace.flip:
+        flip, work, scaled, sc = workspace.scaled_for(prob)
+        kkt = workspace.kkt
+        kkt.reset()
+    else:
+        flip, work = _minimising(prob)
+        scaled, sc = scale_problem(work, method="ruiz",
+                                   bound_scaling=params.bound_scaling)
     A = scaled.A
     Q = scaled.Q if (scaled.Q is not None and scaled.Q.nnz > 0) else None
     m, n = A.m, A.n
@@ -820,8 +906,9 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
                        np.zeros(n), Status.OPTIMAL, 0, t0, params, "ipm")
 
     # ---- starting point ---------------------------------------------------- #
-    kkt = _KKT(A, ordering=params.ordering, Q=Q,
-               factorisation=params.factorisation)
+    if kkt is None:
+        kkt = _KKT(A, ordering=params.ordering, Q=Q,
+                   factorisation=params.factorisation)
     kkt.ldl_delta = max(params.reg_primal, params.reg_dual)
     kkt.ldl_boosts = tuple(params.ldl_boosts)
     kkt.lu_fill_cap = params.lu_fill_cap

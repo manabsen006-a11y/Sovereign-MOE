@@ -350,6 +350,45 @@ def test_variables_at_1e10_are_solved_in_their_own_unit():
 
 
 # --------------------------------------------------------------------------- #
+# the workspace: one analysis, many boxes                                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_a_workspace_is_reused_across_bounds_and_gives_the_same_answers():
+    """A branch-and-bound's nodes share matrices and costs and differ in
+    their boxes. The workspace keeps the scaling and the KKT analysis; the
+    answers must be the fresh solver's, on every box, and the workspace's
+    KKT object must actually be the one used."""
+    from sovopt.lp.ipm import IPMWorkspace
+    p = random_lp(seed=4)
+    ws = IPMWorkspace(p, IPMParams())
+    rng = np.random.default_rng(0)
+    for _ in range(5):
+        q = p.copy()
+        fix = rng.random(p.n) < 0.2
+        q.col_ub[fix] = q.col_lb[fix] + rng.integers(0, 2, p.n)[fix] * (q.col_ub[fix] - q.col_lb[fix])
+        fresh = solve_ipm(q, IPMParams())
+        reused = solve_ipm(q, IPMParams(), workspace=ws)
+        assert fresh.status == reused.status
+        if fresh.status == Status.OPTIMAL:
+            assert abs(fresh.objective - reused.objective) <= 1e-7 * max(1.0, abs(fresh.objective))
+            assert np.abs(fresh.x - reused.x).max() <= 1e-5 * max(1.0, np.abs(fresh.x).max())
+    assert ws.kkt.ldl_used > 0 or ws.kkt.ldl_failures > 0     # it was used
+
+
+def test_a_workspace_for_another_model_is_ignored_not_misused():
+    from sovopt.lp.ipm import IPMWorkspace
+    p = random_lp(seed=1)
+    other = random_lp(seed=2)
+    ws = IPMWorkspace(other, IPMParams())
+    assert not ws.matches(p)
+    s = solve_ipm(p, IPMParams(), workspace=ws)
+    t = solve_ipm(p, IPMParams())
+    assert s.status == t.status == Status.OPTIMAL
+    assert abs(s.objective - t.objective) <= 1e-9 * max(1.0, abs(t.objective))
+
+
+# --------------------------------------------------------------------------- #
 # a real instance, end to end                                                  #
 # --------------------------------------------------------------------------- #
 

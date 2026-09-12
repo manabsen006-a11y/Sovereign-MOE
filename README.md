@@ -256,7 +256,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 653 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 656 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -1196,18 +1196,27 @@ six now have regression tests.
   148 and 31 of 172, every null vector touches every column, and
   `zᵀ(Q − D)z = −Σ d_i z_i² ≥ 0` forces every `d_i ≤ 0`, uniform or not.
   What moved those two was pseudocost branching -- 10050's gap after 60 s
-  from 3.6% to 2.35%, 10056's from 1.6% to 0.64% -- and what would move
-  them further is the SDP relaxation or the constraint-aware reformulation
-  Billionnet & Elloumi actually use, neither of which is here. The four
-  constrained instances (3980, 3913, 3871, 4270) have their first
-  incumbents, from the feasibility jump and fix-and-propagate, at 38%,
-  27%, 500% and 12% above the published values: the row-only heuristics
-  find a point and know nothing about the objective, and the node
-  rounding does not improve on them inside the limit. The free child
-  bounds never fire under fractional or pseudocost branching (the branching
-  variable's reduced cost is zero by complementarity), and reduced-cost
-  fixing takes a few percent off the tree; both stay, at one sparse
-  product per node.
+  from 3.6% to 2.35%, 10056's from 1.6% to 0.64% -- then node throughput:
+  a node's QP was 190 ms on QPLIB_3980, 75 ms of it rebuilding and
+  re-analysing a KKT whose pattern never changes between nodes, and a
+  power iteration re-checking a convexity the tree had already certified.
+  `IPMWorkspace` keeps one scaling and one KKT analysis for the whole
+  tree, node models share their matrices instead of copying them, and the
+  node solve is 108 ms: 10050 to **1.9%**, 10056 to **0.28%**. What would
+  move them further is the SDP relaxation or the constraint-aware
+  reformulation Billionnet & Elloumi actually use, neither of which is
+  here. The four constrained instances (3980, 3913, 3871, 4270) got their
+  first incumbents from the feasibility jump and fix-and-propagate, at
+  38%, 27%, 500% and 12% above the published values -- the row-only
+  heuristics find a point and know nothing about the objective -- and a
+  *QP dive* (the LP tree's dive with the QP relaxation as its node solver,
+  run once the tree has five nodes, from the root's point, on 40% of the
+  limit) brings three of them to **15%, 2.6% and 27%**; 4270's QP costs
+  1.2 s per step at 1,600 variables and the dive does not finish inside
+  its share. The free child bounds never fire under fractional or
+  pseudocost branching (the branching variable's reduced cost is zero by
+  complementarity), and reduced-cost fixing takes a few percent off the
+  tree; both stay, at one sparse product per node.
 - **The fill-reducing orderings help the interior point and not the
   simplex.** Reverse Cuthill-McKee is worth 20-45x on a banded KKT and
   approximate minimum degree 1.4-2x on a wide one, but on a simplex basis
@@ -1611,7 +1620,7 @@ python -m bench.qplib --run --time-limit 60 --max-vars 6000
 | published point verified | **28/29** (`9002` publishes none) |
 | certified bound never above the published value | **24/24** |
 | convex, continuous: optimal to 1e-8 | **9/10** — `8845` 1.2 s, `8938` 1.4 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 4.6 s, `8790` (39,204) 1.9 s, `8515` (16,002) 6.1 s; `8559` (10,000 vars, 5,000 rows) 12 iterations, `8567` (10,000, 7,500 rows) 10 iterations, both about 100 s; `9002` solved to a 1e-9 gap and refused by the absolute yardstick, below |
-| convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 2.35% / 0.64% in 60 s (was 3.6% / 1.6%); `10069` closed; `3980`, `3913`, `3871`, `4270` now have incumbents, 12-500% above the published values (Known limits) |
+| convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 1.9% / 0.28% in 60 s (was 3.6% / 1.6%); `10069` closed; `3980`, `3913`, `3871`, `4270` have incumbents 15%, 2.6%, 27% and 12% above the published values (Known limits) |
 | non-convex: published value reached | 1/18 (`10042`); `5881` within 0.5%, `0031`/`0032` within 4-6% |
 
 **What the run found, in the order it found it.** The first pass used the
@@ -1695,6 +1704,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        653 tests including regressions for every bug above
+tests/        656 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```
