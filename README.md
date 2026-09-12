@@ -256,7 +256,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 642 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 643 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -957,6 +957,21 @@ six now have regression tests.
    40x48 model: CPU simplex 0.45 s, GPU PDLP 2.5 s, "CPU 5.7x faster --
    this model is too small to fill the GPU", which is the truth.
 
+8. **The tree's pseudocost branching never learnt a pseudocost.** The
+   `_Pseudocost` class kept per-variable gains per unit of fractional move,
+   scored them as Achterberg's product, and fell back to a global average
+   for variables it had not seen -- and `update` had no caller, so every
+   variable was one it had not seen, and the score was the product of the
+   two fractional parts: most-fractional branching under another name, for
+   the whole life of the tree. Found while building the same rule for the
+   MIQP tree. The gain a child's bound makes over its parent's is now
+   credited to the decision that made it, and `info["pseudocost_updates"]`
+   counts how often. Measured on the MIPLIB set at 120 s: dcmulti 35 s ->
+   5.8 s, p0201 7.0 s -> 3.4 s, flugpl 4.4 s -> 1.7 s, misc07 from the
+   limit to `OPTIMAL` in 101 s, qnet1's final incumbent from 13% above the
+   optimum to 0.6%, **7/11 -> 8/11 optimal** and the shifted geomean 24.4 s
+   -> 19.0 s; sched k=2 16.9 s -> 7.5 s. Nothing else in the tree changed.
+
 ---
 
 ## Known limits
@@ -1111,7 +1126,7 @@ six now have regression tests.
   |---|---|---|
   | sched k=8 (1,536 binaries) | no incumbent | **1,726,631, gap 1.2%**, verified |
   | sched k=16 (6,144 binaries, 18,400 rows) | not attempted | **7,170,956, gap 0.4%**, verified |
-  | sched k=2 | OPTIMAL, 45.6 s | OPTIMAL, 16.9 s |
+  | sched k=2 | OPTIMAL, 45.6 s | OPTIMAL, 16.9 s (7.5 s with bug 8 fixed) |
   | dcmulti, misc07, mas76, qnet1 | incumbents from the tree | dives find one at the root in 0.1-1 s; qnet1's final incumbent 21760 -> 18152 (optimum 16030) with dives through the tree |
   | 10teams | no incumbent | 968-980 (optimum 924) in two runs of five, none in the other three |
 
@@ -1458,21 +1473,23 @@ The MIPLIB set with the node-LP kernel, one thread, before and after
 | flugpl, gr4x6, khb05250, mod010, p0201 | optimal | optimal, 1.3-2x faster |
 | **optimal** | **6/11** | **7/11** |
 
-At the current commit -- four threads, the diving heuristics -- the same run
-gives 7/11: dcmulti 38 s, gt2 1.5 s (the coin landed; see Known limits),
-misc07 at the limit on 2810, mas76 and qnet1 at the limit with incumbents,
-10teams at the limit with or without one depending on the run.
+At the current commit -- four threads, the diving heuristics, pseudocosts
+that learn (bug 8) -- the same run gives **8/11**: dcmulti 5.8 s, gt2 1.1 s
+(the coin landed; see Known limits), misc07 `OPTIMAL` in 101 s, mas76 and
+qnet1 at the limit with incumbents (qnet1's 0.6% above the optimum),
+10teams at the limit with or without one depending on the run; shifted
+geomean 19.0 s.
 
 And the refinery scheduling ladder, with the diving heuristics
 (`python -m bench.scale --mode mip` regenerates it):
 
 | model | rows | cols | binaries | status | gap | nodes | time |
 |---|---|---|---|---|---|---|---|
-| sched k=1 | 70 | 48 | 24 | OPTIMAL | 0 | 10 | 0.9 s |
-| sched k=2 | 284 | 192 | 96 | OPTIMAL | 0 | 5,001 | 16.9 s |
-| sched k=4 | 1,144 | 768 | 384 | TIME_LIMIT | 1.9% | 8,959 | 121 s |
-| sched k=8 | 4,592 | 3,072 | 1,536 | TIME_LIMIT | 1.2% | 2,495 | 123 s |
-| sched k=16 | 18,400 | 12,288 | 6,144 | TIME_LIMIT | 0.4% | 511 | 121 s |
+| sched k=1 | 70 | 48 | 24 | OPTIMAL | 0 | 10 | 0.7 s |
+| sched k=2 | 284 | 192 | 96 | OPTIMAL | 0 | 2,771 | 7.5 s |
+| sched k=4 | 1,144 | 768 | 384 | TIME_LIMIT | 1.8% | 5,887 | 120 s |
+| sched k=8 | 4,592 | 3,072 | 1,536 | TIME_LIMIT | 1.2% | 2,687 | 120 s |
+| sched k=16 | 18,400 | 12,288 | 6,144 | TIME_LIMIT | 0.4% | 1,215 | 137 s |
 
 **MILP proves optimality to about 100 binaries and returns a verified plan
 within 2% up to 6,144.** Before the dives the same ladder found nothing at
@@ -1654,6 +1671,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        642 tests including regressions for every bug above
+tests/        643 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

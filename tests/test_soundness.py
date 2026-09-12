@@ -235,6 +235,48 @@ def test_batched_node_bounds_agree_with_brute_force():
     assert checked >= 10, f"only {checked} models had a feasible point"
 
 
+def test_pseudocosts_are_learnt_and_the_search_stays_exact():
+    """REGRESSION: ``_Pseudocost.update`` had no caller, so the "pseudocost"
+    score was the product of the two fractional parts for every variable --
+    most-fractional branching under another name. The gain a child's bound
+    makes over its parent's is now credited to the decision that made it,
+    and the tree reports how often; the answer is still the brute-force
+    optimum on every enumerable model, with the exact node LP and with the
+    batched one."""
+    rng = np.random.default_rng(3)
+    checked = 0
+    learnt = 0
+    for _ in range(16):
+        n, m = int(rng.integers(6, 9)), int(rng.integers(3, 5))
+        lo = rng.integers(-5, 5, size=n).astype(float)
+        hi = lo + rng.integers(2, 4, size=n).astype(float)
+        A = rng.integers(-3, 4, size=(m, n)).astype(float)
+        ru = ((A @ ((lo + hi) / 2.0)) + rng.uniform(0.3, 3.0, size=m)).astype(float)
+        c = rng.uniform(-5, 5, size=n)
+
+        feasible = [np.array(pt) for pt in
+                    itertools.product(*[np.arange(lo[j], hi[j] + 1e-9)
+                                        for j in range(n)])
+                    if np.all(A @ np.array(pt) <= ru + 1e-9)]
+        if not feasible:
+            continue
+        best = min(float(c @ pt) for pt in feasible)
+        checked += 1
+        p = Problem(A=SparseMatrix.from_dense(A), c=c,
+                    row_lb=np.full(m, -INF), row_ub=ru,
+                    col_lb=lo.copy(), col_ub=hi.copy(),
+                    kind=np.full(n, VarKind.INTEGER, dtype=np.uint8))
+        for solver in ("simplex", "bnr"):
+            s = solve_mip(p, MIPParams(node_solver=solver, time_limit=60,
+                                       cut_rounds=0, heuristics=False))
+            assert s.status == Status.OPTIMAL
+            assert abs(s.objective - best) < 1e-6
+            assert not (np.isfinite(s.dual_bound) and s.dual_bound > best + 1e-6)
+            learnt += s.info["pseudocost_updates"]
+    assert checked >= 8, f"only {checked} models had a feasible point"
+    assert learnt > 0, "no child's bound was ever credited to its branching"
+
+
 def test_conflict_clauses_can_be_added_without_symmetry_breaking():
     """REGRESSION: a redundant local import made ``Cut`` local to all of solve_mip.
 

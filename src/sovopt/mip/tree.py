@@ -16,6 +16,11 @@ compromises:
 * **Pseudocosts are updated in slabs.** Both children of a branching decision are
   bounded in the same batch, so the up and down objective gains land together
   and the pseudocost table fills in much faster than one branch at a time.
+  (This paragraph described an update that did not exist: ``_Pseudocost``
+  had no caller of ``update`` until README bug 8, and the score was the
+  product of the fractional parts -- most-fractional branching. Now it is
+  what the paragraph says: dcmulti 35 s -> 5.8 s, misc07 from the limit to
+  OPTIMAL, 7/11 -> 8/11 on the MIPLIB set at 120 s.)
 
 The bounds come from an unconverged first-order method, and are made rigorous by
 the Neumaier-Shcherbina correction in :mod:`sovopt.mip.safebound`. A weak bound
@@ -667,6 +672,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     root_node.parent_id = 0          # key 0 is free: _order starts at 1
     heapq.heappush(frontier, root_node)
     pc = _Pseudocost(n)
+    pc_updates = 0
 
     nodes = 0
     status = Status.NODE_LIMIT
@@ -991,6 +997,18 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         # ---- process the slab ---------------------------------------------
         for t, nd in enumerate(alive):
             b = float(bounds[t])
+            # Credit the bound this child reached to the branching decision
+            # that made it: the pseudocost is the gain per unit of the
+            # fractional part moved, per variable and direction. Nothing
+            # did this before -- ``pc.update`` had no caller -- so the
+            # "pseudocost" score was the product of the two fractional parts
+            # for every variable, which is most-fractional branching under
+            # another name. An infeasible child carries no finite gain and
+            # is not counted.
+            if nd.path and nd.frac > 0.0 and np.isfinite(b) and np.isfinite(nd.bound):
+                jb, is_lower, _ = nd.path[-1]
+                pc.update(jb, nd.frac, b - nd.bound, not is_lower)
+                pc_updates += 1
             if not np.isfinite(b):
                 b = nd.bound                       # vacuous bound: keep parent's
             b = max(b, nd.bound)                   # bounds only improve downward
@@ -1204,6 +1222,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         out.info["heuristics"] = heur.summary()
         out.info["nodes_infeasible"] = node_infeasible
         out.info["undecided_nodes"] = undecided
+        out.info["pseudocost_updates"] = pc_updates
         node_pool.close()
         return out
 
@@ -1225,6 +1244,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     sol.info["root_mir_cuts"] = mir_used
     sol.info["heuristics"] = heur.summary()
     sol.info["warm_start_hit_rate"] = warm_hits / max(warm_tries, 1)
+    sol.info["pseudocost_updates"] = pc_updates
     sol.info["nodes_infeasible"] = node_infeasible
     node_pool.close()
     return sol
