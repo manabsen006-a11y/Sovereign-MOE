@@ -256,7 +256,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 656 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 667 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -550,25 +550,42 @@ at each node with the proximal solver, pruning on the certified bound from bug
 hands it to the pooling engine above. Same instances, same 120 s limit, gap
 1e-4, random dense indefinite `Q` over `[0, 3]ⁿ` with `n/4` rows:
 
-| n | products | αBB | McCormick |
-|---|---|---|---|
-| 5 | 15 | 5 / 9 nodes, 0.4 / 1.3 s | 3 / 0 nodes, 0.4 / 0.0 s |
-| 10 | 55 | 39 / 103 nodes, 8.0 / 11.7 s | 7 / 15 nodes, 0.1 / 0.2 s |
-| 15 | 120 | **time limit**, gap 10.7% / 12.0% | 81 / 205 nodes, **1.1 / 9.5 s** |
-| 20 | 210 | time limit, gap 17.4% / 25.8% | 187 / 891 nodes, **22.9 / 93.5 s** |
-| 25 | 325 | time limit, gap 79% / 57% | time limit, gap 150% / 59% |
+| n | products | αBB, then | αBB now | McCormick |
+|---|---|---|---|---|
+| 5 | 15 | 5 / 9 nodes, 0.4 / 1.3 s | 9 / 13 nodes | 3 / 0 nodes, 0.4 / 0.0 s |
+| 10 | 55 | 39 / 103 nodes, 8.0 / 11.7 s | 43 / 43 nodes | 7 / 15 nodes, 0.1 / 0.2 s |
+| 15 | 120 | time limit, gap 10.7% / 12.0% | **239 / 373 nodes, 9.1 / 14.0 s** | 81 / 205 nodes, 1.1 / 9.5 s |
+| 20 | 210 | time limit, gap 17.4% / 25.8% | **259 / 2,067 nodes, 12.1 / 90.2 s** | 187 / 891 nodes, 22.9 / 93.5 s |
+| 25 | 325 | time limit, gap 79% / 57% | **2,355 / 1,161 nodes, 92.4 / 46.7 s** | time limit, gap 150% / 59% |
+| 30 | 465 | — | time limit, gap 12% / **0.9%** | — |
 
-The envelope treats each product exactly, where a diagonal shift has to pay
-for every cross term through the diagonal; on a dense `Q` that is the whole
-difference. McCormick is the default; αBB stays as `relaxation="alphabb"`
-because it needs no product variables — `n²` of them for a dense `Q` — its
-bound is unconditional, and the table has to remain reproducible
-(`python -m bench.nonconvex_qp --relaxation alphabb`). Recorded in
+"Then" is the αBB that was recorded as a negative result: the first-order
+QP at its nodes, and Gershgorin's shift, which bounds the spectrum from
+outside and on a dense `Q` overshoots the smallest eigenvalue by about
+two -- 7.35 against 4.04 on the n=15 instance. "Now" is the interior point
+at the nodes and a shift the `LDLᵀ` certifies by bisection
+(`alphabb.spectral_alpha`): one shift for the whole free block, the
+smallest for which `Q + 2αI − εI` factorises with every pivot positive,
+uniform in the model's own units so that branching on a variable shrinks
+its own gap term quadratically. A box-scaled version was tried first and
+stalls the tree at the root bound, because a shift uniform in the unit box
+gives every variable the same gap whatever its width; it is recorded in
+the function's docstring. **The dense wall moved from 20 variables to 25
+proved, and 30 within 1% on one of two.** On a sparse `Q` the old order
+holds: at 15% density McCormick proves n=30 in 169 / 619 nodes where αBB
+sits at a 5-6% gap, because an envelope's error is confined to the products
+that are loose and a shift pays on every axis. `relaxation="auto"` now
+takes αBB on a `Q` whose off-diagonal density is at least a half with
+twelve or more variables, McCormick otherwise; both stay reproducible
+(`python -m bench.nonconvex_qp --relaxation alphabb|mccormick`), and the
+negative result is amended in
 [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
 
-At 15% density, where a refinery quadratic more plausibly lives, the same
-route proves **30 variables in 6.6 / 25.8 s** and times out at 50 with the
-bound 80–134% below the incumbent.
+At 15% density, where a refinery quadratic more plausibly lives, McCormick
+proves **30 variables in 6.6 / 25.8 s** and times out at 50 with the bound
+80–134% below the incumbent; αBB's incumbent there is the better one
+(−425 against −247) and its gap the smaller (25% against 121%), and neither
+closes.
 
 The McCormick column above is after four changes to the spatial tree, each
 measured on the n = 15 / 20 rows: 17.5 / 43.8 / 118.1 s / time limit before
@@ -1154,17 +1171,20 @@ six now have regression tests.
   `method="proximal"` — matrix-free, so it is the GPU path and the one that
   survives a `Q` too dense to factorise — and it is the one that reaches
   ~1e-8 rather than 1e-9. Neither returns a basis, so no ranging on a QP.
-- **Non-convex QP hits a wall at about 25 dense variables.** A `Q` the
+- **Non-convex QP hits a wall at about 30 dense variables.** A `Q` the
   convexity check rejects is solved to a proven global optimum by spatial
-  branch-and-bound over McCormick envelopes (see [Non-convex
-  QP](#non-convex-qp)), and on a random dense indefinite `Q` — every variable
-  coupled to every other, the hardest shape — that proves 20 variables in
-  under 100 s and gets nowhere at 25 in 120 s. At 15% density it proves 30
-  and not 50. The weak side is the *incumbent*: a projected-gradient polish
-  ignores the rows, so with active constraints the search often holds a poor
-  upper bound against a bound that is already close. A local NLP step that
-  respects the rows is the piece that would move the wall. Every variable in
-  a quadratic term needs a finite box, and a model without one is refused
+  branch-and-bound -- McCormick envelopes on a sparse `Q`, αBB with a
+  certified spectral shift on a dense one (see [Non-convex
+  QP](#non-convex-qp)). On a random dense indefinite `Q` -- every variable
+  coupled to every other, the hardest shape -- that proves **25 variables
+  in 47-92 s** and leaves 30 at a 0.9% / 12% gap in 120 s; the wall was at
+  20 before the shift became the one the `LDLᵀ` certifies instead of
+  Gershgorin's. At 15% density McCormick proves 30 and not 50. The weak
+  side at 50 is the *incumbent*: a projected-gradient polish ignores the
+  rows, so with active constraints the search often holds a poor upper
+  bound against a bound that is already close. A local NLP step that
+  respects the rows is the piece that would move that. Every variable in a
+  quadratic term needs a finite box, and a model without one is refused
   with the variable named.
 - **MIQP is rigorous only if `Q` is convex, and convexity is estimated.**
   `mip/miqp.py` prunes on a *certified* bound — Neumaier–Shcherbina applied to
@@ -1621,7 +1641,7 @@ python -m bench.qplib --run --time-limit 60 --max-vars 6000
 | certified bound never above the published value | **24/24** |
 | convex, continuous: optimal to 1e-8 | **9/10** — `8845` 1.2 s, `8938` 1.4 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 4.6 s, `8790` (39,204) 1.9 s, `8515` (16,002) 6.1 s; `8559` (10,000 vars, 5,000 rows) 12 iterations, `8567` (10,000, 7,500 rows) 10 iterations, both about 100 s; `9002` solved to a 1e-9 gap and refused by the absolute yardstick, below |
 | convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 1.9% / 0.28% in 60 s (was 3.6% / 1.6%); `10069` closed; `3980`, `3913`, `3871`, `4270` have incumbents 15%, 2.6%, 27% and 12% above the published values (Known limits) |
-| non-convex: published value reached | 1/18 (`10042`); `5881` within 0.5%, `0031`/`0032` within 4-6% |
+| non-convex: published value reached | **4/18** -- `10040` proved optimal in 9 s, `10042`, `10073`, `10074` to 1e-5 (was 1/18 before αBB with the certified shift took the dense instances); `5881` within 0.5%, `0031`/`0032` within 3.5-6.4%; `10072`, `0067` have first incumbents; on the 50-variable simplex instances the bound moved from 20x below the published value to 13x and the incumbents from 70% off to 52-55% |
 
 **What the run found, in the order it found it.** The first pass used the
 proximal QP for every convex instance and solved none of them: `8845` timed
@@ -1661,8 +1681,9 @@ convex binary instances reach the published optimum quickly and then
 cannot close the last percent or two, because their low-rank Hessians
 admit no diagonal shift and the bound is the relaxation's own (Known
 limits); and the dense non-convex ones -- 50 variables over a simplex,
-the standard quadratic program -- are a known hard class for envelopes and
-show it, at 70% above the published value with the bound 20× below.
+the standard quadratic program -- are a known hard class, for envelopes
+and for shifts alike: 52-55% above the published value with the bound 13×
+below under αBB, 70% and 20× under McCormick.
 
 ## Measurement conditions
 
@@ -1704,6 +1725,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        656 tests including regressions for every bug above
+tests/        667 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

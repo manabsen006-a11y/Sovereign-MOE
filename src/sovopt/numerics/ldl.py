@@ -322,3 +322,68 @@ class LDLFactor:
         return out
 
     btran = ftran                                      # symmetric
+
+
+class PSDOracle:
+    """Answers "is ``Q − diag(shift) − εI`` positive definite?" for one
+    pattern and many shifts: the symmetric pattern, its ordering and the
+    symbolic factorisation are built once, and each question is a numeric
+    ``LDLᵀ`` with every pivot checked positive -- Sylvester's criterion,
+    exact up to rounding of order ``ε``. Columns ``Q`` never touches are
+    zero rows and columns and are left out; a diagonal that sums to exactly
+    zero is a zero pivot the factorisation refuses, which is the right
+    answer. The oracle behind the MIQP tree's binary shift and the αBB
+    tree's spectral shift, both of which bisect on it.
+    """
+
+    def __init__(self, Q):
+        from ..core.sparse import coo_to_csc
+        from .ordering import amd_order
+        n = Q.n
+        self.n = n
+        self.support = np.flatnonzero(np.diff(Q.cp) > 0)
+        k = self.support.size
+        self.k = k
+        if k == 0:
+            return
+        pos = np.full(n, -1, dtype=np.int64)
+        pos[self.support] = np.arange(k)
+        cols = np.repeat(np.arange(n, dtype=np.int64), np.diff(Q.cp))
+        rows = Q.ci.astype(np.int64)
+        # The pattern: Q's off-diagonal entries plus one diagonal slot per
+        # column, built so that no summing can cancel a slot -- coo_to_csc
+        # drops an entry whose value is exactly zero, and the diagonal must
+        # be present for every question. Q's own diagonal goes into the
+        # slot afterwards.
+        off = rows != cols
+        r = np.concatenate([pos[rows[off]], np.arange(k)])
+        c = np.concatenate([pos[cols[off]], np.arange(k)])
+        v = np.concatenate([Q.cx[off], np.ones(k)])
+        cp, ci, cx = coo_to_csc(r, c, v, k, k)
+        self.cp, self.ci = cp, ci
+        diag_pos = np.empty(k, dtype=np.int64)
+        for j in range(k):
+            s = np.flatnonzero(ci[cp[j]:cp[j + 1]] == j)
+            diag_pos[j] = cp[j] + int(s[0])
+        self.diag_pos = diag_pos
+        self.base = cx.copy()
+        qdiag = np.zeros(n, dtype=VAL)
+        np.add.at(qdiag, cols[~off], Q.cx[~off])
+        self.base[diag_pos] = qdiag[self.support]
+        self.sym = LDLSymbolic(cp, ci, k, amd_order(cp, ci, k))
+
+    def holds(self, shift, eps: float) -> bool:
+        if self.k == 0:
+            return bool((np.asarray(shift) <= 0.0).all())
+        cx = self.base.copy()
+        cx[self.diag_pos] -= np.asarray(shift, dtype=VAL)[self.support] + eps
+        try:
+            f = self.sym.factor(cx)
+        except LDLSingular:
+            return False
+        return f.n_neg == 0 and bool((f.D > 0.0).all())
+
+
+def certify_psd(Q, shift, eps: float) -> bool:
+    """One question to a :class:`PSDOracle` on ``Q``."""
+    return PSDOracle(Q).holds(shift, eps)

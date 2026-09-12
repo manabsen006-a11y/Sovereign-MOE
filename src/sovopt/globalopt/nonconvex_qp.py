@@ -11,9 +11,9 @@ exactly this. A local method returns *a* stationary point; the problem
 statement asks for optimisation, and optimising a non-convex function means a
 bound.
 
-Two relaxations were built, and the measured one is the default
-------------------------------------------------------------------
-**McCormick** (default). Every product ``x_i x_j`` that ``Q`` touches becomes a
+Two relaxations were built, and the measurement picks between them
+--------------------------------------------------------------------
+**McCormick** (the default on a sparse ``Q``). Every product ``x_i x_j`` that ``Q`` touches becomes a
 variable ``w_ij`` with the four McCormick envelope rows over the node's box,
 and the objective becomes linear in ``w``. That is a bilinear program, and
 :mod:`sovopt.globalopt.spatial` -- the pooling engine -- already solves those:
@@ -22,14 +22,31 @@ branching and a Neumaier-Shcherbina-certified node bound from the simplex's
 duals. The envelope is the convex hull of a single product, which is why it is
 tight where a diagonal shift is not.
 
-**αBB** (:mod:`sovopt.globalopt.alphabb`, opt-in). Shift ``Q``'s diagonal until
-Gershgorin certifies convexity and solve the convex QP at each node. It was
-built first, it is rigorous, and on dense indefinite ``Q`` it loses to the
-envelopes by a wide margin: at 15 variables it times out at a 10-12% gap
-where McCormick proves optimality in 18-44 s. It stays because it needs no
-product variables -- ``n²`` of them for a dense ``Q`` -- and its bound is
-unconditional; the table in the README is what decides between them, and
-``relaxation="alphabb"`` is there so that table can be regenerated.
+**αBB** (:mod:`sovopt.globalopt.alphabb`, the default on a dense ``Q``).
+Shift ``Q``'s diagonal until the ``LDLᵀ`` certifies convexity and solve the
+convex QP at each node. It was built first and lost to the envelopes by a
+wide margin -- at 15 variables it timed out at a 10-12% gap where McCormick
+proved optimality in 18-44 s -- for two reasons that have since gone: its
+node solver was the first-order QP, and its shift was Gershgorin's, which
+bounds the spectrum from outside and on a dense ``Q`` overshoots the
+smallest eigenvalue by about two. With the interior point at the nodes and
+the shift the ``LDLᵀ`` certifies by bisection (:func:`alphabb.spectral_alpha`),
+the same ladder reads: n=15 in 9-14 s, n=20 in 12-90 s, **n=25 in 47-92 s**
+where McCormick cannot finish, n=30 at a 0.9% / 12% gap in 120 s. On a
+sparse ``Q`` (15% density) the order is the old one: McCormick proves n=30
+in 169-619 nodes where αBB sits at a 5-6% gap, because an envelope's error
+is confined to the products that are loose and a shift pays on every axis.
+``"auto"`` therefore takes αBB when the off-diagonal density of ``Q`` is at
+least a half, there are twelve or more variables (below that McCormick is
+a handful of nodes either way) and the rows are few -- at most a quarter
+as many as the variables -- McCormick otherwise, and αBB whenever the
+products would exceed ``max_products``. The row condition is QPLIB's:
+on the binary instances with one to ten rows (10040, 10072-4, 0067) αBB
+found the published optimum or the first incumbent where McCormick had
+found nothing, and on the mixed ones with 32 and 52 rows (0031, 0032) it
+held a worse incumbent against a vacuous bound where McCormick's node LPs
+had the better point -- the bilinear LP carries a polytope exactly, and
+the shifted QP pays for every row through a weaker dual.
 
 What both need
 --------------
@@ -73,10 +90,17 @@ class NonconvexQPParams:
     gap_abs: float = 1e-9
     relaxation: str = "auto"
     """``"mccormick"`` (products as variables, LP nodes), ``"alphabb"``
-    (diagonal shift, convex QP nodes), or ``"auto"``: McCormick unless the
-    products would exceed ``max_products``, which is the one regime where a
-    relaxation with no product variables is the only one that fits."""
+    (diagonal shift, convex QP nodes), or ``"auto"``: αBB on a dense ``Q``
+    or when the products would exceed ``max_products``, McCormick
+    otherwise (module header)."""
     max_products: int = 5000
+    dense_density: float = 0.5
+    dense_min_vars: int = 12
+    dense_max_rows: float = 0.25
+    """``"auto"`` takes αBB on a ``Q`` whose off-diagonal density over the
+    variables it touches is at least ``dense_density``, with at least
+    ``dense_min_vars`` of them and at most ``dense_max_rows`` rows per
+    variable (module header for the measurement)."""
     verbose: bool = False
     spatial: SpatialParams | None = None
     alphabb: AlphaBBParams | None = None
@@ -188,8 +212,16 @@ def solve_nonconvex_qp(prob: Problem,
     relaxation = params.relaxation
     if relaxation == "auto":
         Q = prob.Q
-        n_products = (Q.nnz + int((Q.ci == np.repeat(np.arange(Q.n), np.diff(Q.cp))).sum())) // 2
-        relaxation = "alphabb" if n_products > params.max_products else "mccormick"
+        on_diag = int((Q.ci == np.repeat(np.arange(Q.n), np.diff(Q.cp))).sum())
+        n_products = (Q.nnz + on_diag) // 2
+        touched = int((np.diff(Q.cp) > 0).sum())
+        off_density = ((Q.nnz - on_diag) / (touched * (touched - 1))
+                       if touched > 1 else 0.0)
+        dense = (touched >= params.dense_min_vars
+                 and off_density >= params.dense_density
+                 and prob.m <= params.dense_max_rows * touched)
+        relaxation = ("alphabb" if (n_products > params.max_products or dense)
+                      else "mccormick")
     if relaxation == "alphabb":
         ap = params.alphabb or AlphaBBParams()
         ap.time_limit, ap.gap_rel, ap.gap_abs = \

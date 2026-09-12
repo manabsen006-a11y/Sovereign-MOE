@@ -97,8 +97,10 @@ import numpy as np
 from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import SparseMatrix, VAL
 from ..core.tolerances import DEFAULT, INF, Tolerances
+from ..mip.heuristics import feasibility_jump, fix_and_propagate
 from ..mip.propagate import propagate
 from ..mip.safebound import safe_qp_bound
+from ..numerics.ldl import PSDOracle, certify_psd
 from ..qp import QPParams, solve_qp
 
 __all__ = ["AlphaBBParams", "gershgorin_alpha", "solve_alphabb"]
@@ -123,6 +125,16 @@ class AlphaBBParams:
     polish_steps: int = 50
     """Projected-gradient steps from the relaxation point, looking for a
     better incumbent. Zero disables it; the bound does not depend on it."""
+
+    alpha: str = "spectral"
+    """How the convexifying shift is chosen. ``"gershgorin"``: per variable,
+    from the scaled Gershgorin theorem, in one pass. ``"spectral"``: one
+    shift for the box-scaled Hessian, the smallest the ``LDLᵀ`` certifies
+    positive semidefinite, found by bisection -- the shift the smallest
+    eigenvalue would give, without an eigenvalue routine. Gershgorin bounds
+    the spectrum from outside and on a dense ``Q`` overshoots it by about
+    two; the underestimator's gap is proportional to the shift, and the
+    tree is exponential in the gap."""
 
     qp: QPParams = field(default_factory=QPParams)
     tol: Tolerances = field(default_factory=lambda: DEFAULT)
@@ -178,6 +190,95 @@ def gershgorin_alpha(Q: SparseMatrix, lo, hi, safety: float = 1e-12):
         pad = safety * (abs(diag) + radius) + safety
         alpha[i] = max(0.0, -0.5 * (lam - pad))
     return alpha
+
+
+def _free_block(Q: SparseMatrix, idx) -> SparseMatrix:
+    """``Q`` restricted to the rows and columns in ``idx``."""
+    from ..core.sparse import coo_to_csc
+    n = Q.n
+    pos = np.full(n, -1, dtype=np.int64)
+    pos[idx] = np.arange(idx.size)
+    cols = np.repeat(np.arange(n, dtype=np.int64), np.diff(Q.cp))
+    rows = Q.ci.astype(np.int64)
+    keep = (pos[rows] >= 0) & (pos[cols] >= 0)
+    cp, ci, cx = coo_to_csc(pos[rows[keep]], pos[cols[keep]], Q.cx[keep],
+                            idx.size, idx.size)
+    return SparseMatrix(idx.size, idx.size, cp, ci, cx)
+
+
+def spectral_alpha(Q: SparseMatrix, lo, hi, eps_rel: float = 1e-9,
+                   rounds: int = 40, margin: float = 1e-2):
+    """One shift ``α`` for every free variable, ``2α`` the smallest uniform
+    shift of the free block ``Q_ff`` that the ``LDLᵀ`` certifies positive
+    semidefinite -- the shift ``−λ_min(Q_ff)`` would give, found by
+    bisection without an eigenvalue routine -- against the scaled
+    Gershgorin vector, whichever has the smaller worst-case gap
+    ``Σ α_j d_j²/4``. Each vector is certified on its own; the elementwise
+    minimum of the two would not be, and is not taken.
+
+    Not box-scaled, on purpose. A shift that is uniform in the unit box
+    gives every variable the same gap ``a/8`` whatever its width, so
+    branching on a variable does not shrink its own term and the tree
+    stalls at the root bound (measured: n=15 sat at −218.3 for 466 nodes).
+    Uniform in the model's units, a variable's term is ``α d_j²/4`` and
+    branching shrinks it quadratically, faster than Gershgorin's linear
+    ``½ d_j Σ|Q_ij| d_i``.
+    """
+    n = Q.n
+    g = gershgorin_alpha(Q, lo, hi)
+    if not np.isfinite(g).all():
+        return g
+    lo = np.asarray(lo, dtype=VAL)
+    hi = np.asarray(hi, dtype=VAL)
+    d = hi - lo
+    free = d > 0.0
+    if not free.any() or not (g > 0.0).any():
+        return g
+    idx = np.flatnonzero(free)
+    block = _free_block(Q, idx)
+    scale = float(np.abs(block.cx).max(initial=0.0))
+    eps = eps_rel * max(1.0, scale)
+    # the unscaled Gershgorin bound on −λ_min is a certified upper end
+    dense_row = np.zeros(idx.size, dtype=VAL)
+    np.add.at(dense_row, np.repeat(np.arange(idx.size), np.diff(block.cp)), np.abs(block.cx))
+    diag = block.diagonal()
+    top = float((dense_row - 2.0 * diag).max()) * (1.0 + margin) + eps   # Σ|off| − Q_ii
+    if top <= 0.0:
+        return g
+    oracle = PSDOracle(block)
+    shift = np.empty(idx.size, dtype=VAL)
+
+    def ok(a):
+        shift.fill(-a)                       # Q − diag(−a) = Q + aI
+        return oracle.holds(shift, eps)
+
+    if ok(0.0):
+        return np.zeros(n, dtype=VAL)
+    lo_a, hi_a = 0.0, top
+    if not ok(hi_a):
+        return g                              # cannot certify: keep Gershgorin
+    for _ in range(rounds):
+        mid = 0.5 * (lo_a + hi_a)
+        if ok(mid):
+            hi_a = mid
+        else:
+            lo_a = mid
+        if hi_a - lo_a <= 1e-4 * top:
+            break
+    # a margin above the smallest certified shift: the relaxation is then
+    # convex by a visible amount and the node solver converges cleanly
+    a = hi_a * (1.0 + margin)
+    alpha = np.zeros(n, dtype=VAL)
+    alpha[idx] = 0.5 * a
+    if not ok(a):
+        return g
+    if float(alpha[idx] @ d[idx] ** 2) <= float(g[idx] @ d[idx] ** 2):
+        return alpha
+    return g
+
+
+def node_alpha(Q, lo, hi, rule: str):
+    return spectral_alpha(Q, lo, hi) if rule == "spectral" else gershgorin_alpha(Q, lo, hi)
 
 
 # --------------------------------------------------------------------------- #
@@ -409,7 +510,9 @@ def solve_alphabb(prob: Problem,
         return Solution(status=Status.INFEASIBLE, nodes=0,
                         time=time.perf_counter() - t0, method="alphabb")
 
-    alpha0 = gershgorin_alpha(work.Q, root.lo, root.hi)
+    if params.alpha not in ("spectral", "gershgorin"):
+        raise ValueError(f"unknown alpha rule {params.alpha!r}")
+    alpha0 = node_alpha(work.Q, root.lo, root.hi, params.alpha)
     if not np.isfinite(alpha0).all():
         # name the unbounded variable, not the bounded neighbour it poisons
         bad = np.flatnonzero(~np.isfinite(alpha0))
@@ -450,7 +553,7 @@ def solve_alphabb(prob: Problem,
     order = 1
 
     def relax(lo, hi, tighten=0):
-        alpha = alpha0 if root_convex else gershgorin_alpha(work.Q, lo, hi)
+        alpha = alpha0 if root_convex else node_alpha(work.Q, lo, hi, params.alpha)
         red = _reduce(work, lo, hi, alpha)
         if red is None:
             return None, None, None, None
@@ -521,6 +624,24 @@ def solve_alphabb(prob: Problem,
 
         consider(x)
         consider(_polish(work, np.clip(x, lo, hi), lo, hi, params.polish_steps))
+        if int_mask.any() and not np.isfinite(incumbent) and (
+                nodes == 1 or nodes % 50 == 0):
+            # On a mixed model the relaxation's point is fractional and the
+            # polish ignores the rows, so nothing above produces an
+            # incumbent until a relaxation happens to be integral. The LP
+            # tree's row-only heuristics need only the rows and apply
+            # unchanged: QPLIB_0032 had no incumbent in 60 s without them.
+            for fn in (lambda: fix_and_propagate(work, x, int_mask, lo, hi,
+                                                 tol.primal_feas),
+                       lambda: feasibility_jump(work, int_mask, lo, hi, x0=x)):
+                if time.perf_counter() > deadline:
+                    break
+                try:
+                    cand = fn()
+                except Exception:                        # noqa: BLE001
+                    cand = None
+                if cand is not None and consider(cand):
+                    break
         gap = max(params.gap_abs, params.gap_rel * abs(incumbent)) \
             if np.isfinite(incumbent) else 0.0
         if np.isfinite(incumbent) and node_bound >= incumbent - gap:

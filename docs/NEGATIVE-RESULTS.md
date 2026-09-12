@@ -262,6 +262,23 @@ variables -- `n²` of them for a dense `Q` -- so there is a regime of large
 sparse `Q` where it may yet win, and the table above cannot be regenerated
 without it (`python -m bench.nonconvex_qp --relaxation alphabb`).
 
+**Amended: it wins on dense `Q` now, and is the default there.** Both
+reasons it lost are gone. Its node solver is the interior point, not the
+first-order QP; and its shift is the one the `LDLᵀ` certifies by bisection
+-- the smallest uniform `α` with `Q + 2αI − εI` positive definite, which is
+what the smallest eigenvalue would give -- instead of Gershgorin's, which
+overshoots by about two on a dense `Q`. Same instances, same 120 s: n=15 in
+9-14 s, n=20 in 12-90 s, n=25 in 47-92 s where McCormick times out, n=30
+at a 0.9% / 12% gap. The sparse regime still belongs to McCormick (15%
+density, n=30: 169 / 619 nodes against a 5-6% gap at the limit), and
+`"auto"` chooses by the off-diagonal density. Two things measured on the
+way and not kept: a *box-scaled* uniform shift, which gives every variable
+the same gap whatever its width, so branching cannot shrink a term and the
+tree sat at the root bound for 466 nodes; and an elementwise minimum of
+the spectral and Gershgorin vectors, which is not certified -- each is
+positive semidefinite on its own and their minimum need not be, so the
+rule takes one vector whole.
+
 ---
 
 ## Proximal-point regularisation of the interior point (built, measured, kept opt-in)

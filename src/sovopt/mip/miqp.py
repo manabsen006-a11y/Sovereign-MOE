@@ -139,8 +139,7 @@ import numpy as np
 from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import IDX, VAL, SparseMatrix, coo_to_csc
 from ..core.tolerances import DEFAULT, INF, Tolerances
-from ..numerics.ldl import LDLSingular, LDLSymbolic
-from ..numerics.ordering import amd_order
+from ..numerics.ldl import PSDOracle, certify_psd
 from ..qp import NotConvexError, QPParams, solve_qp
 from .heuristics import dive, feasibility_jump, fix_and_propagate
 from .propagate import propagate
@@ -198,31 +197,7 @@ class MIQPParams:
     verbose: bool = False
 
 
-def _psd_with_margin(Q: SparseMatrix, shift, eps: float) -> bool:
-    """Does ``Q − diag(shift) − εI`` factorise as ``LDLᵀ`` with every pivot
-    positive, on the columns ``Q`` touches? Sylvester's criterion, exact up
-    to rounding of order ``ε``: a yes certifies ``Q − diag(shift) ⪰ εI`` on
-    that support, and the columns outside it are zero rows and columns of
-    ``Q``, which add nothing either way."""
-    n = Q.n
-    support = np.flatnonzero(np.diff(Q.cp) > 0)
-    if support.size == 0:
-        return bool((np.asarray(shift) <= 0.0).all())
-    pos = np.full(n, -1, dtype=np.int64)
-    pos[support] = np.arange(support.size)
-    k = support.size
-    cols = np.repeat(np.arange(n, dtype=np.int64), np.diff(Q.cp))
-    r = np.concatenate([pos[Q.ci.astype(np.int64)], np.arange(k)])
-    c = np.concatenate([pos[cols], np.arange(k)])
-    v = np.concatenate([Q.cx, -np.asarray(shift, dtype=VAL)[support] - eps])
-    cp, ci, cx = coo_to_csc(r, c, v, k, k)
-    # a diagonal that summed to exactly zero vanishes from the pattern and
-    # is a zero pivot the factorisation refuses, which is the right answer
-    try:
-        f = LDLSymbolic(cp, ci, k, amd_order(cp, ci, k)).factor(cx)
-    except LDLSingular:
-        return False
-    return f.n_neg == 0 and bool((f.D > 0.0).all())
+_psd_with_margin = certify_psd
 
 
 def _binary_shift(Q: SparseMatrix, binary, eps: float, rounds: int = 40):
@@ -231,18 +206,19 @@ def _binary_shift(Q: SparseMatrix, binary, eps: float, rounds: int = 40):
     ``certified`` says ``Q`` itself passed the test."""
     diag = Q.diagonal()
     w = (np.asarray(binary, dtype=bool) & (diag > 0.0)).astype(VAL)
-    certified = _psd_with_margin(Q, np.zeros(Q.n, dtype=VAL), eps)
+    oracle = PSDOracle(Q)
+    certified = oracle.holds(np.zeros(Q.n, dtype=VAL), eps)
     if not certified or not w.any():
         return 0.0, certified
     cap = float(diag[w > 0.0].min(initial=np.inf))   # d ≤ Q_ii is necessary
     if not np.isfinite(cap) or cap <= 0.0:
         return 0.0, certified
     lo, hi = 0.0, cap
-    if _psd_with_margin(Q, hi * w, eps):
+    if oracle.holds(hi * w, eps):
         return hi, certified
     for _ in range(rounds):
         mid = 0.5 * (lo + hi)
-        if _psd_with_margin(Q, mid * w, eps):
+        if oracle.holds(mid * w, eps):
             lo = mid
         else:
             hi = mid

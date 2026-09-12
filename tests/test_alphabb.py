@@ -124,6 +124,52 @@ def test_gershgorin_shift_makes_q_positive_semidefinite(seed):
     assert a[hi <= lo].max(initial=0.0) == 0.0, "a fixed variable needs no shift"
 
 
+@pytest.mark.parametrize("seed", range(10))
+def test_spectral_shift_is_certified_and_never_looser_than_gershgorin(seed):
+    """The bisection's shift makes ``Q + 2 diag(α)`` PSD on the free block
+    (checked here by a dense eigenvalue solver the engine does not use),
+    sits within its margin of ``−λ_min``, and its worst-case gap
+    ``Σ α_j d_j²`` is never above the Gershgorin vector's -- the rule takes
+    whichever certified vector is smaller by that measure, whole."""
+    from sovopt.globalopt.alphabb import spectral_alpha
+    rng = np.random.default_rng(100 + seed)
+    n = 8
+    M = rng.standard_normal((n, n))
+    H = 0.5 * (M + M.T)
+    lo = rng.uniform(-3, 0, n)
+    hi = lo + rng.uniform(0.1, 5, n)
+    if seed % 3 == 0:
+        hi[1] = lo[1]
+    Q = SparseMatrix.from_dense(H)
+    s = spectral_alpha(Q, lo, hi)
+    g = gershgorin_alpha(Q, lo, hi)
+    free = np.flatnonzero(hi > lo)
+    d = hi - lo
+    assert (s >= 0.0).all() and s[hi <= lo].max(initial=0.0) == 0.0
+    Hs = (H + 2.0 * np.diag(s))[np.ix_(free, free)]
+    assert np.linalg.eigvalsh(Hs).min() >= -1e-9, "the certificate is false"
+    assert float(s[free] @ d[free] ** 2) <= float(g[free] @ d[free] ** 2) + 1e-9
+    lam = np.linalg.eigvalsh(H[np.ix_(free, free)]).min()
+    if lam < 0 and not np.array_equal(s, g):
+        # uniform: 2α ≈ −λ_min, within the 1% margin and the bisection step
+        assert np.allclose(s[free], s[free][0])
+        assert -lam * 0.999 <= 2.0 * s[free][0] <= -lam * 1.02 + 1e-6
+
+
+def test_spectral_shift_shrinks_the_tree_and_keeps_the_answer():
+    """The n=15 dense instance of the ladder: 1,373 nodes with Gershgorin,
+    239 with the spectral shift, the same optimum. A smaller, faster proxy
+    here."""
+    p = indefinite(3, n=6, m=2)
+    g = solve_alphabb(p.copy(), AlphaBBParams(time_limit=120, alpha="gershgorin"))
+    s = solve_alphabb(p.copy(), AlphaBBParams(time_limit=120, alpha="spectral"))
+    assert g.status == s.status == Status.OPTIMAL
+    assert abs(g.objective - s.objective) <= 1e-6 * max(1.0, abs(g.objective))
+    assert s.nodes <= g.nodes
+    with pytest.raises(ValueError):
+        solve_alphabb(p.copy(), AlphaBBParams(alpha="hessian"))
+
+
 def test_gershgorin_is_zero_on_a_diagonally_dominant_convex_q():
     H = np.array([[4.0, 1.0, -1.0], [1.0, 3.0, 0.5], [-1.0, 0.5, 2.0]])
     a = gershgorin_alpha(SparseMatrix.from_dense(H), np.zeros(3), np.ones(3))
