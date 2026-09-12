@@ -34,6 +34,7 @@ library. This document is the evidence for that claim.
 | `numerics/ldl.py` | Up-looking LDLᵀ for quasi-definite matrices on a fixed ordering, elimination-tree reach | Vanderbei 1995; Davis 2006 ch.4; Liu 1990; Altman & Gondzio 1999 |
 | `numerics/ordering.py` | Approximate minimum degree, reverse Cuthill-McKee, symbolic fill | Amestoy-Davis-Duff 1996; George & Liu 1981; Cuthill & McKee 1969; Davis 2006 |
 | `numerics/ft.py` | Forrest-Tomlin update with a row file | Forrest & Tomlin 1972; Suhl & Suhl 1993; Chvátal 1983; Maros 2003 |
+| `mip/miqp.py` | Branch-and-bound over convex QP nodes with certified bounds; binary diagonal shift; reduced-cost fixing | Land & Doig 1960; Fletcher & Leyffer 1998; Bonami-Kilinç-Linderoth 2012; Hammer & Rubin 1970; Billionnet & Elloumi 2007; Nemhauser & Wolsey 1988 |
 | `globalopt/alphabb.py` | αBB underestimators with scaled Gershgorin α (opt-in) | Androulakis-Maranas-Floudas 1995; Adjiman et al. 1998; Neumaier & Shcherbina 2004; Horst & Tuy 1996 |
 | `mip/safebound.py` | Valid bounds from arbitrary duals | Neumaier & Shcherbina 2004; Cook et al. 2013; Althaus & Dumitriu 2012 |
 | `mip/propagate.py` | Activity-based bound tightening | Savelsbergh 1994; Brearley-Mitra-Williams 1975; Achterberg 2007 §7.1 |

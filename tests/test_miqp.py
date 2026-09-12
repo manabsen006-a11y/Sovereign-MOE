@@ -238,10 +238,140 @@ def test_the_bound_is_reported_as_rigorous():
     p = target_miqp(0)
     s = solve_miqp(p.copy(), MIQPParams(time_limit=120))
     assert s.info["bound_is_rigorous"] is True
-    # the generator's H = MᵀM + ½I is not diagonally dominant, so convexity
-    # here is estimated, not certified, and the flag must say so
-    assert s.info["convexity_certified"] is False
+    # the generator's H = MᵀM + ½I is not diagonally dominant, so the
+    # Gershgorin test could not certify it; the LDLᵀ with a margin can,
+    # because it is positive definite by a margin of ½
+    assert s.info["convexity_certified"] is True
     q = p.copy()
     q.Q = SparseMatrix.from_dense(np.diag([1.0, 2.0, 3.0, 4.0]))
     s = solve_miqp(q, MIQPParams(time_limit=120))
     assert s.info["convexity_certified"] is True
+    # a rank-one Q is positive semidefinite and singular: neither certificate
+    # reaches it, and the flag must say so
+    v = np.array([1.0, 2.0, 0.5, 1.5])
+    q.Q = SparseMatrix.from_dense(np.outer(v, v))
+    s = solve_miqp(q, MIQPParams(time_limit=120))
+    assert s.info["convexity_certified"] is False
+    assert s.info["binary_shift"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# node bounds: the binary shift, the free child bounds, reduced-cost fixing    #
+# --------------------------------------------------------------------------- #
+
+
+def binary_qp(seed=0, n=12, m=3, delta=0.1):
+    """A binary QP whose Hessian is definite by a margin ``delta``, so a
+    diagonal shift of about ``delta`` exists."""
+    rng = np.random.default_rng(7000 + seed)
+    M = rng.standard_normal((n, n))
+    H = M.T @ M / n + delta * np.eye(n)
+    t = rng.uniform(-0.3, 1.3, n)
+    A = SparseMatrix.from_dense(np.round(rng.uniform(0, 2, (m, n))))
+    b = np.round(A.matvec(np.full(n, 0.5)))
+    return Problem(A=A, c=-(H @ t), Q=SparseMatrix.from_dense(H),
+                   row_lb=np.full(m, -INF), row_ub=b,
+                   col_lb=np.zeros(n), col_ub=np.ones(n),
+                   kind=np.full(n, 2, dtype=np.uint8), name=f"bqp{seed}")
+
+
+def brute_force_binary(p):
+    """Every 0/1 point of the box, checked against the original model."""
+    best = None
+    for combo in itertools.product((0.0, 1.0), repeat=p.n):
+        x = np.array(combo)
+        row_v, col_v, _ = p.violation(x)
+        if max(row_v, col_v) > 1e-9:
+            continue
+        v = p.objective(x)
+        if best is None or v < best:
+            best = v
+    return best
+
+
+def test_the_psd_oracle_tells_definite_from_singular_from_indefinite():
+    from sovopt.mip.miqp import _psd_with_margin
+    n = 6
+    rng = np.random.default_rng(3)
+    M = rng.standard_normal((n, n))
+    pd = SparseMatrix.from_dense(M.T @ M + 0.5 * np.eye(n))
+    assert _psd_with_margin(pd, np.zeros(n), 1e-9)
+    assert not _psd_with_margin(pd, np.full(n, 10.0), 1e-9)   # shifted too far
+    v = rng.standard_normal(n)
+    singular = SparseMatrix.from_dense(np.outer(v, v))
+    assert not _psd_with_margin(singular, np.zeros(n), 1e-9)
+    indefinite = SparseMatrix.from_dense(np.diag([1.0, -1.0, 2.0, 3.0, 4.0, 5.0]))
+    assert not _psd_with_margin(indefinite, np.zeros(n), 1e-9)
+    # zero rows and columns are outside the support and do not count
+    padded = np.zeros((n + 2, n + 2))
+    padded[:n, :n] = M.T @ M + 0.5 * np.eye(n)
+    assert _psd_with_margin(SparseMatrix.from_dense(padded), np.zeros(n + 2), 1e-9)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_the_binary_shift_keeps_q_semidefinite_and_is_close_to_the_margin(seed):
+    """The bisection finds the largest uniform shift the factorisation
+    certifies; on a Hessian definite by ``delta`` that is about ``delta``,
+    and ``Q − dI`` must still be positive semidefinite (checked here by a
+    dense eigenvalue routine the engine itself never uses)."""
+    from sovopt.mip.miqp import _binary_shift
+    p = binary_qp(seed, delta=0.1)
+    d, certified = _binary_shift(p.Q, np.ones(p.n, dtype=bool), 1e-9)
+    assert certified
+    lam_min = float(np.linalg.eigvalsh(p.Q.to_dense()).min())
+    assert lam_min >= 0.1                          # the generator's margin
+    assert lam_min - 1e-5 * lam_min <= d <= lam_min + 1e-9
+    w = np.linalg.eigvalsh(p.Q.to_dense() - d * np.eye(p.n))
+    assert w.min() >= -1e-9
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_the_shift_changes_nothing_at_integer_points_and_the_search_agrees(seed):
+    """Every integer point's objective is the same under the shifted model
+    -- that is the whole argument -- and the tree with and without it, and
+    with either branching rule, reaches the brute-force optimum."""
+    from sovopt.mip.miqp import _shifted
+    p = binary_qp(seed, n=10)
+    q = _shifted(p, 0.05, np.ones(p.n, dtype=bool))
+    rng = np.random.default_rng(seed)
+    for _ in range(20):
+        x = rng.integers(0, 2, p.n).astype(float)
+        assert abs(p.objective(x) - q.objective(x)) <= 1e-12 * max(1.0, abs(p.objective(x)))
+    x = rng.uniform(0, 1, p.n)
+    assert q.objective(x) >= p.objective(x) - 1e-12   # and larger in between
+    ref = brute_force_binary(p)
+    for kw in ({}, dict(binary_shift=False), dict(branching="fractional"),
+               dict(prebound=False, heuristics=False)):
+        s = solve_miqp(p.copy(), MIQPParams(time_limit=120, **kw))
+        assert s.status == Status.OPTIMAL
+        assert abs(s.objective - ref) <= 1e-6 * max(1.0, abs(ref))
+
+
+def test_the_shift_and_the_fixings_are_reported_and_the_shift_shrinks_the_tree():
+    p = binary_qp(1, n=16)
+    on = solve_miqp(p.copy(), MIQPParams(time_limit=120))
+    off = solve_miqp(p.copy(), MIQPParams(time_limit=120, binary_shift=False))
+    assert on.status == off.status == Status.OPTIMAL
+    assert abs(on.objective - off.objective) <= 1e-6 * max(1.0, abs(on.objective))
+    assert on.info["binary_shift"] > 0.05
+    assert off.info["binary_shift"] == 0.0
+    assert on.nodes <= off.nodes
+    assert isinstance(on.info["rc_fixed"], int) and isinstance(on.info["prebound_pruned"], int)
+    assert isinstance(on.info["heuristic_incumbents"], int)
+
+
+def test_reduced_cost_fixings_travel_with_the_subtree():
+    """A fixing is recorded in the node's path, so a child rebuilt from the
+    path sees it; the answer is still the brute-force optimum."""
+    p = binary_qp(2, n=14)
+    ref = brute_force_binary(p)
+    s = solve_miqp(p.copy(), MIQPParams(time_limit=120))
+    assert s.status == Status.OPTIMAL
+    assert abs(s.objective - ref) <= 1e-6 * max(1.0, abs(ref))
+    assert s.info["rc_fixed"] > 0
+
+
+def test_an_unknown_branching_rule_is_refused():
+    with pytest.raises(ValueError):
+        solve_miqp(binary_qp(0, n=6), MIQPParams(branching="strong"))
+

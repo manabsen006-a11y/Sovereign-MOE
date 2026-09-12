@@ -256,7 +256,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 631 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 642 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -296,7 +296,7 @@ python -m pytest tests/               # 631 tests; the 15 GPU ones skip without 
 | **Convex QP** (interior point; proximal PDHG as the GPU path) | `lp/ipm.py`, `qp/proximal.py` | done |
 | **Interior point** (Mehrotra predictor-corrector, LP and QP; LDLᵀ on AMD/RCM) | `lp/ipm.py`, `numerics/ldl.py` | done |
 | QPLIB reader and benchmark | `io/qplib.py`, `bench/qplib.py` | done |
-| **MIQP** (branch-and-bound over convex QP nodes, certified bounds) | `mip/miqp.py` | done |
+| **MIQP** (branch-and-bound over convex QP nodes, certified bounds, binary diagonal shift, reduced-cost fixing, pseudocost branching) | `mip/miqp.py` | done |
 | **Non-convex (MI)QP** (McCormick reformulation → spatial B&B; αBB opt-in) | `globalopt/nonconvex_qp.py`, `globalopt/alphabb.py` | done |
 | **Forrest–Tomlin update** (built, measured, opt-in) | `numerics/ft.py` | done |
 | **Node-LP kernel + parallel tree** (dual simplex as one `nogil` call; `threads`) | `lp/nodelp.py`, `mip/tree.py` | done |
@@ -1158,10 +1158,41 @@ six now have regression tests.
   argument needs `Q ⪰ 0`, and the QP solver establishes it by power
   iteration on the smallest eigenvalue: an estimate, not a proof. A `Q` that
   is indefinite by less than `convexity_tol` passes as convex, and then the
-  tangent plane is not a global underestimator. Where the scaled Gershgorin
-  test from the non-convex route certifies convexity outright the bound is
-  unconditional and `info["convexity_certified"]` is true; elsewhere the
-  claim is conditional and this line says so.
+  tangent plane is not a global underestimator. Where `Q − εI` factorises
+  as `LDLᵀ` with every pivot positive (Sylvester's criterion, on the
+  columns `Q` touches) the bound is unconditional and
+  `info["convexity_certified"]` is true; a singular `Q` -- positive
+  semidefinite, but with a null space -- does not pass that test, and
+  there the claim is conditional and this line says so.
+- **The MIQP node bound is the relaxation's, and on QPLIB's binary
+  quadratics the relaxation cannot be tightened by a diagonal shift.** What
+  was built: the largest uniform amount of each binary's diagonal that
+  leaves `Q` semidefinite is moved to the linear term (`x² = x` on a
+  binary, so every integer point keeps its value and the relaxation's
+  minimum can only rise -- Hammer & Rubin's shift, the uniform case of
+  Billionnet & Elloumi's reformulation), found by bisection with the
+  `LDLᵀ` as the oracle; children are priced from the parent's certified
+  pair before they are solved; binaries at their bound are fixed by
+  reduced cost; branching learns pseudocosts; and the LP tree's row-only
+  heuristics run at the root. Measured: on binary QPs whose Hessian is
+  definite by 0.1 the shift halves the tree (212 -> 109, 1001 -> 699,
+  538 -> 293, 189 -> 97 nodes) for the same optimum; on QPLIB_10050 and
+  10056 it is exactly zero, and provably: their Hessians have rank 36 of
+  148 and 31 of 172, every null vector touches every column, and
+  `zᵀ(Q − D)z = −Σ d_i z_i² ≥ 0` forces every `d_i ≤ 0`, uniform or not.
+  What moved those two was pseudocost branching -- 10050's gap after 60 s
+  from 3.6% to 2.35%, 10056's from 1.6% to 0.64% -- and what would move
+  them further is the SDP relaxation or the constraint-aware reformulation
+  Billionnet & Elloumi actually use, neither of which is here. The four
+  constrained instances (3980, 3913, 3871, 4270) have their first
+  incumbents, from the feasibility jump and fix-and-propagate, at 38%,
+  27%, 500% and 12% above the published values: the row-only heuristics
+  find a point and know nothing about the objective, and the node
+  rounding does not improve on them inside the limit. The free child
+  bounds never fire under fractional or pseudocost branching (the branching
+  variable's reduced cost is zero by complementarity), and reduced-cost
+  fixing takes a few percent off the tree; both stay, at one sparse
+  product per node.
 - **The fill-reducing orderings help the interior point and not the
   simplex.** Reverse Cuthill-McKee is worth 20-45x on a banded KKT and
   approximate minimum degree 1.4-2x on a wide one, but on a simplex basis
@@ -1539,7 +1570,7 @@ python -m bench.qplib --run --time-limit 60 --max-vars 6000
 | published point verified | **28/29** (`9002` publishes none) |
 | certified bound never above the published value | **24/24** |
 | convex, continuous: optimal to 1e-8 | **9/10** — `8845` 1.2 s, `8938` 1.4 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 4.6 s, `8790` (39,204) 1.9 s, `8515` (16,002) 6.1 s; `8559` (10,000 vars, 5,000 rows) 12 iterations, `8567` (10,000, 7,500 rows) 10 iterations, both about 100 s; `9002` solved to a 1e-9 gap and refused by the absolute yardstick, below |
-| convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 3.6% / 1.6% in 60 s; `10069` closed |
+| convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 2.35% / 0.64% in 60 s (was 3.6% / 1.6%); `10069` closed; `3980`, `3913`, `3871`, `4270` now have incumbents, 12-500% above the published values (Known limits) |
 | non-convex: published value reached | 1/18 (`10042`); `5881` within 0.5%, `0031`/`0032` within 4-6% |
 
 **What the run found, in the order it found it.** The first pass used the
@@ -1575,10 +1606,11 @@ the verifier's absolute 1e-6. That yardstick cannot be met at that
 magnitude in double precision; the row-constrained 10,000-variable
 instances `8559` and `8567` solve, but at 93 s and 104 s they are outside
 this run's 60 s limit -- a factorisation on AMD's order is 7 s there, and
-that is the cost of the fill, not of the iteration count (15 and 11); the
-convex binary instances reach the published optimum quickly and
-then cannot close the last few percent with a first-order-quality bound at
-QP-node cost; and the dense non-convex ones -- 50 variables over a simplex,
+that is the cost of the fill, not of the iteration count (12 and 10); the
+convex binary instances reach the published optimum quickly and then
+cannot close the last percent or two, because their low-rank Hessians
+admit no diagonal shift and the bound is the relaxation's own (Known
+limits); and the dense non-convex ones -- 50 variables over a simplex,
 the standard quadratic program -- are a known hard class for envelopes and
 show it, at 70% above the published value with the bound 20× below.
 
@@ -1622,6 +1654,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        631 tests including regressions for every bug above
+tests/        642 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```
