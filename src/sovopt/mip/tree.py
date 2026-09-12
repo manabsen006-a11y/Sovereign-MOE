@@ -86,6 +86,21 @@ class MIPParams:
     time_limit: float = 300.0
     node_limit: int = 1_000_000
 
+    threads: int = 4
+    """Node LPs solved concurrently within a slab, with the exact node solver.
+
+    Each thread owns a :class:`~sovopt.lp.simplex.NodeSolver`; node ``t`` of
+    a slab always goes to solver ``t mod threads`` and results are applied in
+    slab order, so the search is deterministic at any thread count. The
+    per-node work is one compiled ``nogil`` call (:mod:`sovopt.lp.nodelp`),
+    which is what makes threads pay: the first attempt at this, with the
+    Python dual loop, ran at 0.64x on eight threads
+    (docs/NEGATIVE-RESULTS.md). Measured with the kernel: p0201 20.9 s ->
+    4.7 s and dcmulti 55 s -> 25 s at four threads, and little more at eight,
+    because the slab is 64 nodes and the work between slabs -- propagation,
+    branching, heuristics -- is still one thread. Four is the default; one
+    reproduces the single-threaded numbers exactly, node for node."""
+
     batch: int = 64
     """Nodes bounded per batch.
 
@@ -433,6 +448,57 @@ def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol,
     return scaled, node_lp, x, bound, basis, total
 
 
+class _NodePool:
+    """``threads`` node solvers over one problem, solving a slab together.
+
+    Rebuilt whenever the problem changes (cuts, conflict clauses), by
+    :meth:`sync`, which is cheap when nothing changed.
+    """
+
+    def __init__(self, threads: int):
+        self.threads = max(1, int(threads))
+        self.solvers = []
+        self.prob = None
+        self.pool = None
+        if self.threads > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            self.pool = ThreadPoolExecutor(max_workers=self.threads)
+
+    def sync(self, node_lp):
+        """Make the extra solvers match ``node_lp``'s problem and params."""
+        if node_lp.prob is self.prob and len(self.solvers) == self.threads:
+            self.solvers[0] = node_lp
+            return
+        self.prob = node_lp.prob
+        self.solvers = [node_lp] + [
+            NodeSolver(node_lp.prob, node_lp.params)
+            for _ in range(self.threads - 1)]
+
+    def solve_slab(self, node_lp, LO, HI, warms):
+        """Results for every column of ``LO``/``HI``, in order."""
+        K = LO.shape[1]
+        if self.threads == 1 or K == 1:
+            return [node_lp.solve(LO[:, t], HI[:, t], warm_basis=warms[t])
+                    for t in range(K)]
+        self.sync(node_lp)
+        out = [None] * K
+
+        def run(w):
+            solver = self.solvers[w]
+            for t in range(w, K, self.threads):
+                out[t] = solver.solve(LO[:, t], HI[:, t], warm_basis=warms[t])
+
+        futures = [self.pool.submit(run, w) for w in range(min(self.threads, K))]
+        for f in futures:
+            f.result()
+        return out
+
+    def close(self):
+        if self.pool is not None:
+            self.pool.shutdown(wait=True)
+            self.pool = None
+
+
 def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     """Solve a MILP by batched-relaxation branch-and-bound."""
     params = params or MIPParams()
@@ -577,6 +643,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     root_cand = _round_and_repair(scaled, root_x, int_mask, lo0, hi0, tol)
 
     frontier: list[_Node] = []
+    node_pool = _NodePool(params.threads)
     root_node = _Node((), root_bound, 0)
     root_node.parent_id = 0          # key 0 is free: _order starts at 1
     heapq.heappush(frontier, root_node)
@@ -823,12 +890,16 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             # Exact node LPs. The parent's basis is still dual feasible at the
             # child -- reduced costs do not depend on the bounds -- so the dual
             # simplex resumes from it in a few pivots.
-            for t, nd in enumerate(alive):
+            warms = []
+            for nd in alive:
                 wb = warm_cache.get(nd.parent_id)
                 warm_tries += 1
                 if wb is not None:
                     warm_hits += 1
-                r = node_lp.solve(LO[:, t], HI[:, t], warm_basis=wb)
+                warms.append(wb)
+            results = node_pool.solve_slab(node_lp, LO[:, :Ka], HI[:, :Ka], warms)
+            for t, nd in enumerate(alive):
+                r = results[t]
                 if r.status == Status.INFEASIBLE:
                     bounds[t] = np.inf
                     node_infeasible += 1
@@ -1065,6 +1136,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         out.info["heuristics"] = heur.summary()
         out.info["nodes_infeasible"] = node_infeasible
         out.info["undecided_nodes"] = undecided
+        node_pool.close()
         return out
 
     # best_x is already unscaled and validated by _accept
@@ -1086,4 +1158,5 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     sol.info["heuristics"] = heur.summary()
     sol.info["warm_start_hit_rate"] = warm_hits / max(warm_tries, 1)
     sol.info["nodes_infeasible"] = node_infeasible
+    node_pool.close()
     return sol

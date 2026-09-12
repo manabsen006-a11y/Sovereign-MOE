@@ -243,8 +243,14 @@ def generate_gomory(basis, zB, int_mask_full, max_cuts: int = 50,
     A = basis.prob.A
     cuts: list[Cut] = []
 
-    order = np.argsort(-np.abs(
-        zB - np.round(zB)))                       # most fractional first
+    # Most fractional first, on the fractionality *rounded to nine digits*
+    # with the row index as tiebreak. Sorting the raw values let 1e-14 of
+    # factorisation noise decide the order among rows with equal
+    # fractionality, so two solvers holding the same basis -- one with a
+    # fresh LU, one with an eta file -- produced different cuts, and on gt2
+    # one root bound closed the gap and the other never did.
+    frac = np.round(np.abs(zB - np.round(zB)), 9)
+    order = np.lexsort((np.arange(m), -frac))
     rho = np.zeros(m, dtype=VAL)
 
     for r in order:

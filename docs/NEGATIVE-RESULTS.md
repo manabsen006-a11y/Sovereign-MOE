@@ -100,7 +100,7 @@ under the small-basis exemption.
 
 ---
 
-## A parallel branch-and-bound tree (built, measured, reverted)
+## A parallel branch-and-bound tree (built, measured, reverted -- then superseded)
 
 Known limits said the tree is single-threaded while nine kernels run in
 parallel. The profile says that is where the time is: **node LP solves are
@@ -149,6 +149,13 @@ have to move inside a `nogil` kernel, so that a node solve is one long
 GIL-free call rather than a Python loop around many short ones. That is a
 rewrite of `lp/simplex.py`, not a threading change, and until it happens
 parallelising the tree is measuring the GIL.
+
+**Superseded.** That rewrite is `lp/nodelp.py`: the node-LP dual loop as one
+compiled call, pinned pivot for pivot to the Python loop. With it the same
+slab-parallel tree pays -- p0201 20.9 s to 4.7 s and dcmulti 55 s to 25 s on
+four threads, node counts identical -- and the single-threaded kernel alone
+moved the MIPLIB set from 6/11 to 7/11. The entry stays as the record of why
+the first attempt could not have worked.
 
 ---
 

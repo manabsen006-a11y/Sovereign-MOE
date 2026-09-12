@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 551 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 569 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -295,7 +295,7 @@ python -m pytest tests/               # 551 tests; the 15 GPU ones skip without 
 | **MIQP** (branch-and-bound over convex QP nodes, certified bounds) | `mip/miqp.py` | done |
 | **Non-convex (MI)QP** (McCormick reformulation → spatial B&B; αBB opt-in) | `globalopt/nonconvex_qp.py`, `globalopt/alphabb.py` | done |
 | **Forrest–Tomlin update** (built, measured, opt-in) | `numerics/ft.py` | done |
-| Parallel tree | — | **not built** (roadmap) |
+| **Node-LP kernel + parallel tree** (dual simplex as one `nogil` call; `threads`) | `lp/nodelp.py`, `mip/tree.py` | done |
 
 ---
 
@@ -1160,18 +1160,25 @@ six now have regression tests.
   binaries and finds no feasible point at all past about 400. Against the stated
   benchmark of "thousands to millions" of variables, the thousands are reached
   and the millions are not.
-- **The branch-and-bound tree is single-threaded, and threading it was tried
-  and reverted.** Node LPs are 86-97% of MIP time and every kernel is compiled
-  `nogil`, so a slab of independent node LPs looks like free parallelism -- the
-  slab is fixed before any of it is solved, so determinism even survives it
-  (identical status, objective and node count at 1, 4 and 8 threads). It is
-  slower at every thread count: gt2 14.45 s -> 18.14 s, and misc07 explores 20%
-  *fewer* nodes in the same 60 s. Isolated from the tree, sixteen independent
-  node LPs with their own solvers run **0.64x** on eight threads. A `nogil`
-  kernel is not a `nogil` algorithm: the simplex iteration loop is Python
-  calling short kernels, and the GIL is held for the Python between them.
-  Parallelising the tree means rewriting that loop inside a kernel first. Full
-  measurement in [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
+- **The tree parallelises its node LPs and not much else, and the search
+  is chaotic on gt2.** The node-LP dual simplex is now one compiled `nogil`
+  call (`lp/nodelp.py`) -- the same pivots as the Python loop, checked node
+  for node, at 4.3x the speed on p0201's nodes -- and a slab's nodes are
+  solved on `threads` solvers with results applied in slab order, so the
+  node count is identical at any thread count. Measured, 4 threads: p0201
+  20.9 s -> 4.7 s, dcmulti 55 s -> 25 s, 10teams 38 -> 78 nodes/s, misc07
+  166 -> 299 nodes/s; 8 threads adds 0-30% more, because propagation,
+  branching and the heuristics between slabs are still one thread and the
+  slab is 64 nodes. The first attempt at this ran at 0.64x
+  ([`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md)) for exactly the
+  reason recorded there. What the kernel also exposed: **gt2 solves at the
+  root or not at all depending on the last digits**. The Python loop's
+  pivot sequence happens to produce a cut chain that closes the root gap
+  (1,919 nodes, 4.5 s); the kernel's -- identical bases, factors that differ
+  at 1e-14 -- does not, and neither does the Python loop with the node
+  refactorisation budget moved from 60 to 59 or 61. The 10teams and dcmulti
+  rows went the other way and now solve. The MILP table below is what the
+  set looks like with the kernel and one thread; treat gt2 as a coin.
 - GPU fp64 on a laptop RTX 3050 runs at 1/32 rate; a datacentre card changes the
   crossover point substantially.
 
@@ -1251,6 +1258,22 @@ Four things the table says that an aggregate would hide:
   having for diagnostics.
 
 ### MILP, 120 s limit
+
+The MIPLIB set with the node-LP kernel, one thread, before and after
+(`python -m bench.harness --mode mip` regenerates it):
+
+| instance | Python loop | kernel |
+|---|---|---|
+| 10teams | time limit, no incumbent, 29 nodes/s | **OPTIMAL 924**, 46 s |
+| dcmulti | time limit, 0.6% gap, 38 nodes/s | **OPTIMAL 188182**, 51 s |
+| gt2 | OPTIMAL, 1,919 nodes, 4.5 s | time limit, 0.12% gap (see Known limits) |
+| mas76 | time limit, 159 nodes/s | time limit, 337 nodes/s |
+| misc07 | time limit, 8.1% gap, 86 nodes/s | time limit, 0.7% gap, 146 nodes/s |
+| qnet1 | time limit, 23 nodes/s | time limit, 38 nodes/s |
+| flugpl, gr4x6, khb05250, mod010, p0201 | optimal | optimal, 1.3-2x faster |
+| **optimal** | **6/11** | **7/11** |
+
+And the refinery scheduling ladder, which predates the kernel:
 
 | model | rows | cols | binaries | status | gap | nodes | time |
 |---|---|---|---|---|---|---|---|
@@ -1421,12 +1444,12 @@ src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer, Netlib expander, QPLIB reader
   numerics/   scaling, LU, Forrest–Tomlin update, ordering, hypersparse solves, refinement
-  lp/         revised simplex, basis, interior point, crossover, first-order LP
+  lp/         revised simplex, node-LP kernel, basis, interior point, crossover, first-order LP
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        551 tests including regressions for every bug above
+tests/        569 tests including regressions for every bug above
 ui/           local single-page interface
 ```
