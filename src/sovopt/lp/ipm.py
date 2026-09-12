@@ -102,7 +102,8 @@ from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import IDX, VAL
 from ..core.tolerances import DEFAULT, INF, Tolerances
 from ..numerics.lu import LUSingular, lu_factor
-from ..numerics.ordering import rcm_order
+from ..numerics.lu import _column_order
+from ..numerics.ordering import amd_order, rcm_order, symbolic_fill
 from ..numerics.scaling import scale_problem
 
 
@@ -158,7 +159,8 @@ class IPMParams:
     gaps, not the model, is what holds the gap there. See the loop."""
 
     ordering: str = "auto"
-    """Fill-reducing ordering for the KKT: ``"auto"``, ``"rcm"`` or ``"none"``.
+    """Fill-reducing ordering for the KKT: ``"auto"``, ``"amd"``, ``"rcm"``
+    or ``"none"``.
 
     The KKT *pattern* is identical at every iteration -- only the two diagonal
     blocks move -- so an ordering is chosen once per solve and reused for every
@@ -255,12 +257,7 @@ class _KKT:
 
         # Once per solve, not once per iteration: the pattern above is fixed
         # for the whole run.
-        if ordering == "rcm":
-            self.order = rcm_order(kp, ki, nk)
-        elif ordering == "auto":
-            # candidates raced at the first factorisation, when the diagonal is
-            # representative of the rest of the solve
-            self._pending = [None, rcm_order(kp, ki, nk)]
+        self._choose(ordering, kp, ki, nk)
 
     def _build_with_q(self, A, Q, ordering):
         """The same pattern with ``-Q`` in the (1,1) block, built from triplets.
@@ -301,10 +298,44 @@ class _KKT:
         assert diag.size == nk
         self.diag_x = diag[:n]
         self.diag_s = diag[n:]
+        self._choose(ordering, self.kp, self.ki, nk)
+
+    def _choose(self, ordering, kp, ki, nk):
+        """Fix the ordering, or line the candidates up for the race."""
+        self.chosen = "none"
         if ordering == "rcm":
-            self.order = rcm_order(self.kp, self.ki, nk)
+            self.order = rcm_order(kp, ki, nk)
+            self.chosen = "rcm"
+        elif ordering == "amd":
+            self.order = amd_order(kp, ki, nk)
+            self.chosen = "amd"
         elif ordering == "auto":
-            self._pending = [None, rcm_order(self.kp, self.ki, nk)]
+            # Three candidates, ranked by *symbolic* fill first -- the count
+            # a diagonal-pivot elimination would produce, computed in tens of
+            # milliseconds -- so that the one factorised in full is the one
+            # predicted to win, and only a challenger predicted within 1.5x
+            # of it is tried at all, under the incumbent's nnz cap. Without
+            # the ranking the incumbent was a fixed choice, and each choice
+            # has an instance that punishes it: RCM first costs 24 s on
+            # mod010 (277x fill), minimum degree first costs 596 s on the
+            # 61,440-row planning KKT (8.6x against RCM's 3.4x).
+            cands = [("amd", amd_order(kp, ki, nk)),
+                     ("rcm", rcm_order(kp, ki, nk)),
+                     ("none", None)]
+            scored = []
+            best = None
+            for name, order in cands:
+                est_order = order if order is not None else                     _column_order(kp, ki, nk, nk)
+                f = symbolic_fill(kp, ki, nk, est_order,
+                                  cap=None if best is None else 4 * best)
+                if f is None:
+                    continue
+                best = f if best is None else min(best, f)
+                scored.append((f, name, order))
+            scored.sort(key=lambda s: s[0])
+            self.symbolic = {name: f for f, name, _ in scored}
+            self._pending = [(name, order) for f, name, order in scored
+                             if f <= 1.5 * scored[0][0]]
 
     def factor(self, dx, ds, pivot_tol, drop):
         """Revalue the diagonals and factorise. ``dx``, ``ds`` are positive."""
@@ -317,10 +348,11 @@ class _KKT:
             # completion. Without the cap the losing candidate on mod010 takes
             # 24 s to reach 277x fill, against 0.004 s for the winner -- the
             # choice was right and paying for it was not.
+            name0, order0 = self._pending[0]
             best = lu_factor(self.kp, self.ki, self.kx, self.nk,
-                             tol=pivot_tol, drop=drop, order=self._pending[0])
-            best_order = self._pending[0]
-            for cand in self._pending[1:]:
+                             tol=pivot_tol, drop=drop, order=order0)
+            best_order, best_name = order0, name0
+            for name, cand in self._pending[1:]:
                 try:
                     lu = lu_factor(self.kp, self.ki, self.kx, self.nk,
                                    tol=pivot_tol, drop=drop, order=cand,
@@ -328,10 +360,10 @@ class _KKT:
                 except LUSingular:
                     continue                  # over budget: it lost
                 if lu.nnz < best.nnz:
-                    best, best_order = lu, cand
+                    best, best_order, best_name = lu, cand, name
             self.order = best_order
+            self.chosen = best_name
             self._pending = None
-            self.chose_rcm = best_order is not None
             return best
         return lu_factor(self.kp, self.ki, self.kx, self.nk,
                          tol=pivot_tol, drop=drop, order=self.order)
@@ -754,9 +786,7 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None) -> Solution:
     x_s = z[:n]
     d_s = (zl - zu)[:n]
     sol = _finish(prob, work, scaled, sc, flip, x_s, y, d_s,
-                  status, it, t0, params, "ipm",
-                  ordering="rcm" if getattr(kkt, "chose_rcm", None) or
-                  (params.ordering == "rcm") else "none",
+                  status, it, t0, params, "ipm", ordering=kkt.chosen,
                   gap=history[-1][4] if history else None)
     sol.log = history
     return sol

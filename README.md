@@ -252,7 +252,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 569 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 583 tests; the 15 GPU ones skip without a device
 ```
 
 ---
@@ -325,8 +325,9 @@ row's type lives entirely in its logical variable's bounds.
 - **Devex pricing** rather than Dantzig's rule, which is scale-dependent and
   takes far more iterations.
 - **Product-form basis update** with periodic refactorisation, and repair of
-  singular bases by swapping in logicals. Forrest–Tomlin would keep the factors
-  sparser for longer and is the natural next step; it is not built.
+  singular bases by swapping in logicals. Forrest–Tomlin is built and opt-in;
+  measured, it does not beat the product form at its best budget (see Known
+  limits).
 - **Anti-degeneracy**: random cost perturbation after a run of zero-length
   pivots, removed and re-optimised before the answer is reported.
 
@@ -1085,9 +1086,9 @@ six now have regression tests.
   `sovopt.qp` now routes to the interior point (see [QPLIB](#qplib) for why),
   which solves QPLIB's convex instances to 1e-8 in 1-14 s up to 39,204
   variables — when the KKT factorises. `QPLIB_8559` (10,000 variables, 5,000
-  rows, a 70k-nonzero `Q`) fills 64× under the LU's own ordering and 69×
-  under RCM: **38 s per factorisation**, thirty of them per solve. That is the
-  AMD gap from the scale study, on a QP. The proximal method remains as
+  rows, a 70k-nonzero `Q`) does not: a 900 s solve completed **two
+  iterations**, with minimum degree chosen (see the bullet on it below). The
+  proximal method remains as
   `method="proximal"` — matrix-free, so it is the GPU path and the one that
   survives a `Q` too dense to factorise — and it is the one that reaches
   ~1e-8 rather than 1e-9. Neither returns a basis, so no ranging on a QP.
@@ -1114,16 +1115,32 @@ six now have regression tests.
   test from the non-convex route certifies convexity outright the bound is
   unconditional and `info["convexity_certified"]` is true; elsewhere the
   claim is conditional and this line says so.
-- **The fill-reducing ordering helps the interior point and not the simplex.**
-  Reverse Cuthill-McKee is worth 20-45x on a banded KKT, but measured over the
-  factorisations of four real simplex solves it produced **4-45% more** fill
-  than the LU's own singleton-peeling order every time -- qnet1 +33%, mod010
-  +25%, 10teams +45%. That order was designed for a basis that is already
-  80-95% triangular, and it wins there. A simplex basis also changes at every
-  refactorisation, so an ordering would have to be recomputed each time rather
-  than once per solve, which is the opposite of the economics that make it pay
-  in the interior point. Recorded in
+- **The fill-reducing orderings help the interior point and not the
+  simplex.** Reverse Cuthill-McKee is worth 20-45x on a banded KKT and
+  approximate minimum degree 1.4-2x on a wide one, but on a simplex basis
+  both lose to the LU's own singleton-peeling order: qnet1 own 3.02x, RCM
+  2.86x, AMD 3.23x; woodw 2.56x, 3.63x, 3.98x; 10teams 9.1x, 12.4x, 10.7x.
+  That order was designed for a basis that is already 80-95% triangular,
+  and it wins there. A simplex basis also changes at every refactorisation,
+  so an ordering would have to be recomputed each time rather than once per
+  solve, which is the opposite of the economics that make it pay in the
+  interior point. Recorded in
   [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
+- **Minimum degree does not move the QPLIB wall, and the measurement says
+  why.** AMD was the named gap behind `QPLIB_8559` (10,000 variables, 5,000
+  rows, a 70k-nonzero `Q`), and it is built now: on that KKT its symbolic
+  fill is 87x against RCM's 334x and the natural order's 505x, so the race
+  picks it. But the LU is an *unsymmetric* factorisation with threshold
+  pivoting, and it follows a symmetric ordering only while the diagonal
+  passes the threshold. With unit diagonals it delivers 63x from AMD's order
+  in 22 s; with the interior point's actual diagonals -- `-(Q_jj + Θ)`
+  against the entries of `A` -- it pivots off the diagonal, the ordering's
+  structure is lost, and one factorisation takes hundreds of seconds: a
+  900 s solve completed two iterations. The ordering is right and the
+  factorisation cannot use it. What would move this is a symmetric LDLᵀ
+  that takes the pivots the ordering names -- legitimate here, because the
+  regularised KKT is quasi-definite (Vanderbei), so any symmetric
+  permutation factorises without pivoting -- and that is the next piece.
 - **The interior-point method returns no basis and no certificate.** It solves
   all 11 instances to the published value at a 0.140 s shifted geomean, but it
   detects infeasibility by *stagnation* rather than by a Farkas certificate --
@@ -1200,25 +1217,31 @@ failure and not a time.
 
 | model | rows | cols | nnz | simplex | interior point | PDLP |
 |---|---|---|---|---|---|---|
-| blend k=1 | 130 | 400 | 4.0k | 0.48 s | **0.12 s** | 1.06 s |
-| blend k=2 | 260 | 1,600 | 16k | **0.51 s** | 0.70 s | 4.28 s |
-| blend k=4 | 520 | 6,400 | 64k | 2.19 s | 2.61 s | **1.67 s** |
-| blend k=8 | 1,040 | 25,600 | 256k | 7.04 s | 26.4 s | **2.16 s** |
-| blend k=16 | 2,080 | 102,400 | 1.02M | 102.5 s | timeout | **3.65 s** |
+| blend k=1 | 130 | 400 | 4.0k | 0.48 s | **0.32 s** | 1.06 s |
+| blend k=2 | 260 | 1,600 | 16k | **0.51 s** | 0.35 s | 4.28 s |
+| blend k=4 | 520 | 6,400 | 64k | 2.19 s | **1.36 s** | 1.67 s |
+| blend k=8 | 1,040 | 25,600 | 256k | 7.04 s | 10.5 s | **2.16 s** |
+| blend k=16 | 2,080 | 102,400 | 1.02M | 102.5 s | 99.5 s | **3.65 s** |
 | plan k=1 | 240 | 240 | 1.4k | 0.14 s | **0.01 s** | 1.86 s |
-| plan k=2 | 960 | 960 | 9.9k | 1.76 s | **0.07 s** | 4.11 s |
-| plan k=4 | 3,840 | 3,840 | 73k | 53.2 s | **1.59 s** | 7.49 s |
-| plan k=8 | 15,360 | 15,360 | 564k | timeout | 81.5 s | **45.6 s** |
-| plan k=16 | 61,440 | 61,440 | 4.42M | timeout | *did not finish* | timeout |
+| plan k=2 | 960 | 960 | 9.9k | 1.76 s | **0.05 s** | 4.11 s |
+| plan k=4 | 3,840 | 3,840 | 73k | 53.2 s | **0.56 s** | 7.49 s |
+| plan k=8 | 15,360 | 15,360 | 564k | timeout | **5.57 s** | 45.6 s |
+| plan k=16 | 61,440 | 61,440 | 4.42M | timeout | **81.4 s** | timeout |
 
-The interior-point column is measured **with the fill-reducing ordering
-described below**; before it, `plan k=4` took 14.9 s, `plan k=8` failed
-outright, and `blend k=8` took 36.0 s.
+The interior-point column is measured with the ordering race described
+below in its current form -- three candidates ranked by symbolic fill. Its
+history is the point: before any ordering, `plan k=4` took 14.9 s and
+`plan k=8` failed outright; with RCM raced against the natural order,
+`plan k=4` 1.59 s, `plan k=8` 81.5 s, `blend k=8` 26.4 s and `plan k=16`
+*did not finish*; with AMD added and the race ranked by prediction rather
+than factorised in a fixed order, `plan k=8` 5.6 s, `blend k=8` 10.5 s, and
+`plan k=16` **solved**. On `plan k=8` the 81.5 s was almost entirely the
+natural-order incumbent being factorised in full before RCM was tried.
 
-**The largest LP solved and verified is 2,080 x 102,400 with 1.02M nonzeros, in
-3.65 s; the largest square one is 15,360 x 15,360 with 564k nonzeros in 45.6 s.
-Both by PDLP.** That reaches the "thousands" the benchmark names and passes a
-million nonzeros. It is not millions of variables.
+**The largest LP solved and verified is 61,440 x 61,440 with 4.42M nonzeros,
+in 81 s, by the interior point; the widest is 2,080 x 102,400 with 1.02M
+nonzeros in 3.65 s, by PDLP.** That reaches the "thousands" the benchmark
+names and passes a million nonzeros. It is not millions of variables.
 
 Four things the table says that an aggregate would hide:
 
@@ -1230,17 +1253,22 @@ Four things the table says that an aggregate would hide:
   auto` still chooses between the simplex and PDLP by size only: the rule that
   would pick the interior point needs a degeneracy estimate, and there isn't
   one.
-* **A fill-reducing ordering moved the interior point's ceiling by 4x, and
-  `plan k=16` still defeats all three.** The KKT pattern is identical at every
-  iteration, so an ordering is chosen once per solve and reused. Reverse
-  Cuthill-McKee on the `plan` KKT cuts fill from 10-15x to 2.3-3.4x and the
-  factorisation from 1.5-3.4 s to 0.04-0.08 s -- a 20-45x speedup, and 97% of
-  an interior-point solve is that one factorisation repeated. `plan k=8` went
-  from failing to `OPTIMAL` in 81.5 s, and the largest model the interior point
-  solves went from 3,840 rows to 15,360. At 61,440 x 61,440 with 4.42M
-  nonzeros it still does not finish, so approximate minimum degree remains the
-  next step -- see [`numerics/ordering.py`](src/sovopt/numerics/ordering.py)
-  for why RCM was measured first and AMD deliberately not written yet.
+* **The ordering race is what moved the interior point's ceiling, twice.**
+  The KKT pattern is identical at every iteration, so an ordering is chosen
+  once per solve and reused. Reverse Cuthill-McKee on the `plan` KKT cuts
+  fill from 10-15x to 2.3-3.4x and the factorisation from 1.5-3.4 s to
+  0.04-0.08 s -- a 20-45x speedup, and 97% of an interior-point solve is that
+  one factorisation repeated -- which took the largest `plan` the interior
+  point solves from 3,840 rows to 15,360. Approximate minimum degree
+  (`numerics/ordering.py`) then took the wide `blend` models: 2.1x fill
+  against RCM's 4.1x on `blend k=8`, and `blend k=16` from a timeout to
+  99.5 s. And ranking the candidates by *symbolic* fill before factorising
+  any of them -- tens of milliseconds -- is what took `plan k=16`: the old
+  race factorised the natural order in full as its incumbent, which on a
+  122,880-node KKT is where the 120 s went. Neither ordering wins everywhere
+  (AMD is 8.6x on `plan k=16` where RCM is 3.4x; RCM is 268x on mod010 where
+  AMD is 1.5x), which is why it is a race and not a default -- see
+  [`numerics/ordering.py`](src/sovopt/numerics/ordering.py) for the table.
 * **A time limit does not bound the interior point.** The clock is checked
   between iterations and, now, before each factorisation -- but a factorisation
   already running cannot be interrupted, and a 120 s limit was measured
@@ -1443,13 +1471,13 @@ convention exists because two published tables were found not to reproduce; see
 src/sovopt/
   core/       sparse structures, JIT shim, backend + CUDA kernels, problem types
   io/         MPS reader and writer, Netlib expander, QPLIB reader
-  numerics/   scaling, LU, Forrest–Tomlin update, ordering, hypersparse solves, refinement
+  numerics/   scaling, LU, Forrest–Tomlin update, AMD/RCM ordering, symbolic fill, refinement
   lp/         revised simplex, node-LP kernel, basis, interior point, crossover, first-order LP
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        569 tests including regressions for every bug above
+tests/        583 tests including regressions for every bug above
 ui/           local single-page interface
 ```
