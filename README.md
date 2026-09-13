@@ -216,9 +216,16 @@ The measurements and the reason the metric cannot work as posed are recorded in
 ## Quick start
 
 ```bash
-pip install -e .            # numpy + numba
+pip install -e .                # numpy + numba: the solver and the CLI
+pip install -e ".[ui]"          # adds FastAPI + uvicorn for python -m ui.server
+pip install -e ".[dev,ui]"      # adds pytest, scipy and httpx: what the test suite needs
 pip install cupy-cuda12x[ctk]   # optional, for the GPU path
 ```
+
+The engine itself depends on nothing but numpy and numba. On a fresh clone
+with only the first line, `tests/test_ui.py` skips rather than fails, so a
+green suite is not proof the UI was exercised: install the `ui` extra
+before reading the test count as covering it.
 
 The `[ctk]` extra pulls the CUDA libraries in as wheels, so the GPU path needs
 only an NVIDIA driver -- no system CUDA Toolkit, and no `CUDA_PATH`. Run
@@ -257,7 +264,8 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 667 tests; the 15 GPU ones skip without a device
+python -m pytest tests/               # 667 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+                                      # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
 ---

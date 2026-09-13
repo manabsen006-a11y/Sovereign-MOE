@@ -11,7 +11,11 @@ dependencies = ["numpy>=1.24", "numba>=0.59"]
 
 [project.optional-dependencies]
 gpu = ["cupy-cuda12x"]
-dev = ["pytest>=7", "scipy>=1.10"]
+ui = ["fastapi>=0.100", "uvicorn>=0.20"]
+# httpx is what fastapi's TestClient drives; without it and the ui extra,
+# tests/test_ui.py skips silently -- which is how a fresh clone was found
+# to have never exercised the UI
+dev = ["pytest>=7", "scipy>=1.10", "httpx>=0.24"]
 
 [project.scripts]
 sovopt = "sovopt.cli:main"
