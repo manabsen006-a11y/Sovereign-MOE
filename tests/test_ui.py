@@ -13,8 +13,12 @@ import numpy as np
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
-pytest.importorskip("httpx")
-from fastapi.testclient import TestClient  # noqa: E402
+try:
+    # starlette >= 1.6 drives its client with httpx2 and warns on httpx;
+    # neither installed is a RuntimeError, which importorskip would not catch
+    from fastapi.testclient import TestClient
+except (ImportError, RuntimeError) as e:                          # noqa: BLE001
+    pytest.skip(f"fastapi's test client is unusable: {e}", allow_module_level=True)
 
 import ui.server as server  # noqa: E402
 

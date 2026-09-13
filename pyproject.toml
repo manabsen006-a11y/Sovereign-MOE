@@ -12,10 +12,10 @@ dependencies = ["numpy>=1.24", "numba>=0.59"]
 [project.optional-dependencies]
 gpu = ["cupy-cuda12x"]
 ui = ["fastapi>=0.100", "uvicorn>=0.20"]
-# httpx is what fastapi's TestClient drives; without it and the ui extra,
-# tests/test_ui.py skips silently -- which is how a fresh clone was found
-# to have never exercised the UI
-dev = ["pytest>=7", "scipy>=1.10", "httpx>=0.24"]
+# httpx2 is what starlette's TestClient drives (1.6 deprecated httpx there);
+# without it and the ui extra, tests/test_ui.py skips rather than fails --
+# which is how a fresh clone was found to have never exercised the UI
+dev = ["pytest>=7", "scipy>=1.10", "httpx2>=2"]
 
 [project.scripts]
 sovopt = "sovopt.cli:main"

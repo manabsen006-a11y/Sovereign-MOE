@@ -80,7 +80,7 @@ import numpy as np
 
 from ..core.backend import Backend, get_backend
 from ..core.problem import Problem
-from ..core.tolerances import INF
+from ..core.tolerances import INF, QUOTIENT_MAX
 from .safebound import safe_dual_bound_batch
 
 __all__ = ["BNREngine", "BNRConfig", "BatchResult"]
@@ -245,12 +245,19 @@ class BNREngine:
             dY = Yn - Y
             bk.spmm(self.cp, self.ci, self.cx, dY, AtdY, n, K)
 
-            # per-node adaptive step size; nodes accept or reject independently
+            # per-node adaptive step size; nodes accept or reject independently.
+            # The denominator is floored at movement / QUOTIENT_MAX, so the
+            # quotient never exceeds 2^1000 and cannot overflow; `where`
+            # evaluates both branches, and a fixed floor of 1e-300 let the
+            # discarded branch overflow whenever the interaction was zero
+            # and the movement above 1e8 (numpy warned on two soundness
+            # tests). A limit of 2^1000 is infinity to everything below.
             interaction = xp.abs((dY * AdX).sum(axis=0))
             movement = 0.5 * (omega * (dX * dX).sum(axis=0)
                               + (dY * dY).sum(axis=0) / omega)
+            floor = xp.maximum(movement, 1.0) / QUOTIENT_MAX
             limit = xp.where(interaction > 0.0,
-                             movement / xp.maximum(interaction, 1e-300),
+                             movement / xp.maximum(interaction, floor),
                              xp.inf)
             accept = (eta <= limit) | (movement == 0.0)
 

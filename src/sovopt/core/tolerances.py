@@ -20,6 +20,16 @@ MPS has no way to write infinity, and 1e30 is the universal convention. Real
 coefficients never reach it; treating 1e30 as finite produces garbage duals.
 """
 
+QUOTIENT_MAX = 2.0 ** 1000
+"""Cap on a ratio of two magnitudes that is used as a step limit.
+
+A quotient this large is infinity for every purpose a step-size rule has
+-- it wins every ``eta <= limit`` test and the clamp on ``eta`` never gets
+near it -- and it is still 2^24 below float64's range, so the divide that
+produces it cannot overflow. Used by flooring the denominator at
+``numerator / QUOTIENT_MAX`` rather than by clipping the result.
+"""
+
 
 @dataclass(frozen=True)
 class Tolerances:
