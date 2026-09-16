@@ -251,3 +251,66 @@ def test_heuristics_help_the_tree_find_an_incumbent():
                                     heuristics=True))
     assert with_h.x is not None, "no incumbent even with heuristics enabled"
     assert _feasible(p, with_h.x)
+
+
+# --------------------------------------------------------------------------- #
+# the time limit is the tree's to keep, so every heuristic has to be           #
+# interruptible                                                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_fix_and_propagate_respects_its_deadline():
+    """A past deadline returns at once. The tree's between-trial check
+    cannot cut into a call already running, which is how nw04 turned a
+    120 s limit into hours: 87k integers fixed one at a time with a full
+    propagation after each."""
+    import time
+    p = set_cover_mip(1, n=400, m=120)
+    x = np.full(p.n, 0.5)                       # everything fractional
+    t0 = time.perf_counter()
+    got = fix_and_propagate(p, x, p.integer_mask, p.col_lb, p.col_ub,
+                            deadline=time.perf_counter() - 1.0)
+    assert got is None
+    assert time.perf_counter() - t0 < 0.5
+
+
+def test_fix_and_propagate_fixes_the_integral_part_in_one_pass():
+    """The integers an LP has already placed at integral values are fixed
+    together and propagated once; one at a time they would land on the
+    same values in the same order, minus a propagation per column. A wide
+    model with a mostly integral point must finish in well under a second,
+    and what comes back must be feasible."""
+    import time
+    rng = np.random.default_rng(5)
+    n, m = 20000, 40
+    D = (rng.random((m, n)) < 0.01).astype(float)
+    for i in range(m):
+        D[i, rng.integers(0, n)] = 1.0
+    A = SparseMatrix.from_dense(D)
+    p = Problem(A=A, c=rng.uniform(1, 5, n),
+                row_lb=np.ones(m), row_ub=np.full(m, INF),
+                col_lb=np.zeros(n), col_ub=np.ones(n),
+                kind=np.ones(n, dtype=np.uint8), name="wide")
+    x = np.zeros(n)                             # integral except a few
+    x[rng.choice(n, 30, replace=False)] = 0.5
+    cover = np.argmax(D, axis=1)                # one column per row, on
+    x[cover] = 1.0
+    t0 = time.perf_counter()
+    got = fix_and_propagate(p, x, p.integer_mask, p.col_lb, p.col_ub)
+    assert time.perf_counter() - t0 < 2.0
+    assert got is not None and _feasible(p, got)
+
+
+def test_feasibility_pump_respects_its_deadline():
+    import time
+    p = set_cover_mip(3)
+    calls = []
+
+    def lp_solve(lo, hi, obj=None):
+        calls.append(1)
+        return np.full(p.n, 0.5)
+
+    got = feasibility_pump(p, p.integer_mask, p.col_lb, p.col_ub, lp_solve,
+                           x_lp=np.full(p.n, 0.5),
+                           deadline=time.perf_counter() - 1.0)
+    assert got is None and not calls

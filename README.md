@@ -264,7 +264,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 667 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 689 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -997,6 +997,70 @@ six now have regression tests.
    limit to `OPTIMAL` in 101 s, qnet1's final incumbent from 13% above the
    optimum to 0.6%, **7/11 -> 8/11 optimal** and the shifted geomean 24.4 s
    -> 19.0 s; sched k=2 16.9 s -> 7.5 s. Nothing else in the tree changed.
+
+9. **A 120 s time limit ran for hours, on the first wide instance it met.**
+   Found the first time the MILP harness was pointed at the whole MIPLIB
+   set rather than the eleven it had always run: on nw04 (36 rows, 87,482
+   binaries, 637k nonzeros) the root heuristic round had been inside
+   `fix_and_propagate` for 31 minutes when a stack dump was taken. The
+   heuristic fixed integers one at a time, running a full three-round
+   propagation over every nonzero after *each* fixing -- 87k x 637k x 3,
+   about 10^11 operations -- and, like the feasibility pump, took no
+   deadline, so the tree's between-trial budget check could not cut into
+   it. The `README` had said all along that a heuristic without a deadline
+   "cannot be cut short"; it had not said that on a wide model that is the
+   whole time limit. Both heuristics now take the round's deadline, the
+   pump's LP solves check it too, and the integers the LP already placed
+   at integral values are fixed together and propagated once -- one at a
+   time they land on the same values in the same order, the two roundings
+   of an integral value being the same value. nw04 afterwards: the
+   heuristic 0.42 s, the tree `OPTIMAL` at the published 16,862 in 43 s.
+   The lesson is the one the Netlib section already carries: a set the
+   solver has always passed is not evidence about the set it has never
+   seen.
+
+10. **A node LP could run to its millionth pivot, and the tree's limit
+    with it.** danoint, same campaign: 198 s against 120, and with a 30 s
+    limit, 174 s for seven nodes. A stack dump showed every worker inside
+    the compiled node kernel. One child LP of 664 rows -- its siblings
+    take a hundred pivots -- was making dual pivots of length zero at a
+    vertex where 1,184 of 1,185 nonbasic reduced costs were exactly zero,
+    and nothing in either dual loop, compiled or Python, breaks a
+    dual-degenerate stall: the cost perturbation existed for the *primal*
+    loop only, and the kernel, which cannot look at a clock, ran until
+    the tree's whole limit was gone. The kernel now runs in chunks of
+    `kernel_chunk` pivots; between chunks the deadline is checked, the
+    objective a dual simplex raises monotonically is compared with the
+    last chunk's, two chunks without movement perturb the costs, and two
+    more hand the node to the primal path from the same basis. The node
+    solver also carries the tree's absolute deadline, because its own
+    clock started when it was built, and a worker built late in the
+    search was being granted the whole limit again. danoint at 30 s:
+    30.2 s. What remains is the stall itself, which is the dual simplex's
+    degeneracy handling and is listed under Known limits.
+
+11. **The tree pruned on INFEASIBLE verdicts it had never checked, and on
+    danoint one in a hundred was wrong.** Found by the fix above: with the
+    stall broken by perturbation, the node kernel came back INFEASIBLE on
+    a node that the full simplex and the interior point both solve to
+    250.76. The dual ratio test declares infeasibility when no column can
+    enter, filtered by a pivot tolerance -- on a degenerate, drifted basis
+    that is a claim, not a proof -- and the tree took the claim, dropped
+    the node, and would have reported the incumbent it had as optimal had
+    the frontier emptied. The Farkas row the verdict comes with is now
+    evaluated exactly over the node's box, and the node is pruned only
+    when it certifies emptiness; otherwise the node is re-solved cold,
+    and if that gives no verdict either it is counted as undecided, with
+    its parent's bound kept as the bound on everything it might hold, so
+    the gap cannot close past it and no OPTIMAL is claimed over it.
+    danoint at 120 s: 761 nodes, seven verdicts refused, each one a
+    feasible node by two other solvers. The same path catches a node LP
+    that ends without any verdict at all -- deadline, iteration cap --
+    which used to fall through to the branching step with a zero vector
+    for its relaxation, find nothing fractional, and vanish.
+    `info["uncertified_infeasible"]` and `info["undecided_nodes"]` count
+    both. A test lies to the tree on every other node and checks that the
+    brute-force optimum survives.
 
 ---
 
@@ -1740,6 +1804,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        667 tests including regressions for every bug above
+tests/        689 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

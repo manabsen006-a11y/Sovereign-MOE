@@ -20,6 +20,17 @@ each one stresses a different part of the engine:
     times. Big-M constrained, so the LP relaxation is weak -- the case where a
     solver's cuts and heuristics decide everything.
 
+``williams_refinery``
+    Not a generator: the one refinery LP in the open literature with a
+    published optimum, from Williams' textbook (problem 12.6, solution
+    13.6). Two crudes, distillation, reforming, cracking, lube oil, two
+    petrol grades under octane specifications, jet fuel under a vapour
+    pressure specification, a fixed-recipe fuel oil. Optimal profit
+    211,365.13 per day. A textbook page, but every coefficient of it is
+    printed and the answer is, which makes it the only refinery model here
+    that checks the solver against a number nobody in this repository
+    produced.
+
 The quality constraints in ``blending`` use the linear blending assumption
 (properties combine by volume fraction), which holds for sulfur and density and
 is what refinery LPs assume in practice. Octane and viscosity blend
@@ -28,6 +39,8 @@ faked here.
 
 References
 ----------
+Williams, "Model Building in Mathematical Programming", 5th ed., Wiley
+  (2013), problem 12.6 "Refinery optimisation" and its solution 13.6.
 Haverly, "Studies of the behaviour of recursion for the pooling problem",
   ACM SIGMAP Bulletin 25 (1978) 19-28.
 Lee, Pinto, Grossmann & Park, "Mixed-integer linear programming model for
@@ -45,7 +58,137 @@ from ..core.problem import ObjSense, Problem, VarKind
 from ..core.sparse import SparseMatrix
 from ..core.tolerances import INF
 
-__all__ = ["blending", "production_planning", "unit_scheduling", "TEMPLATES"]
+__all__ = ["blending", "production_planning", "unit_scheduling",
+           "williams_refinery", "WILLIAMS_OPTIMUM", "TEMPLATES"]
+
+WILLIAMS_OPTIMUM = 211365.13
+"""Optimal daily profit of :func:`williams_refinery`, as printed in the
+book's solution 13.6 (to the penny)."""
+
+
+def williams_refinery() -> Problem:
+    """Williams' refinery LP (problem 12.6), every coefficient as printed.
+
+    Barrels per day throughout. The flows are: two crudes into distillation
+    (capacity 45,000; crude 1 at most 20,000, crude 2 at most 30,000);
+    the six distillates -- light, medium and heavy naphtha, light and
+    heavy oil, residuum -- at the book's yields; naphthas optionally
+    reformed (capacity 10,000) into reformed gasoline; oils optionally
+    cracked (capacity 8,000) into cracked oil and cracked gasoline;
+    residuum optionally into lube oil at a half barrel per barrel, with
+    lube production between 500 and 1,000. Naphthas, reformed and cracked
+    gasoline blend into premium (octane at least 94) and regular (at least
+    84) petrol, premium at least 40% of regular by volume. Light oil, heavy
+    oil, cracked oil and residuum blend into jet fuel (vapour pressure at
+    most 1) and, in the fixed ratio 10 : 3 : 4 : 1, into fuel oil.
+    Contributions per barrel: premium 7, regular 6, jet fuel 4, fuel oil
+    3.5, lube oil 1.5.
+    """
+    cols: list[str] = []
+    lb: list[float] = []
+    ub: list[float] = []
+    cost: dict[str, float] = {}
+
+    def col(name, lo=0.0, hi=INF, c=0.0):
+        cols.append(name); lb.append(lo); ub.append(hi)
+        if c:
+            cost[name] = c
+        return name
+
+    # crudes and distillates
+    CR1 = col("CR1", hi=20000.0)
+    CR2 = col("CR2", hi=30000.0)
+    LN, MN, HN, LO, HO, R = (col(s) for s in ("LN", "MN", "HN", "LO", "HO", "R"))
+    # reforming, cracking, lube
+    LNRG, MNRG, HNRG, RG = (col(s) for s in ("LNRG", "MNRG", "HNRG", "RG"))
+    LOCGO, HOCGO, CO, CG = (col(s) for s in ("LOCGO", "HOCGO", "CO", "CG"))
+    RLBO = col("RLBO")
+    LBO = col("LBO", lo=500.0, hi=1000.0, c=1.5)
+    # blending streams into premium (PMF) and regular (RMF) petrol
+    blend_pmf = {s: col(f"{s}PMF") for s in ("LN", "MN", "HN", "RG", "CG")}
+    blend_rmf = {s: col(f"{s}RMF") for s in ("LN", "MN", "HN", "RG", "CG")}
+    PMF = col("PMF", c=7.0)
+    RMF = col("RMF", c=6.0)
+    # jet fuel and fuel oil
+    blend_jf = {s: col(f"{s}JF") for s in ("LO", "HO", "CO", "R")}
+    JF = col("JF", c=4.0)
+    blend_fo = {s: col(f"{s}FO") for s in ("LO", "HO", "CO", "R")}
+    FO = col("FO", c=3.5)
+
+    j = {name: k for k, name in enumerate(cols)}
+    rows_i: list[int] = []
+    rows_j: list[int] = []
+    vals: list[float] = []
+    row_lb: list[float] = []
+    row_ub: list[float] = []
+    row_names: list[str] = []
+
+    def row(name, terms, lo, hi):
+        r = len(row_names)
+        for v, a in terms.items():
+            rows_i.append(r); rows_j.append(j[v]); vals.append(float(a))
+        row_lb.append(lo); row_ub.append(hi); row_names.append(name)
+
+    def eq(name, terms):
+        row(name, terms, 0.0, 0.0)
+
+    # distillation yields per barrel of crude 1 / crude 2
+    yields = {LN: (0.10, 0.15), MN: (0.20, 0.25), HN: (0.20, 0.18),
+              LO: (0.12, 0.08), HO: (0.20, 0.19), R: (0.13, 0.12)}
+    for d, (y1, y2) in yields.items():
+        eq(f"DIST_{d}", {CR1: y1, CR2: y2, d: -1.0})
+    row("DIST_CAP", {CR1: 1.0, CR2: 1.0}, -INF, 45000.0)
+
+    # reforming: reformed gasoline per barrel of naphtha
+    eq("REFORM", {LNRG: 0.60, MNRG: 0.52, HNRG: 0.45, RG: -1.0})
+    row("REFORM_CAP", {LNRG: 1.0, MNRG: 1.0, HNRG: 1.0}, -INF, 10000.0)
+    # cracking: cracked oil and cracked gasoline per barrel of oil
+    eq("CRACK_CO", {LOCGO: 0.68, HOCGO: 0.75, CO: -1.0})
+    eq("CRACK_CG", {LOCGO: 0.28, HOCGO: 0.20, CG: -1.0})
+    row("CRACK_CAP", {LOCGO: 1.0, HOCGO: 1.0}, -INF, 8000.0)
+    # lube oil: half a barrel per barrel of residuum
+    eq("LUBE", {RLBO: 0.5, LBO: -1.0})
+
+    # material balances on every intermediate
+    eq("BAL_LN", {LN: 1.0, LNRG: -1.0, blend_pmf["LN"]: -1.0, blend_rmf["LN"]: -1.0})
+    eq("BAL_MN", {MN: 1.0, MNRG: -1.0, blend_pmf["MN"]: -1.0, blend_rmf["MN"]: -1.0})
+    eq("BAL_HN", {HN: 1.0, HNRG: -1.0, blend_pmf["HN"]: -1.0, blend_rmf["HN"]: -1.0})
+    eq("BAL_LO", {LO: 1.0, LOCGO: -1.0, blend_jf["LO"]: -1.0, blend_fo["LO"]: -1.0})
+    eq("BAL_HO", {HO: 1.0, HOCGO: -1.0, blend_jf["HO"]: -1.0, blend_fo["HO"]: -1.0})
+    eq("BAL_R", {R: 1.0, RLBO: -1.0, blend_jf["R"]: -1.0, blend_fo["R"]: -1.0})
+    eq("BAL_RG", {RG: 1.0, blend_pmf["RG"]: -1.0, blend_rmf["RG"]: -1.0})
+    eq("BAL_CO", {CO: 1.0, blend_jf["CO"]: -1.0, blend_fo["CO"]: -1.0})
+    eq("BAL_CG", {CG: 1.0, blend_pmf["CG"]: -1.0, blend_rmf["CG"]: -1.0})
+
+    # products are the sums of their blending streams
+    eq("SUM_PMF", {**{v: 1.0 for v in blend_pmf.values()}, PMF: -1.0})
+    eq("SUM_RMF", {**{v: 1.0 for v in blend_rmf.values()}, RMF: -1.0})
+    eq("SUM_JF", {**{v: 1.0 for v in blend_jf.values()}, JF: -1.0})
+    # fuel oil is a fixed recipe: light oil : heavy oil : cracked oil :
+    # residuum = 10 : 3 : 4 : 1, so each stream is its share of the product
+    for s, share in (("LO", 10.0), ("HO", 3.0), ("CO", 4.0), ("R", 1.0)):
+        eq(f"FO_{s}", {blend_fo[s]: 18.0, FO: -share})
+
+    # octane: the blend's number is the volume-weighted mean of the streams'
+    octane = {"LN": 90.0, "MN": 80.0, "HN": 70.0, "RG": 115.0, "CG": 105.0}
+    row("OCT_PMF", {v: octane[s] - 94.0 for s, v in blend_pmf.items()}, 0.0, INF)
+    row("OCT_RMF", {v: octane[s] - 84.0 for s, v in blend_rmf.items()}, 0.0, INF)
+    # vapour pressure of jet fuel, same linear blending
+    vp = {"LO": 1.0, "HO": 0.6, "CO": 1.5, "R": 0.05}
+    row("VP_JF", {v: 1.0 - vp[s] for s, v in blend_jf.items()}, 0.0, INF)
+    # premium at least 40% of regular
+    row("PMF_RMF", {PMF: 1.0, RMF: -0.4}, 0.0, INF)
+
+    n = len(cols)
+    A = SparseMatrix.from_triplets(rows_i, rows_j, vals, len(row_names), n)
+    c = np.zeros(n)
+    for name, v in cost.items():
+        c[j[name]] = v
+    return Problem(A=A, c=c,
+                   row_lb=np.array(row_lb), row_ub=np.array(row_ub),
+                   col_lb=np.array(lb), col_ub=np.array(ub),
+                   sense=ObjSense.MAXIMISE, name="williams_refinery",
+                   col_names=cols, row_names=row_names)
 
 
 def blending(n_components: int = 12, n_products: int = 4,

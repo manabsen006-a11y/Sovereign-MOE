@@ -65,6 +65,8 @@ Achterberg, "Constraint Integer Programming", PhD thesis, TU Berlin (2007),
 
 from __future__ import annotations
 
+import time as _time
+
 import numpy as np
 
 from ..core._jit import jit_kernel
@@ -255,12 +257,23 @@ def feasibility_jump(prob, int_mask, lo, hi, x0=None, max_iter: int = 20000,
 
 
 def fix_and_propagate(prob, x_lp, int_mask, lo, hi, feas_tol: float = 1e-9,
-                      lp_solve=None, max_backtracks: int = 20):
+                      lp_solve=None, max_backtracks: int = 20,
+                      deadline: float | None = None, int_tol: float = 1e-6):
     """Round integers one at a time, propagating after each fixing.
 
     Variables are taken in order of *confidence* -- least fractional first --
     because an early wrong guess is the expensive one. When propagation proves
     the fixing infeasible, the opposite rounding is tried once before giving up.
+
+    The integers the LP already placed at integral values are fixed all at
+    once and propagated once. One at a time they would be fixed to the same
+    values in the same order, the two roundings of an integral value being
+    the same value, at the price of a full propagation per column: on nw04
+    (87,482 columns, 637k nonzeros, an LP vertex that is mostly integral)
+    that was hours inside a 120 s limit. The fractional ones then go one
+    at a time as before. ``deadline`` (``time.perf_counter()`` units) is
+    checked before every propagation, because a heuristic the tree cannot
+    interrupt is a time limit the solver does not keep.
     """
     lo2 = np.array(lo, dtype=VAL, copy=True)
     hi2 = np.array(hi, dtype=VAL, copy=True)
@@ -269,12 +282,24 @@ def fix_and_propagate(prob, x_lp, int_mask, lo, hi, feas_tol: float = 1e-9,
         return None
 
     frac = np.abs(x_lp[idx] - np.round(x_lp[idx]))
+    integral = idx[(frac <= int_tol) & (hi2[idx] - lo2[idx] > feas_tol)]
+    if integral.size:
+        v = np.clip(np.round(x_lp[integral]), lo2[integral], hi2[integral])
+        lo2[integral] = v
+        hi2[integral] = v
+        res = propagate(prob.A, prob.row_lb, prob.row_ub, lo2, hi2,
+                        int_mask, max_rounds=3, feas_tol=feas_tol,
+                        inplace=True)
+        if res.infeasible:
+            return None
     order = idx[np.argsort(frac)]
     backtracks = 0
 
     for j in order:
         if hi2[j] - lo2[j] <= feas_tol:
             continue
+        if deadline is not None and _time.perf_counter() > deadline:
+            return None
         v = float(np.clip(np.round(x_lp[j]), lo2[j], hi2[j]))
         alt = float(np.clip(np.floor(x_lp[j]) if v > x_lp[j]
                             else np.ceil(x_lp[j]), lo2[j], hi2[j]))
@@ -317,8 +342,12 @@ def fix_and_propagate(prob, x_lp, int_mask, lo, hi, feas_tol: float = 1e-9,
 
 def feasibility_pump(prob, int_mask, lo, hi, lp_solve, x_lp=None,
                      max_rounds: int = 40, seed: int = 7,
-                     alpha: float = 0.9, decay: float = 0.9):
+                     alpha: float = 0.9, decay: float = 0.9,
+                     deadline: float | None = None):
     """Alternate rounding and LP projection until the two agree.
+
+    ``deadline`` (``time.perf_counter()`` units) is checked before every
+    round; a round is one LP solve, which on a wide model is not short.
 
     ``lp_solve(lo, hi, obj)`` must minimise ``obj`` over the relaxation. The
     objective mixes the distance to the current rounding with the true
@@ -343,6 +372,8 @@ def feasibility_pump(prob, int_mask, lo, hi, lp_solve, x_lp=None,
     a = alpha
 
     for _ in range(max_rounds):
+        if deadline is not None and _time.perf_counter() > deadline:
+            return None
         xr = x.copy()
         xr[idx] = np.clip(np.round(xr[idx]), lo[idx], hi[idx])
 

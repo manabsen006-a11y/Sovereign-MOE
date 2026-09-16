@@ -10,3 +10,6 @@ ui/_paste.*
 *.sol.json
 gt2.json
 data/qplib/
+data/fctp/
+data/mittelmann/
+data/mittelmann-milp/

@@ -94,6 +94,26 @@ __all__ = ["SimplexParams", "solve_simplex"]
 class SimplexParams:
     max_iter: int = 1_000_000
     time_limit: float = 300.0
+    deadline: float | None = None
+    """Absolute wall-clock deadline in ``time.perf_counter()`` units, on top
+    of the relative ``time_limit``. A branch-and-bound tree sets it to its
+    own deadline on every node solver it builds, so a node LP cannot outlive
+    the tree's limit whatever the solver's own clock says: ``time_limit``
+    is measured from the solver's construction, and a worker built late in
+    the search would otherwise be granted the whole limit again."""
+
+    kernel_chunk: int = 2000
+    """Pivots per call of the compiled node kernel. Between calls the
+    deadline is checked and progress measured; the kernel itself cannot
+    look at a clock. Re-entry costs one refactorisation, which is what
+    every ``refactor_freq`` pivots cost anyway."""
+
+    stall_chunks: int = 2
+    """Consecutive kernel chunks without objective progress before the
+    costs are perturbed. danoint is the case: one child LP of 664 rows ran
+    200,000 dual pivots at a dual-degenerate vertex without moving, where
+    its siblings took a hundred, and with nothing to break the tie it
+    burnt the tree's whole limit at a single node."""
 
     feas_tol: float = 1e-7
     opt_tol: float = 1e-7
@@ -484,7 +504,10 @@ class _Simplex:
     # -- bookkeeping -------------------------------------------------------- #
 
     def out_of_time(self) -> bool:
-        return (time.perf_counter() - self.t0) > self.p.time_limit
+        now = time.perf_counter()
+        if self.p.deadline is not None and now > self.p.deadline:
+            return True
+        return (now - self.t0) > self.p.time_limit
 
     def refresh(self):
         self.zB = self.B.compute_basic_values()
@@ -836,35 +859,50 @@ class NodeSolver:
         S.farkas = None
         S.refresh()
 
+        def primal_path():
+            """Phase-1 primal from the current basis, then phase 2."""
+            st1 = _primal_loop(S, phase=1)
+            if st1 != Status.OPTIMAL:
+                return st1
+            S.refresh()
+            if S.primal_infeasibility() > _infeasible_threshold(
+                    self.prob, p.feas_tol):
+                # Phase 1 stalled with infeasibility left. Its own duals
+                # are the certificate: y1 = B^-T c1 prices the rows in a
+                # combination no feasible point can satisfy.
+                ph1 = np.zeros(S.m, dtype=VAL)
+                _phase1_costs(S.zB, B.basic, B.lower, B.upper,
+                              p.feas_tol, ph1)
+                B.btran(ph1)
+                S.farkas = ph1
+                return Status.INFEASIBLE
+            return _primal_loop(S, phase=2)
+
         try:
             if S.primal_infeasibility() <= p.feas_tol:
                 status = _primal_loop(S, phase=2)
             elif _dual_feasible(B, p.opt_tol):
                 if p.node_kernel and B.ft is None:
                     status = self._dual_loop_kernel()
+                    if (status == Status.ITERATION_LIMIT and S.iters < p.max_iter
+                            and not S.out_of_time()):
+                        # A dual-degenerate stall the perturbation did not
+                        # break -- the kernel gave the node up early rather
+                        # than at the millionth pivot. The primal walks a
+                        # different path from the same basis: on danoint's
+                        # stalling child, 200,000 dual pivots at one
+                        # objective value against a primal that finishes.
+                        if S.perturbed:
+                            S.unperturb()
+                            S.maybe_refactorize(force=True)
+                            S.refresh()
+                        status = primal_path()
                 else:
                     status = _dual_loop(S)
                 if status == Status.OPTIMAL:
                     status = _primal_loop(S, phase=2)
             else:
-                st1 = _primal_loop(S, phase=1)
-                if st1 != Status.OPTIMAL:
-                    status = st1
-                else:
-                    S.refresh()
-                    if S.primal_infeasibility() > _infeasible_threshold(
-                            self.prob, p.feas_tol):
-                        # Phase 1 stalled with infeasibility left. Its own duals
-                        # are the certificate: y1 = B^-T c1 prices the rows in a
-                        # combination no feasible point can satisfy.
-                        ph1 = np.zeros(S.m, dtype=VAL)
-                        _phase1_costs(S.zB, B.basic, B.lower, B.upper,
-                                      p.feas_tol, ph1)
-                        B.btran(ph1)
-                        S.farkas = ph1
-                        status = Status.INFEASIBLE
-                    else:
-                        status = _primal_loop(S, phase=2)
+                status = primal_path()
         except LUSingular:
             status = Status.NUMERICAL
 
@@ -891,39 +929,77 @@ class NodeSolver:
                           B.status.copy(), S.iters)
 
     def _dual_loop_kernel(self):
-        """The dual loop as one compiled call; the basis is rebuilt after."""
-        from .nodelp import INFEASIBLE, ITERATION_LIMIT, NUMERICAL, OPTIMAL,             dual_simplex_kernel
+        """The dual loop as compiled calls of ``kernel_chunk`` pivots each.
+
+        The kernel runs with no Python between pivots and so cannot check a
+        clock or notice that it is not getting anywhere; both are done here
+        between chunks. The kernel leaves the basis arrays holding the
+        basis it stopped at, so the next call carries on from it at the
+        cost of one refactorisation. No progress over ``stall_chunks``
+        chunks -- the objective a dual simplex raises monotonically has
+        not moved -- is a dual-degenerate stall, and the costs are
+        perturbed, which the caller undoes and polishes away afterwards.
+        Still no progress after that, and the node comes back
+        ITERATION_LIMIT early rather than at the millionth pivot.
+        """
+        from .nodelp import INFEASIBLE, ITERATION_LIMIT, NUMERICAL, OPTIMAL, \
+            dual_simplex_kernel
+        from ..numerics.lu import LUFactor
         p, S, B = self.params, self.S, self.S.B
         A = self.prob.A
         tol = B.lu_tol
         farkas = np.zeros(self.m, dtype=VAL)
-        code, iters, n_fact, factors = dual_simplex_kernel(
-            A.cp, A.ci, A.cx, A.rp, A.ri, A.rx, self.n, self.m,
-            B.cost, B.lower, B.upper, B.status, B.basic, S.zB, S.dual_weight,
-            farkas, p.feas_tol, p.opt_tol, p.pivot_tol, p.harris_relax,
-            p.refactor_freq, p.max_iter, p.recompute_freq, p.devex_reset,
-            tol, 1e-14)
-        S.iters += iters
-        B.n_factorizations += n_fact
-        B.n_updates += iters
-        # carry on from the exact factors the kernel ended with: its LU and
-        # eta file become the basis's, so nothing is refactorised here
-        (Lp, Li, Lx, Up, Ui, Ux, pinv, q,
-         estart, eidx, evals, epiv, erow, n_eta) = factors
-        from ..numerics.lu import LUFactor
-        B.lu = LUFactor(self.m, Lp, Li, Lx, Up, Ui, Ux, pinv, q)
-        B._eta_start, B._eta_idx, B._eta_val = estart, eidx, evals
-        B._eta_piv, B._eta_row, B._n_eta = epiv, erow, int(n_eta)
-        B._sync_positions()
-        S.refresh()
-        if code == OPTIMAL:
-            return Status.OPTIMAL
-        if code == INFEASIBLE:
-            S.farkas = farkas
-            return Status.INFEASIBLE
-        if code == ITERATION_LIMIT:
-            return Status.ITERATION_LIMIT
-        return Status.NUMERICAL
+        chunk = max(1, int(p.kernel_chunk))
+        last_obj = -np.inf
+        stalled = 0
+        perturbed_here = False
+        while True:
+            budget = min(chunk, p.max_iter - S.iters)
+            if budget <= 0:
+                return Status.ITERATION_LIMIT
+            code, iters, n_fact, factors = dual_simplex_kernel(
+                A.cp, A.ci, A.cx, A.rp, A.ri, A.rx, self.n, self.m,
+                B.cost, B.lower, B.upper, B.status, B.basic, S.zB, S.dual_weight,
+                farkas, p.feas_tol, p.opt_tol, p.pivot_tol, p.harris_relax,
+                p.refactor_freq, budget, p.recompute_freq, p.devex_reset,
+                tol, 1e-14)
+            S.iters += iters
+            B.n_factorizations += n_fact
+            B.n_updates += iters
+            # carry on from the exact factors the kernel ended with: its LU
+            # and eta file become the basis's, so nothing is refactorised here
+            (Lp, Li, Lx, Up, Ui, Ux, pinv, q,
+             estart, eidx, evals, epiv, erow, n_eta) = factors
+            B.lu = LUFactor(self.m, Lp, Li, Lx, Up, Ui, Ux, pinv, q)
+            B._eta_start, B._eta_idx, B._eta_val = estart, eidx, evals
+            B._eta_piv, B._eta_row, B._n_eta = epiv, erow, int(n_eta)
+            B._sync_positions()
+            S.refresh()
+            if code == OPTIMAL:
+                return Status.OPTIMAL
+            if code == INFEASIBLE:
+                S.farkas = farkas
+                return Status.INFEASIBLE
+            if code != ITERATION_LIMIT:
+                return Status.NUMERICAL
+            if S.out_of_time():
+                return Status.TIME_LIMIT
+            z = B.nonbasic_values()
+            z[B.basic] = S.zB
+            obj = float(B.cost @ z)
+            if obj > last_obj + 1e-9 * (1.0 + abs(obj)):
+                stalled = 0
+            else:
+                stalled += 1
+            last_obj = obj
+            if stalled >= p.stall_chunks:
+                if not S.perturbed:
+                    S.perturb()
+                    perturbed_here = True
+                    stalled = 0
+                    last_obj = -np.inf
+                elif perturbed_here:
+                    return Status.ITERATION_LIMIT
 
     def stats(self) -> dict:
         return {

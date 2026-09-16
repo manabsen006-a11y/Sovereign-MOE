@@ -181,3 +181,36 @@ def test_the_python_loop_is_still_there_and_agrees():
     b = solve_mip(p.copy(), MIPParams(time_limit=60, symmetry=False))
     assert a.status == b.status == Status.OPTIMAL
     assert abs(a.objective - b.objective) <= 1e-9 * max(1.0, abs(a.objective))
+
+
+# --------------------------------------------------------------------------- #
+# the kernel runs in chunks: the deadline is checked between them, and a       #
+# stall is noticed                                                             #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_chunking_does_not_change_the_answer(seed):
+    """One pivot per chunk re-enters the kernel after every pivot, with a
+    refactorisation each time; the objective must be the same as one call."""
+    p = random_lp(seed=seed, m=25, n=60)
+    one = NodeSolver(p, SimplexParams(refactor_freq=60, kernel_chunk=10 ** 6))
+    many = NodeSolver(p, SimplexParams(refactor_freq=60, kernel_chunk=1))
+    a = one.solve(p.col_lb.copy(), p.col_ub.copy())
+    b = many.solve(p.col_lb.copy(), p.col_ub.copy())
+    assert a.status == b.status
+    if a.status == Status.OPTIMAL:
+        assert abs(a.objective - b.objective) <= 1e-9 * max(1.0, abs(a.objective))
+
+
+def test_a_node_solve_respects_an_absolute_deadline():
+    """A tree hands every node solver its own deadline; a solver built late
+    in the search must not be granted the whole limit again. With the
+    deadline already past, the kernel returns after its first chunk."""
+    import time
+    p = random_lp(seed=3, m=60, n=200)
+    ns = NodeSolver(p, SimplexParams(refactor_freq=60, kernel_chunk=1,
+                                     deadline=time.perf_counter() - 1.0))
+    r = ns.solve(p.col_lb.copy(), p.col_ub.copy())
+    assert r.status == Status.TIME_LIMIT
+    assert r.iterations <= 2

@@ -35,18 +35,24 @@ def test_the_two_paths_keep_different_budgets():
 
 
 def test_the_tree_actually_passes_its_own_budget():
-    """The constant is only worth anything if every solver is built with it."""
+    """The constant is only worth anything if every solver is built with it.
+
+    Every node solver in the tree is built through ``_node_params``, which
+    carries the budget and the tree's deadline; a solver built any other
+    way would have neither."""
     import inspect
 
     from sovopt.mip import tree as T
 
     src = inspect.getsource(T)
-    built = src.count("NodeSolver(scaled, SimplexParams(")
-    passed = src.count("refactor_freq=NODE_REFACTOR_FREQ")
+    built = src.count("NodeSolver(scaled, ")
+    through_helper = src.count("NodeSolver(scaled, _node_params(")
     assert built > 0
-    assert passed == built, (
-        f"{built} node solvers built but only {passed} given the tree's "
-        f"refactorisation budget")
+    assert through_helper == built, (
+        f"{built} node solvers built but only {through_helper} through "
+        f"_node_params, which carries the tree's refactorisation budget")
+    assert "refactor_freq=NODE_REFACTOR_FREQ" in inspect.getsource(T._node_params)
+    assert "deadline=deadline" in inspect.getsource(T._node_params)
 
 
 @pytest.mark.parametrize("freq", [20, 60, 150, 400])

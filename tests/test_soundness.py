@@ -379,3 +379,63 @@ def test_infeasible_solve_writes_valid_json(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert "NaN" not in text, "bare NaN in the payload is not valid JSON"
     assert json.loads(text)["objective"] is None
+
+
+def _brute_force_optimum(p):
+    best = np.inf
+    for bits in itertools.product((0.0, 1.0), repeat=p.n):
+        x = np.array(bits)
+        rv, bv, iv = p.violation(x)
+        if max(rv, bv, iv) <= 1e-9:
+            best = min(best, float(p.c @ x))
+    return best
+
+
+def test_an_infeasible_verdict_is_pruned_on_only_when_its_farkas_row_certifies_it():
+    """The dual simplex declares a node INFEASIBLE from a ratio test filtered
+    by a pivot tolerance. On danoint that verdict was wrong seven times in
+    761 nodes -- nodes two other LP solvers found feasible -- and each one
+    was pruned. The tree now evaluates the Farkas row over the node box
+    and prunes only on a certificate; an uncertified verdict is re-solved
+    and, failing that, counted as undecided so that no proof is claimed.
+
+    Here every node LP after the root lies: it says INFEASIBLE with no
+    certificate. The tree must still return the brute-force optimum, and
+    it must not call it proved."""
+    import sovopt.mip.tree as tree
+    rng = np.random.default_rng(11)
+    n, m = 10, 5
+    A = rng.integers(-3, 6, size=(m, n)).astype(float)
+    ru = (A @ np.full(n, 0.5) + 2).astype(float)
+    p = Problem(A=SparseMatrix.from_dense(A), c=-rng.integers(1, 9, n).astype(float),
+                row_lb=np.full(m, -INF), row_ub=ru,
+                col_lb=np.zeros(n), col_ub=np.ones(n),
+                kind=np.full(n, VarKind.BINARY, dtype=np.uint8), name="liar")
+    truth = _brute_force_optimum(p)
+    assert np.isfinite(truth)
+
+    real = tree.NodeSolver
+
+    class Liar(real):
+        calls = 0
+
+        def solve(self, lo, hi, warm_basis=None, **kw):
+            Liar.calls += 1
+            r = real.solve(self, lo, hi, warm_basis=warm_basis, **kw)
+            if Liar.calls > 1 and r.status == Status.OPTIMAL and Liar.calls % 2 == 0:
+                from sovopt.lp.simplex import NodeResult
+                return NodeResult(Status.INFEASIBLE, np.inf, None, None,
+                                  r.iterations, farkas=None)
+            return r
+
+    tree.NodeSolver = Liar
+    try:
+        s = solve_mip(p, MIPParams(device="cpu", time_limit=60, threads=1,
+                                   symmetry=False, conflict=False))
+    finally:
+        tree.NodeSolver = real
+    assert s.info["uncertified_infeasible"] >= 1
+    # the lie never removed the optimum: the re-solve found it, or the node
+    # was kept as undecided and the answer was found elsewhere
+    assert s.x is not None
+    assert abs(s.objective - truth) <= 1e-6, (s.objective, truth)

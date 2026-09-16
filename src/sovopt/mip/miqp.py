@@ -371,7 +371,7 @@ def solve_miqp(prob: Problem, params: MIQPParams | None = None) -> Solution:
         if not params.heuristics:
             return
         for fn in (lambda: fix_and_propagate(work, x0, int_mask, lo, hi,
-                                             tol.primal_feas),
+                                             tol.primal_feas, deadline=deadline),
                    lambda: feasibility_jump(work, int_mask, lo, hi, x0=x0)):
             if np.isfinite(incumbent) or time.perf_counter() > deadline:
                 return

@@ -93,19 +93,34 @@ def main(argv=None):
     ap.add_argument("--dir", default="data/instances")
     ap.add_argument("--tol", type=float, default=1e-6)
     ap.add_argument("--time-limit", type=float, default=60.0)
+    ap.add_argument("--method", choices=["simplex", "ipm", "pdlp"], default="simplex",
+                    help="our engine on the left-hand side; HiGHS is always the right")
+    ap.add_argument("--device", default="cpu", choices=["cpu", "gpu"])
+    ap.add_argument("--only", nargs="*")
     a = ap.parse_args(argv)
 
     paths = sorted(glob.glob(os.path.join(a.dir, "*.mps")))
+    if a.only:
+        paths = [p for p in paths
+                 if os.path.splitext(os.path.basename(p))[0] in set(a.only)]
     if not paths:
         print("no instances; run: python -m bench.fetch --set small")
         return 1
 
-    print("SOVOPT vs HiGHS (via scipy.optimize.linprog) -- LP relaxations")
+    from sovopt.cli import solve as _solve
+
+    def ours(prob):
+        if a.method == "simplex":
+            return solve_simplex(prob, SimplexParams(time_limit=a.time_limit))
+        return _solve(prob, method=a.method, device=a.device,
+                      time_limit=a.time_limit, tol=1e-8)
+
+    print(f"SOVOPT ({a.method}) vs HiGHS (via scipy.optimize.linprog) -- LP relaxations")
     print("HiGHS is run as an independent comparator; nothing in src/sovopt uses it.")
     print()
-    print(f"{'instance':<12} {'sovopt obj':>16} {'HiGHS obj':>16} {'rel diff':>10} "
+    print(f"{'instance':<18} {'sovopt obj':>16} {'HiGHS obj':>16} {'rel diff':>10} "
           f"{'sovopt':>8} {'HiGHS':>8} {'verdict':>9}")
-    print("-" * 86)
+    print("-" * 92)
 
     agree = disagree = failed = 0
     tv = th = 0.0
@@ -115,7 +130,7 @@ def main(argv=None):
         prob.kind[:] = VarKind.CONTINUOUS
 
         t = time.perf_counter()
-        mine = solve_simplex(prob, SimplexParams(time_limit=a.time_limit))
+        mine = ours(prob)
         dt_v = time.perf_counter() - t
 
         got, dt_h, msg = solve_with_highs(prob, a.time_limit)
@@ -123,8 +138,14 @@ def main(argv=None):
         th += dt_h
 
         if mine.status != Status.OPTIMAL or got is None:
-            print(f"{name:<12} {'-':>16} {'-':>16} {'-':>10} "
-                  f"{dt_v:>7.2f}s {dt_h:>7.2f}s {'SKIP':>9}")
+            who = []
+            if mine.status != Status.OPTIMAL:
+                who.append(f"ours {mine.status.name}")
+            if got is None:
+                who.append(f"HiGHS {msg[:40]}")
+            print(f"{name:<18} {mine.objective if mine.x is not None else float('nan'):>16.10g} "
+                  f"{got[0] if got is not None else float('nan'):>16.10g} {'-':>10} "
+                  f"{dt_v:>7.2f}s {dt_h:>7.2f}s {'SKIP':>9}   {'; '.join(who)}")
             failed += 1
             continue
 
@@ -133,10 +154,10 @@ def main(argv=None):
         ok = rel <= a.tol
         agree += ok
         disagree += (not ok)
-        print(f"{name:<12} {mine.objective:>16.10g} {h_obj:>16.10g} {rel:>10.2e} "
+        print(f"{name:<18} {mine.objective:>16.10g} {h_obj:>16.10g} {rel:>10.2e} "
               f"{dt_v:>7.2f}s {dt_h:>7.2f}s {'agree' if ok else 'DIFFER':>9}")
 
-    print("-" * 86)
+    print("-" * 92)
     print(f"  agree within {a.tol:g}   {agree}/{agree + disagree}")
     if disagree:
         print(f"  !! DISAGREEMENTS: {disagree}")

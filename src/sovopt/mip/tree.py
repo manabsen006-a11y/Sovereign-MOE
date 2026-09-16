@@ -55,7 +55,7 @@ from ..core.tolerances import DEFAULT, INF, Tolerances
 from ..numerics.scaling import scale_problem
 from ..lp.simplex import NodeSolver, SimplexParams
 from .bnr import BNRConfig, BNREngine
-from .conflict import ConflictAnalyzer
+from .conflict import ConflictAnalyzer, farkas_value
 from .cuts import (Cut, CutPool, append_cuts, generate_cover,
                    generate_gomory, generate_mir)
 from .heuristics import (HeuristicStats, dive, feasibility_jump,
@@ -380,6 +380,14 @@ def _round_and_repair(prob, x, int_mask, lo, hi, tol):
     return None
 
 
+def _node_params(params, tol, deadline=None):
+    """The node solver's parameters, with the tree's absolute deadline."""
+    return SimplexParams(time_limit=params.time_limit,
+                         refactor_freq=NODE_REFACTOR_FREQ,
+                         feas_tol=tol.primal_feas, opt_tol=tol.dual_feas,
+                         deadline=deadline)
+
+
 def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol,
                    deadline=None):
     """Separate globally valid cuts at the root until they stop paying.
@@ -461,9 +469,8 @@ def _root_cut_loop(scaled, node_lp, lo0, hi0, int_mask, params, tol,
 
         scaled = append_cuts(scaled, chosen)
         int_full = np.concatenate([int_mask, np.zeros(scaled.m, dtype=bool)])
-        node_lp = NodeSolver(scaled, SimplexParams(
-            time_limit=params.time_limit, refactor_freq=NODE_REFACTOR_FREQ,
-            feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
+        node_lp = NodeSolver(scaled, _node_params(params, tol,
+                                                  node_lp.params.deadline))
         total += len(chosen)
 
         if np.isfinite(prev) and bound - prev <= 1e-9 * max(1.0, abs(bound)):
@@ -534,6 +541,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     params = params or MIPParams()
     tol = params.tol
     t0 = time.perf_counter()
+    tree_deadline = t0 + params.time_limit     # every node solver gets it
 
     if prob.Q is not None:
         raise NotImplementedError(
@@ -589,9 +597,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                                                  iters=params.bnr_iters,
                                                  device=params.device))
     else:
-        node_lp = NodeSolver(scaled, SimplexParams(
-            time_limit=params.time_limit, refactor_freq=NODE_REFACTOR_FREQ,
-            feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
+        node_lp = NodeSolver(scaled, _node_params(params, tol, tree_deadline))
 
     # ---- root relaxation, solved harder than an ordinary node ------------- #
     root_basis = None
@@ -643,11 +649,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 # belongs to the attempt that won it, instead of being left
                 # warm-started and re-timed by the attempt that lost.
                 lp_try = (node_lp if len(trials) == 1 else
-                          NodeSolver(scaled, SimplexParams(
-                              time_limit=params.time_limit,
-                              refactor_freq=NODE_REFACTOR_FREQ,
-                              feas_tol=tol.primal_feas,
-                              opt_tol=tol.dual_feas)))
+                          NodeSolver(scaled, _node_params(params, tol,
+                                                          tree_deadline)))
                 now = time.perf_counter()
                 out = _root_cut_loop(
                     scaled, lp_try, lo0, hi0, int_mask,
@@ -703,6 +706,30 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     # exhausted frontier stop being a proof, so the report below must not
     # promote the run to OPTIMAL or read a dual bound off the incumbent.
     undecided = 0
+    lost_bound = np.inf
+    """Least bound among the nodes dropped undecided. Everything such a
+    node may have held lies at or above it, so it is the search's bound
+    wherever the frontier's own would be higher, and while it sits below
+    the incumbent the search cannot claim the gap closed."""
+    uncertified = 0
+
+    def _certified_empty(l, h, y):
+        """An INFEASIBLE verdict is pruned on only when its Farkas row
+        proves the node box empty, evaluated exactly over the box; the
+        dual simplex declares infeasibility from a ratio test filtered by
+        a pivot tolerance, which on a drifted or degenerate basis is a
+        claim, not a proof. Either sign convention may hold."""
+        if y is None:
+            return False
+        y = np.asarray(y, dtype=VAL)
+        # rounding noise -- 1e-17 against entries of 0.25 -- on a row whose
+        # bound is infinite makes the certificate unbounded and so worthless;
+        # a ray is a ray with those entries dropped, and it is the dropped
+        # ray that is tested
+        big = float(np.abs(y).max()) if y.size else 0.0
+        yc = np.where(np.abs(y) <= 1e-12 * big, 0.0, y)
+        return max(farkas_value(scaled.A, scaled.row_lb, scaled.row_ub, l, h, yc),
+                   farkas_value(scaled.A, scaled.row_lb, scaled.row_ub, l, h, -yc)) > 1e-9
 
     def _accept(cand_scaled):
         """Unscale a candidate and validate it against the *original* model.
@@ -755,7 +782,11 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     between-trial check cannot bound one that is already running. Without
     this cap the restarts turned a 600 s limit into a 5,445 s run."""
     if params.heuristics:
+        heur_deadline = [None]      # set by _heuristic_round for _lp_at
+
         def _lp_at(l, h, obj=None):
+            if heur_deadline[0] is not None and time.perf_counter() > heur_deadline[0]:
+                return None
             saved = None
             if obj is not None:
                 saved = scaled.c.copy()
@@ -789,12 +820,15 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             """
             nonlocal best_x, incumbent, heur_spent
             _h0 = time.perf_counter()
+            heur_deadline[0] = deadline
             trials = [] if improve else [
                 ("fix_and_propagate",
                  lambda: fix_and_propagate(scaled, x0, int_mask, hl, hh,
                                            tol.primal_feas,
                                            lp_solve=(None if use_bnr
-                                                     else (lambda l, h: _lp_at(l, h))))),
+                                                     else (lambda l, h: _lp_at(l, h))),
+                                           deadline=deadline,
+                                           int_tol=tol.integrality)),
                 ("feasibility_jump",
                  lambda: feasibility_jump(scaled, int_mask, hl, hh, x0=x0,
                                           max_iter=params.fj_iterations)),
@@ -833,7 +867,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             if not use_bnr and not cheap_only and not improve:
                 trials.append(("feasibility_pump",
                                lambda: feasibility_pump(scaled, int_mask, hl, hh,
-                                                        _lp_at, x_lp=x0)))
+                                                        _lp_at, x_lp=x0,
+                                                        deadline=deadline)))
             try:
                 for name, fn in trials:
                     if np.isfinite(incumbent) and not improve:
@@ -879,7 +914,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             status = Status.NODE_LIMIT
             break
 
-        best_bound = frontier[0].bound
+        best_bound = min(frontier[0].bound, lost_bound)
         if np.isfinite(incumbent):
             if incumbent - best_bound <= max(params.gap_abs,
                                              params.gap_rel * abs(incumbent)):
@@ -895,7 +930,13 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 continue
             slab.append(nd)
         if not slab:
-            status = Status.OPTIMAL
+            if lost_bound < incumbent - max(params.gap_abs,
+                                            params.gap_rel * abs(incumbent)):
+                # every open node is prunable, but a node dropped undecided
+                # is not, and nothing can be proved past it
+                status = Status.NODE_LIMIT
+            else:
+                status = Status.OPTIMAL
             break
 
         K = len(slab)
@@ -936,6 +977,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         # objective units) and `xs` (relaxation points for the heuristics).
         bounds = np.empty(Ka, dtype=VAL)
         xs = np.zeros((n, Ka), dtype=VAL)
+        pruned = np.zeros(Ka, dtype=bool)      # proved empty, certified
+        unsolved = np.zeros(Ka, dtype=bool)    # the LP gave no verdict
 
         if use_bnr:
             # A child's LP differs from its parent's by one bound, so the
@@ -981,10 +1024,12 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             results = node_pool.solve_slab(node_lp, LO[:, :Ka], HI[:, :Ka], warms)
             for t, nd in enumerate(alive):
                 r = results[t]
-                if r.status == Status.INFEASIBLE:
+                if r.status == Status.INFEASIBLE and _certified_empty(
+                        LO[:, t], HI[:, t], r.farkas):
                     bounds[t] = np.inf
+                    pruned[t] = True
                     node_infeasible += 1
-                    if conflict is not None and r.farkas is not None:
+                    if conflict is not None:
                         cl = conflict.analyse(scaled.A, scaled.row_lb,
                                               scaled.row_ub, LO[:, t], HI[:, t],
                                               r.farkas)
@@ -995,6 +1040,11 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                     xs[:, t] = r.x
                     warm_cache[nd._order] = r.basis
                 else:
+                    # deadline, iteration cap, a numerical exit, or an
+                    # INFEASIBLE the Farkas row does not certify
+                    if r.status == Status.INFEASIBLE:
+                        uncertified += 1
+                    unsolved[t] = True
                     bounds[t] = nd.bound
             while len(warm_cache) > 8 * params.batch:
                 k = next(iter(warm_cache))
@@ -1008,9 +1058,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         if pending_clauses and len(pending_clauses) >= params.clause_batch:
             scaled = append_cuts(scaled, [Cut(i, v, rr, kind="conflict")
                                           for i, v, rr in pending_clauses])
-            node_lp = NodeSolver(scaled, SimplexParams(
-                time_limit=params.time_limit, refactor_freq=NODE_REFACTOR_FREQ,
-                feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
+            node_lp = NodeSolver(scaled, _node_params(params, tol, tree_deadline))
             warm_cache.clear()          # basis size changed
             pending_clauses = []
 
@@ -1033,6 +1081,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 b = nd.bound                       # vacuous bound: keep parent's
             b = max(b, nd.bound)                   # bounds only improve downward
 
+            if pruned[t]:
+                continue
             if np.isfinite(incumbent) and b >= incumbent - max(
                     params.gap_abs, params.gap_rel * abs(incumbent)):
                 continue
@@ -1040,6 +1090,29 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
             xv = xs[:, t]
             l = LO[:, t]
             h = HI[:, t]
+
+            if unsolved[t] and not use_bnr:
+                # One cold re-solve. Then the node is decided, or it is
+                # lost: counted, and its parent's bound kept as the bound
+                # of whatever it held. It used to fall through to the
+                # branching step with a zero vector for its relaxation,
+                # find nothing fractional, and vanish -- the tree then
+                # reported OPTIMAL with the node never examined.
+                r2 = node_lp.solve(l, h)
+                if r2.status == Status.OPTIMAL and r2.x is not None:
+                    xv = r2.x
+                    b = max(b, r2.objective / sc.obj)
+                    warm_cache[nd._order] = r2.basis
+                    if np.isfinite(incumbent) and b >= incumbent - max(
+                            params.gap_abs, params.gap_rel * abs(incumbent)):
+                        continue
+                elif r2.status == Status.INFEASIBLE and _certified_empty(l, h, r2.farkas):
+                    node_infeasible += 1
+                    continue
+                else:
+                    undecided += 1
+                    lost_bound = min(lost_bound, b)
+                    continue
 
             # integrality check on this node's relaxation
             xi = xv[int_mask]
@@ -1117,10 +1190,8 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
                 # INFEASIBLE on a model with a published optimum. Re-solve
                 # the node exactly and decide from a real vertex.
                 if node_lp is None or node_lp_rows != scaled.m:
-                    node_lp = NodeSolver(scaled, SimplexParams(
-                        time_limit=params.time_limit,
-                        refactor_freq=NODE_REFACTOR_FREQ,
-                        feas_tol=tol.primal_feas, opt_tol=tol.dual_feas))
+                    node_lp = NodeSolver(scaled, _node_params(params, tol,
+                                                              tree_deadline))
                     node_lp_rows = scaled.m
                 r_exact = node_lp.solve(l, h)
                 if r_exact.status == Status.OPTIMAL and r_exact.x is not None:
@@ -1196,10 +1267,15 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         status = Status.OPTIMAL
 
     dual_bound = frontier[0].bound if frontier else incumbent
-    if undecided and not frontier:
-        # The frontier emptied, but not every node in it was decided, so
-        # there is no bound to report and nothing to call proved.
-        dual_bound = -float("inf")
+    if undecided:
+        # A node dropped undecided still bounds the search: nothing it held
+        # lies below its parent's bound, and nothing can be called proved
+        # while that sits below the incumbent.
+        dual_bound = min(dual_bound, lost_bound)
+        if status == Status.OPTIMAL and np.isfinite(incumbent) and \
+                lost_bound < incumbent - max(params.gap_abs,
+                                             params.gap_rel * abs(incumbent)):
+            status = Status.NODE_LIMIT
     if status == Status.OPTIMAL and not frontier:
         dual_bound = incumbent
 
@@ -1242,6 +1318,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         out.info["heuristics"] = heur.summary()
         out.info["nodes_infeasible"] = node_infeasible
         out.info["undecided_nodes"] = undecided
+        out.info["uncertified_infeasible"] = uncertified
         out.info["pseudocost_updates"] = pc_updates
         node_pool.close()
         return out
@@ -1266,5 +1343,7 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
     sol.info["warm_start_hit_rate"] = warm_hits / max(warm_tries, 1)
     sol.info["pseudocost_updates"] = pc_updates
     sol.info["nodes_infeasible"] = node_infeasible
+    sol.info["undecided_nodes"] = undecided
+    sol.info["uncertified_infeasible"] = uncertified
     node_pool.close()
     return sol

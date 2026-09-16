@@ -632,7 +632,7 @@ def solve_alphabb(prob: Problem,
             # tree's row-only heuristics need only the rows and apply
             # unchanged: QPLIB_0032 had no incumbent in 60 s without them.
             for fn in (lambda: fix_and_propagate(work, x, int_mask, lo, hi,
-                                                 tol.primal_feas),
+                                                 tol.primal_feas, deadline=deadline),
                        lambda: feasibility_jump(work, int_mask, lo, hi, x0=x)):
                 if time.perf_counter() > deadline:
                     break
