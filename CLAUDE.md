@@ -67,12 +67,13 @@ src/sovopt/
               BNR, safe bounds (LP and QP), conflict analysis, symmetry, MIQP
   globalopt/  McCormick / OBBT / spatial branch-and-bound for pooling;
               non-convex QP (McCormick reformulation, aBB opt-in)
-  models/     refinery templates, Haverly pooling (p and pq)
+  models/     refinery templates, Williams' refinery LP, Haverly pooling (p and pq)
   presolve.py fixed/singleton/redundant reductions and postsolve (opt-in)
   cli.py      routing by model class; demo.py
 bench/        harness, independent verifier, comparator (HiGHS, quarantined),
-              fetch, Netlib, QPLIB, scale study, non-convex QP ladder,
-              basis-update comparison
+              fetch (MIPLIB 3/2017, Mittelmann LP + fctp + MILP benchmark, with
+              machine-read reference values), Netlib, QPLIB, scale study,
+              non-convex QP ladder, basis-update comparison
 tests/        unit + regression, one file per module, plus fixtures/
 tools/        check_provenance.py
 ui/           minimal local interface (server.py)

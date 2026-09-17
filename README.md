@@ -254,7 +254,10 @@ machine code next to the source, so on a fresh checkout the first solve of
 each kind carries the compile: about 50 s cold, about 5 s once cached.
 
 ```bash
-python -m bench.fetch --set small     # download MIPLIB instances
+python -m bench.fetch --set small     # download MIPLIB instances (--set all: the classical 45)
+python -m bench.fetch --set mittelmann-lp   # Mittelmann's LP test set, expanded from Netlib's compressed MPS
+python -m bench.fetch --set fctp            # his fixed-charge transportation MILPs
+python -m bench.fetch --set mittelmann-milp # his MILP benchmark's MIPLIB 2017 instances, optima from the pages
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --repeat 3       # the same, medians of three with the spread
 python -m bench.harness --mode lp --method simplex  # force one engine
@@ -394,6 +397,11 @@ checks below all reach for something external.
 | Shadow-price prediction | 239 rows, worst error 3.9e-15 |
 | Whole-solve vs brute force | 450 models × both node solvers, **0 disagreements** |
 | Batched safe bound vs exact simplex | 40 root relaxations, **0 invalid bounds** |
+| **HiGHS on all 45 MIPLIB relaxations** ([campaign](docs/BENCHMARKS.md)) | 45/45 agree, max relative difference **4.4e-14** |
+| HiGHS on Mittelmann's LP set | 6/6 agree where both solve, worst 1.5e-10; HiGHS 8 solved, our interior point 8, the GPU first-order method 9 |
+| Published MIPLIB 2017 optima, machine-read from the instance pages | 27/45 classical and 4/48 benchmark instances on the value; every proved one matches |
+| QPLIB published values, 29 instances | bound never above the published value, **28/28**; published point verified 28/29 |
+| Williams' textbook refinery LP | £211,365.13 with the book's plan, all three engines, certified |
 
 The last two are recent, and they are there because everything above them
 passed while `node_solver="bnr"` was returning wrong answers. Enumerating every
@@ -412,6 +420,14 @@ Forrest–Tomlin update are what is left.
 A full requirement-by-requirement conformance audit against the problem
 statement — including what is *not* built — is in the artifact linked from the
 project notes.
+
+**The benchmark campaign.** Every public category the problem statement
+names -- MIPLIB (the whole classical set), Netlib, Mittelmann's LP and MILP
+benchmarks, QPLIB -- and the refinery, blending, planning and supply-chain
+models from the literature, run in one sitting with every reference value
+machine-read from its source, is [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+It found six defects on the way (bugs 9-14 below), all fixed, and its
+summary table is the shortest honest statement of where the solver stands.
 
 ---
 
@@ -1474,17 +1490,28 @@ six now have regression tests.
   detected and not applied -- their dual needs an argument the other three do
   not. Full measurement in
   [`docs/NEGATIVE-RESULTS.md`](docs/NEGATIVE-RESULTS.md).
-- **Netlib is in; Mittelmann is not.** All 89 problems of the Netlib LP set
-  expand and solve — see [Netlib](#netlib). **78 of 89 match the readme's
-  optimum** to 1e-6 and **87 of 89 are certified optimal** by the
-  independent verifier from the returned point and duals. The nine-instance
-  difference is the readme's: on eight the vertex is certified and the
-  readme's value is either beaten by a verified feasible point or excluded
-  by a certified bound, and `cycle` is certified from a point the simplex
-  could not prove in 60 s. This bullet used to call those eight "accuracy
-  shortfalls on the ill-conditioned end of the set"; that was the wrong
-  conclusion, drawn before the verifier could check optimality. `dfl001`
-  and `maros-r7` remain over the limit with no point.
+- **Netlib is in, and so is Mittelmann now -- and Mittelmann's MILP
+  benchmark is where the distance to the established solvers is.** All 89
+  problems of the Netlib LP set expand and solve — see [Netlib](#netlib).
+  **78 of 89 match the readme's optimum** to 1e-6 and **87 of 89 are
+  certified optimal** by the independent verifier from the returned point
+  and duals. The nine-instance difference is the readme's: on eight the
+  vertex is certified and the readme's value is either beaten by a verified
+  feasible point or excluded by a certified bound, and `cycle` is certified
+  from a point the simplex could not prove in 60 s. `dfl001` and `maros-r7`
+  remain over the limit with no point. The whole of MIPLIB's classical set,
+  Mittelmann's LP test set and his MILP benchmark were run in one sitting
+  and are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md): the 45 classical
+  MILPs at 22 proved and 27 on the published value; the 13 Mittelmann LPs
+  with the GPU first-order method the best engine (9 of 13, qap15 in 11 s
+  where no CPU engine finishes in 300 s) and the interior point level with
+  HiGHS (8 each, ours faster on the three 160k-row models); and **the 48
+  instances of Mittelmann's MILP benchmark at 0 proved in 120 s**, four on
+  the published optimum, nine within 1%, forty with a verified point. That
+  last number is the honest one: the set the commercial solvers are ranked
+  on needs the cut families (lifted flow covers, zero-half, implied
+  bounds), presolve reductions and strong branching this tree does not
+  have, and two minutes on it proves nothing.
 - **Scale is measured now, and bounded by three different things.** See
   [Scale](#scale) for the ladder. LP reaches 1.02M nonzeros and 102,400 columns
   on the first-order path and 15,360 square rows solved and verified; the
@@ -1493,6 +1520,27 @@ six now have regression tests.
   binaries and finds no feasible point at all past about 400. Against the stated
   benchmark of "thousands to millions" of variables, the thousands are reached
   and the millions are not.
+- **Time limits are honoured to within one unit of work, and the unit can
+  still be large.** Bugs 9, 10 and 14 closed the cases where a unit was
+  unbounded -- a heuristic without a deadline, a node kernel without a
+  clock, a factorisation predicted at forty minutes. What remains is the
+  grain: a cold re-solve of a node whose LP gave no verdict is entered
+  whole (air04 132 s, mkc 136 s, fast0507 157 s against 120), and an
+  interior-point iteration on qap15 is 40 s (489 s against 300). The
+  MILP set's overruns were 218 s, 333 s and hours before; these are what
+  is left.
+- **The interior point's own status is more pessimistic than its answer on
+  six Netlib instances.** Its `NUMERICAL` exits on greenbea, maros, pilot,
+  shell and sierra, and fffff800's iteration limit, return points the
+  verifier certifies optimal from the duals. The engine could apply the
+  verifier's own test before reporting and does not yet; the certified
+  count (82 of 89 at 120 s) is the verifier's, not the solver's.
+- **danoint's node LPs stall, and the fix bounded the cost rather than the
+  cause.** Bug 10 keeps a dual-degenerate stall from consuming the limit;
+  the stall itself -- 1,184 of 1,185 reduced costs exactly zero at a vertex
+  the dual simplex cannot leave -- is the dual simplex's degeneracy
+  handling, and danoint still returns 73 against 65.67 after 120 s with a
+  handful of its nodes undecided.
 - **The tree parallelises its node LPs and not much else, and the search
   is chaotic on gt2.** The node-LP dual simplex is now one compiled `nogil`
   call (`lp/nodelp.py`) -- the same pivots as the Python loop, checked node
@@ -1546,16 +1594,16 @@ failure and not a time.
 
 | model | rows | cols | nnz | simplex | interior point | PDLP |
 |---|---|---|---|---|---|---|
-| blend k=1 | 130 | 400 | 4.0k | 0.48 s | **0.30 s** | 1.06 s |
-| blend k=2 | 260 | 1,600 | 16k | 0.51 s | **0.08 s** | 4.28 s |
-| blend k=4 | 520 | 6,400 | 64k | 2.19 s | **0.50 s** | 1.67 s |
-| blend k=8 | 1,040 | 25,600 | 256k | 7.04 s | 3.35 s | **2.16 s** |
-| blend k=16 | 2,080 | 102,400 | 1.02M | 102.5 s | 28.3 s | **3.65 s** |
-| plan k=1 | 240 | 240 | 1.4k | 0.14 s | **0.01 s** | 1.86 s |
-| plan k=2 | 960 | 960 | 9.9k | 1.76 s | **0.03 s** | 4.11 s |
-| plan k=4 | 3,840 | 3,840 | 73k | 53.2 s | **0.34 s** | 7.49 s |
-| plan k=8 | 15,360 | 15,360 | 564k | timeout | **3.26 s** | 45.6 s |
-| plan k=16 | 61,440 | 61,440 | 4.42M | timeout | **46.4 s** | timeout |
+| blend k=1 | 130 | 400 | 4.0k | 0.38 s | **0.19 s** | 0.59 s |
+| blend k=2 | 260 | 1,600 | 16k | 0.13 s | **0.09 s** | 2.34 s |
+| blend k=4 | 520 | 6,400 | 64k | 0.91 s | **0.47 s** | 0.54 s |
+| blend k=8 | 1,040 | 25,600 | 256k | 4.35 s | 3.67 s | **1.54 s** |
+| blend k=16 | 2,080 | 102,400 | 1.02M | 35.7 s | 36.5 s | **3.21 s** |
+| plan k=1 | 240 | 240 | 1.4k | 0.05 s | **0.01 s** | 0.79 s |
+| plan k=2 | 960 | 960 | 9.9k | 0.44 s | **0.03 s** | 1.73 s |
+| plan k=4 | 3,840 | 3,840 | 73k | 11.3 s | **0.36 s** | 3.67 s |
+| plan k=8 | 15,360 | 15,360 | 564k | timeout | **3.86 s** | 32.8 s |
+| plan k=16 | 61,440 | 61,440 | 4.42M | timeout | **47.1 s** | timeout |
 
 The interior-point column is measured with the symmetric LDLᵀ on the
 ordering the race predicts. Its history is the point: before any ordering,
@@ -1568,8 +1616,11 @@ the ordering names instead of the LU pivoting away from them, `plan k=8`
 3.3 s, `blend k=8` 3.4 s, `blend k=16` 28 s, `plan k=16` 46 s.
 
 **The largest LP solved and verified is 61,440 x 61,440 with 4.42M nonzeros,
-in 46 s, by the interior point; the widest is 2,080 x 102,400 with 1.02M
-nonzeros in 3.65 s, by PDLP.** That reaches the "thousands" the benchmark
+in 47 s, by the interior point; the widest is 2,080 x 102,400 with 1.02M
+nonzeros in 3.2 s, by PDLP.** (The table is the benchmark campaign's draw of
+17 September 2026; the simplex column is 2-5x faster than the draw it
+replaced at every size, from the vectorised status repair and the
+refactorisation budget, and the other two columns are within noise.) That reaches the "thousands" the benchmark
 names and passes a million nonzeros. It is not millions of variables.
 
 Four things the table says that an aggregate would hide:
@@ -1684,7 +1735,7 @@ python -m bench.netlib             # 89 problems, 377 s
 | match the readme's optimum to 1e-6 | **78/89** |
 | **certified optimal by the independent verifier** | **87/89** |
 | hit the 60 s limit | 3 (`dfl001`, `maros-r7`, `cycle` -- and `cycle`'s point is certified optimal anyway) |
-| the interior point alone, 60 s (`--method ipm`) | **81/89** optimal, from 77 before the unit and the LDLᵀ retry (Known limits); the eight: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, fffff800 and forplan at the iteration limit, pilot4 `NUMERICAL`, dfl001 and fit2p over 60 s (dfl001 solves at 107 s) |
+| the interior point alone, 120 s (`--method ipm`) | **82/89 certified optimal** in 310 s for the set (from 77 before the unit and the LDLᵀ retry, Known limits); six of its `NUMERICAL`/iteration-limit exits return certified points anyway (greenbea, maros, pilot, shell, sierra, fffff800); the real failures: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, forplan at the iteration limit with no point, pilot4 `NUMERICAL`, fit2p over the limit (dfl001 solves at 96 s) |
 
 **The eight "accuracy shortfalls" were the readme's, not the engine's.** This
 table used to say the simplex fell short of the published optimum on eight
@@ -1849,7 +1900,7 @@ src/sovopt/
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
-  models/     refinery templates
+  models/     refinery templates, Williams' refinery LP, Haverly pooling
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
 tests/        700 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
