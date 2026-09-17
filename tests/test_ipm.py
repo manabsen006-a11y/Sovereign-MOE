@@ -405,3 +405,36 @@ def test_agrees_with_the_published_lp_value_on_a_benchmark():
     assert abs(s.objective - 95919464.0) <= 1e-6 * 95919464.0
     row_v, col_v, _ = p.violation(s.x)
     assert max(row_v, col_v) < 1e-6
+
+
+# --------------------------------------------------------------------------- #
+# a factorisation the limit cannot afford is refused before it starts         #
+# --------------------------------------------------------------------------- #
+
+
+def test_the_symbolic_flop_count_is_the_sum_of_squared_column_counts():
+    from sovopt.numerics.ldl import LDLSymbolic
+    from sovopt.lp.ipm import _KKT
+    p = random_lp(seed=2, m=15, n=40)
+    k = _KKT(p.A)
+    assert k.ldl_sym is not None
+    cnt = np.diff(k.ldl_sym.Lp).astype(float)
+    assert k.ldl_sym.flops == pytest.approx(float(cnt @ cnt))
+    assert k.ldl_sym.flops >= k.ldl_sym.lnz
+
+
+def test_an_unaffordable_factorisation_is_refused_at_once():
+    """nug08-3rd's KKT: 192 million entries in L, 2.5e12 multiply-adds per
+    factorisation, forty minutes past a 300 s limit inside the first one.
+    The cost is known from the symbolic analysis, so the refusal is
+    immediate and says why. A rate low enough turns any model into that
+    case; the same model at the default rate solves."""
+    p = random_lp(seed=4, m=30, n=80)
+    t0 = __import__("time").perf_counter()
+    s = solve_ipm(p, IPMParams(time_limit=10, flop_rate=1e-6))
+    assert s.status == Status.TIME_LIMIT
+    assert s.x is None
+    assert "predicted" in s.info["refused"] and "limit of 10 s" in s.info["refused"]
+    assert __import__("time").perf_counter() - t0 < 5.0
+    ok = solve_ipm(p, IPMParams(time_limit=10))
+    assert ok.status == Status.OPTIMAL

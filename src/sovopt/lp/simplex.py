@@ -694,6 +694,16 @@ def _dual_loop(S: _Simplex):
         q, _tdual = _dual_ratio(alpha_row, d, B.status, sigma,
                                 p.pivot_tol, p.opt_tol, p.harris_relax)
         if q < 0:
+            if B._n_eta > 0:
+                # The verdict came through an eta file. On gmu-35-40 the
+                # basic values through the eta file were 7e10 infeasible
+                # against 2e3 through a fresh LU, and INFEASIBLE came out
+                # of the drifted row on a feasible node. Refactorise and
+                # ask again; only a fresh factorisation's verdict counts.
+                S.maybe_refactorize(force=True)
+                S.refresh()
+                S.iters += 1
+                continue
             # No column can repair row r without breaking dual feasibility:
             # rho is row r of B^-1, and it is exactly the Farkas certificate
             # that this subproblem is empty. Keep it for conflict analysis.
@@ -966,6 +976,18 @@ class NodeSolver:
             S.iters += iters
             B.n_factorizations += n_fact
             B.n_updates += iters
+            if code == NUMERICAL:
+                # The kernel's factorisation failed and its factors are
+                # whatever the failure left -- a U with a zero on the
+                # diagonal, which an FTRAN then divides by. gmu-35-40 found
+                # it: ZeroDivisionError out of the tree at 88 s, from
+                # installing those factors and computing the basic values
+                # with them. Refactorise through the basis's own path,
+                # which repairs singularity by swapping logicals in, and
+                # report the node as not solved.
+                B.factorize()
+                S.refresh()
+                return Status.NUMERICAL
             # carry on from the exact factors the kernel ended with: its LU
             # and eta file become the basis's, so nothing is refactorised here
             (Lp, Li, Lx, Up, Ui, Ux, pinv, q,

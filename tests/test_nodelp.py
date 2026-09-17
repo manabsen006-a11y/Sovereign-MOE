@@ -214,3 +214,84 @@ def test_a_node_solve_respects_an_absolute_deadline():
     r = ns.solve(p.col_lb.copy(), p.col_ub.copy())
     assert r.status == Status.TIME_LIMIT
     assert r.iterations <= 2
+
+
+def test_a_failed_kernel_factorisation_does_not_poison_the_basis(monkeypatch):
+    """gmu-35-40 raised ZeroDivisionError out of the tree at 88 s: the
+    kernel's factorisation had failed, it returned NUMERICAL with the
+    factors the failure left -- a U with a zero on the diagonal -- and the
+    caller installed them and ran an FTRAN through them. The factors of a
+    NUMERICAL exit are now discarded and the basis refactorised through
+    its own repairing path; the solve reports NUMERICAL, and the solver is
+    still usable afterwards."""
+    import numpy as np
+    from sovopt.lp import nodelp
+
+    p = random_lp(seed=5, m=20, n=50)
+    ns = NodeSolver(p, SimplexParams(refactor_freq=60))
+    good = ns.solve(p.col_lb.copy(), p.col_ub.copy())
+    assert good.status == Status.OPTIMAL
+
+    real = nodelp.dual_simplex_kernel
+    calls = {"n": 0}
+
+    def broken(*args):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            m = args[7]
+            zeros_i = np.zeros(1, dtype=np.int32)
+            zeros_v = np.zeros(1, dtype=float)
+            zp = np.zeros(m + 1, dtype=np.int64)
+            # a "factorisation" whose U has an all-zero diagonal
+            return (nodelp.NUMERICAL, 0, 1,
+                    (zp, zeros_i, zeros_v, zp, zeros_i, zeros_v,
+                     np.arange(m, dtype=np.int32), np.arange(m, dtype=np.int32),
+                     np.zeros(2, dtype=np.int64), zeros_i, zeros_v,
+                     zeros_v, zeros_i, 0))
+        return real(*args)
+
+    monkeypatch.setattr(nodelp, "dual_simplex_kernel", broken)
+    lo, hi = p.col_lb.copy(), p.col_ub.copy()
+    big = np.argsort(-good.x)[:5]                       # a child the root vertex violates
+    hi[big] = good.x[big] * 0.5
+    r = ns.solve(lo, hi, warm_basis=good.basis)
+    assert calls["n"] >= 1, "the child was expected to enter the dual kernel"
+    assert r.status == Status.NUMERICAL
+    again = ns.solve(lo, hi, warm_basis=good.basis)
+    assert again.status in (Status.OPTIMAL, Status.INFEASIBLE)
+
+
+@pytest.mark.parametrize("kernel", [True, False])
+@pytest.mark.parametrize("seed", range(4))
+def test_an_infeasible_verdict_comes_with_a_certificate_that_holds(kernel, seed):
+    """Both dual loops now refactorise before declaring a node empty, so the
+    Farkas row they return is computed from a fresh LU. The tree prunes on
+    that row only if it certifies the box empty (bug 11); a verdict whose
+    row does not certify is a wasted node. Random LPs, made infeasible by
+    a bound the rows cannot meet: every INFEASIBLE must certify."""
+    import numpy as np
+    from sovopt.mip.conflict import farkas_value
+
+    p = random_lp(seed=seed, m=30, n=70)
+    ns = NodeSolver(p, SimplexParams(refactor_freq=60, node_kernel=kernel))
+    root = ns.solve(p.col_lb.copy(), p.col_ub.copy())
+    assert root.status == Status.OPTIMAL
+    # push a row past what its columns allow: tighten the row's largest
+    # contributors to zero and demand the row's activity stay at the vertex
+    lo, hi = p.col_lb.copy(), p.col_ub.copy()
+    order = np.argsort(-root.x)[:8]
+    hi[order] = 0.0
+    lo_r, hi_r = p.row_lb.copy(), p.row_ub.copy()
+    act = p.A.matvec(root.x)
+    i = int(np.argmax(np.abs(act)))
+    lo_r[i] = hi_r[i] = act[i]
+    child = p.with_bounds(lo, hi, lo_r, hi_r)
+    ns2 = NodeSolver(child, SimplexParams(refactor_freq=60, node_kernel=kernel))
+    r = ns2.solve(lo, hi, warm_basis=root.basis)
+    if r.status != Status.INFEASIBLE:
+        pytest.skip("this draw stayed feasible")
+    y = np.asarray(r.farkas)
+    big = float(np.abs(y).max())
+    yc = np.where(np.abs(y) <= 1e-12 * big, 0.0, y)
+    assert max(farkas_value(child.A, child.row_lb, child.row_ub, lo, hi, yc),
+               farkas_value(child.A, child.row_lb, child.row_ub, lo, hi, -yc)) > 1e-9

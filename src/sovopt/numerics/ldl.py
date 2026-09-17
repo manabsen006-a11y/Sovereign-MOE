@@ -257,6 +257,14 @@ class LDLSymbolic:
                                self._w, cnt))
         self.Lp = np.zeros(n + 1, dtype=np.int64)
         np.cumsum(cnt, out=self.Lp[1:])
+        c = cnt.astype(np.float64)
+        self.flops = float(c @ c)
+        """Multiply-adds one numeric factorisation costs, to within a small
+        factor: the sum over columns of the squared column count. Known
+        before any numeric work, which is what lets a caller refuse a
+        factorisation it cannot afford -- nug08-3rd's KKT has 192 million
+        entries in ``L`` and 2.5e12 of these, hours at any rate this
+        machine reaches, against a limit of minutes."""
 
     @property
     def nnz(self) -> int:

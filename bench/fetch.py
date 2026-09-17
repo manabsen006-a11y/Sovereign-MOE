@@ -185,6 +185,14 @@ def fetch_one(name, dest_dir=DATA_DIR, timeout=60, source="miplib"):
         path = MITTELMANN_LP.get(name, f"fctp/{name}.mps.bz2")
         blob = _get(PLATO_URL.format(path), timeout)
         text = _decompress(blob).decode("utf-8", errors="replace")
+        if not path.endswith(".mps.bz2"):
+            # "The files w/o mps subscript are compressed with the MPC
+            # utility and need to be uncompressed with EMPS" (plato's
+            # 00README): Netlib's compressed MPS, which the repository's
+            # own expander reads -- the harness saw twelve parse failures
+            # before this line
+            from sovopt.io.netlib import expand
+            text = expand(text)
         header = f"*NAME:         {name}\n*SOURCE:       plato.asu.edu/ftp/lptestset/{path}\n"
         how = "plato"
         # a few of the fctp instances are in MIPLIB 2017 under the same

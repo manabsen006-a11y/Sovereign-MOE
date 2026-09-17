@@ -155,6 +155,19 @@ class IPMParams:
     max_iter: int = 200
     time_limit: float = 600.0
 
+    flop_rate: float = 1.0e9
+    """Multiply-adds per second the symmetric factorisation is assumed to
+    reach, used only to refuse a factorisation that cannot finish inside
+    ``time_limit``: one whose predicted cost (:attr:`LDLSymbolic.flops`)
+    at this rate exceeds the limit. Deliberately low -- the measured rate
+    on this laptop is a few times higher -- so that the refusal fires
+    only where the factorisation is hopeless: nug08-3rd (2.5e12 per
+    factorisation) and nug20 (7.5e11) ran for forty minutes past a 300 s
+    limit inside their first factorisation, because the limit is checked
+    between iterations and a compiled factorisation cannot look at a
+    clock. A refusal is a ``TIME_LIMIT`` with the prediction in
+    ``info["refused"]``, at no cost beyond the symbolic analysis."""
+
     regularisation: str = "static"
     """How the two diagonal blocks are regularised.
 
@@ -913,6 +926,21 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
     kkt.ldl_boosts = tuple(params.ldl_boosts)
     kkt.lu_fill_cap = params.lu_fill_cap
     kkt.lu_min_nnz = params.lu_min_nnz
+    if kkt.ldl_sym is not None and params.flop_rate > 0:
+        predicted = kkt.ldl_sym.flops / params.flop_rate
+        if predicted > params.time_limit:
+            sol = Solution(status=Status.TIME_LIMIT, iterations=0,
+                           time=time.perf_counter() - t0, method="ipm")
+            sol.info = {"iterations": 0}
+            sol.info["refused"] = (
+                f"one factorisation predicted at {predicted:.0f} s "
+                f"({kkt.ldl_sym.lnz:,} entries in L, {kkt.ldl_sym.flops:.2e} "
+                f"multiply-adds at {params.flop_rate:.0e}/s) against a limit "
+                f"of {params.time_limit:.0f} s")
+            sol.info["ordering"] = kkt.ldl_name
+            if params.verbose:
+                print("  ipm: refused --", sol.info["refused"])
+            return sol
     try:
         z, y, zl, zu = _initial_point(kkt, A, cz, lo, hi, fixed,
                                       has_lo, has_hi, free_lo, free_hi,

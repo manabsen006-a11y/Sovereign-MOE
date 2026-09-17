@@ -264,7 +264,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 689 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 700 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -1062,6 +1062,53 @@ six now have regression tests.
     both. A test lies to the tree on every other node and checks that the
     brute-force optimum survives.
 
+12. **The node kernel's failed factorisation was installed and used.**
+    gmu-35-40, from Mittelmann's MILP benchmark, raised `ZeroDivisionError`
+    out of the tree at 88 s. The compiled kernel's own LU had failed
+    (`ok = False`, code NUMERICAL) and returned the factors the failure
+    left -- a `U` with a zero on its diagonal -- and the caller installed
+    them as the basis's factorisation and ran the FTRAN that computes the
+    basic values through them. The path existed in the original
+    single-call kernel too; the campaign's harder instances were the first
+    to take it. A NUMERICAL exit's factors are now discarded, the basis is
+    refactorised through its own path, which repairs singularity by
+    swapping logicals in, and the node comes back NUMERICAL to be
+    re-solved cold. A test hands the solver a factorisation with an
+    all-zero `U` diagonal and checks it survives.
+
+13. **INFEASIBLE from an eta file, and the eta file was wrong by seven
+    orders.** With bug 11's certificate in place the refusals had a count:
+    on gmu-35-40 every INFEASIBLE verdict the node LP produced in two
+    minutes -- twenty-two -- was refused, and each refused node was
+    feasible by the full simplex and the interior point alike. At the
+    verdict the basis's values through the product-form eta file were
+    7e10 infeasible; through a fresh LU of the same basis, 2e3 -- and the
+    ratio test on the fresh alpha row found an entering column at once.
+    Neither dual loop, compiled or Python, refactorised before believing a
+    drifted row. Both now do: "no entering column" through an eta file
+    is a reason to refactorise and ask again, and only a fresh
+    factorisation's verdict returns INFEASIBLE. gmu-35-40 and danoint at
+    60 s afterwards: zero refused verdicts, where there had been
+    twenty-two and seven. The certificate stays, because a fresh LU is
+    still floating point.
+
+14. **The interior point spent forty minutes past a 300 s limit inside
+    its first factorisation.** Mittelmann's nug08-3rd and nug20 -- LP
+    relaxations of quadratic assignment problems, 19,728 and 15,240 rows
+    -- have KKT factors with 192 and 95 million entries in `L` under any
+    ordering the race offers, 2.5e12 and 7.5e11 multiply-adds per
+    factorisation. The limit is checked between iterations, and a
+    compiled factorisation cannot look at a clock, so the first one ran
+    until it was done. The cost is known before any numeric work: the
+    symbolic analysis produces the column counts, and their squared sum
+    is the factorisation's cost to within a small factor
+    (`LDLSymbolic.flops`). The IPM now refuses a factorisation predicted,
+    at a deliberately low `flop_rate` of 1e9/s, to outlast its limit --
+    in six seconds, with the prediction in `info["refused"]` -- and the
+    GPU first-order method solves nug08-3rd in 2.7 s. What it does not
+    fix is the same clock at a finer grain: on qap15 an iteration is 40 s
+    and a 300 s limit ended at 489 s.
+
 ---
 
 ## Known limits
@@ -1804,6 +1851,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        689 tests including regressions for every bug above
+tests/        700 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

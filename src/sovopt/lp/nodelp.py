@@ -313,7 +313,9 @@ def dual_simplex_kernel(Acp, Aci, Acx, Arp, Ari, Arx, n, m,
 
         qcol, _t = _dual_ratio(alpha_row, d, status, sigma, pivot_tol,
                                opt_tol, harris_relax)
-        if qcol < 0:
+        refactor_now = False
+        skipped = False
+        if qcol < 0 and n_eta == 0:
             for i in range(m):
                 farkas[i] = rho[i]
             return INFEASIBLE, iters, n_fact, (Lp, Li, Lx, Up, Ui, Ux, pinv, q, estart, eidx, eval_, epiv, erow, n_eta)
@@ -322,10 +324,18 @@ def dual_simplex_kernel(Acp, Aci, Acx, Arp, Ari, Arx, n, m,
         jl = basic[r]
         target = lower[jl] if sigma > 0.0 else upper[jl]
         delta = target - zB[r]
-        arq = alpha_row[qcol]
-        refactor_now = False
-        skipped = False
-        if abs(arq) <= pivot_tol:
+        arq = alpha_row[qcol] if qcol >= 0 else 0.0
+        if qcol < 0:
+            # No entering column -- as computed through an eta file. On
+            # gmu-35-40 a basis's values through the eta file were 7e10
+            # infeasible against 2e3 through a fresh LU, and the verdict
+            # that came out of the drifted alpha row was INFEASIBLE on a
+            # feasible node, twenty-two times in one tree. Only a fresh
+            # factorisation's verdict counts: refactorise, recompute, and
+            # ask again.
+            refactor_now = True
+            skipped = True
+        elif abs(arq) <= pivot_tol:
             refactor_now = True
             skipped = True
         else:
