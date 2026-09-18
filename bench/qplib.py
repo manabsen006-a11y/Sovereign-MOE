@@ -111,10 +111,28 @@ def parse_listing(page: str) -> dict:
     return out
 
 
+STRUCTURE_KEYS = ("nvars", "nbinvars", "nintvars", "nboundedvars",
+                  "nsingleboundedvars", "ncons", "nlincons", "nquadcons",
+                  "nobjnz", "nobjquadnz", "nobjquaddiagnz", "njacobiannz")
+"""The integer counts an instance page publishes about the model itself --
+what the reader must reproduce even where QPLIB publishes no solution
+point (9002 has none). Read by machine like every other reference value;
+which of them the test asserts, and why two are not, is in
+``tests/test_qplib.py``."""
+
+
 def parse_instance_page(page: str) -> dict:
-    """The published objective value at the solution point, and its sense."""
+    """The published objective value at the solution point, its sense, and
+    the model's published structure counts (:data:`STRUCTURE_KEYS`)."""
     text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", page)))
     out = {}
+    structure = {}
+    for key in STRUCTURE_KEYS:
+        m = re.search(rf"\b{key} (\d+)\b", text)
+        if m:
+            structure[key] = int(m.group(1))
+    if structure:
+        out["structure"] = structure
     m = re.search(r"solobjvalue (-?[\d.]+(?:[eE][+-]?\d+)?)", text)
     if m:
         out["objective"] = float(m.group(1))
@@ -169,7 +187,11 @@ def fetch(dest_dir: str = DATA_DIR, only=None, everything=False) -> int:
                 open(sfile, "wb").write(_get(f"{BASE}/sol/QPLIB_{name}.sol"))
             except Exception as e:                        # noqa: BLE001
                 print(f"    no solution file: {e}")
-        if "published" not in rec:
+        # the page is read once and cached in the index; an index written
+        # before the structure counts were recorded is refreshed in place
+        # (the page only, not the instance), so an existing data directory
+        # picks them up on the next --fetch
+        if "published" not in rec or "structure" not in rec["published"]:
             try:
                 rec["published"] = parse_instance_page(
                     _get(f"{BASE}/QPLIB_{name}.html").decode("utf-8", "replace"))

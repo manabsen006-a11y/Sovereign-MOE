@@ -220,14 +220,24 @@ def _fetched():
     return out
 
 
-@pytest.mark.parametrize("name", _fetched() or ["none"])
+def _with_published_point():
+    """The fetched instances whose page carries a solution value. QPLIB
+    publishes none for 9002 (no ``solobjvalue`` on the page, an empty
+    solution file), so it is not a case of this claim; its reader check is
+    :func:`test_reader_reproduces_qplibs_published_structure`."""
+    if not _fetched():
+        return []
+    index = json.load(open(os.path.join(DATA, "index.json")))
+    return [n for n in _fetched()
+            if index[n]["published"].get("objective") is not None]
+
+
+@pytest.mark.parametrize("name", _with_published_point() or ["none"])
 def test_published_point_evaluates_to_published_value(name):
     if name == "none":
         pytest.skip("no QPLIB instances fetched; run python -m bench.qplib --fetch")
     index = json.load(open(os.path.join(DATA, "index.json")))
-    page_value = index[name]["published"].get("objective")
-    if page_value is None:
-        pytest.skip(f"{name}: no published objective value")
+    page_value = index[name]["published"]["objective"]
     p = read_qplib(os.path.join(DATA, f"QPLIB_{name}.qplib"))
     obj, x, named = read_qplib_solution(os.path.join(DATA, f"QPLIB_{name}.sol"), p.n)
     assert not named, f"unmapped names in the solution file: {list(named)[:5]}"
@@ -246,3 +256,57 @@ def test_published_point_evaluates_to_published_value(name):
     rec = index[name]
     assert p.n == rec["n"] and p.m == rec["m"]
     assert p.n_binary == rec["n_binary"]
+
+
+@pytest.mark.parametrize("name", _fetched() or ["none"])
+def test_reader_reproduces_qplibs_published_structure(name):
+    """Every instance page publishes the model's own counts -- variables by
+    kind, constraints, objective terms, Jacobian nonzeros -- and the sense
+    and curvature. The reader must reproduce them from the file, and this
+    is the check an instance with no published solution can be given:
+    9002 is one, and it is a case here.
+
+    Nine counts are asserted; they agree on all 35 fetched instances.
+    Two are read and not asserted, because QPLIB's page disagrees with
+    QPLIB's own file on them: ``nsingleboundedvars`` and ``nboundedvars``
+    on 8906 (the page says 1,941 singly bounded of 5,223; the file's bound
+    section is a default of 0 and +inf with no exceptions, so every
+    variable is), 8845 (page 1 bounded and 439 single; the file has 15
+    non-default upper bounds) and 4270 (page 800 single; the file 1,200).
+    The file is the model, and the reader reads the file."""
+    if name == "none":
+        pytest.skip("no QPLIB instances fetched; run python -m bench.qplib --fetch")
+    index = json.load(open(os.path.join(DATA, "index.json")))
+    pub = index[name]["published"]
+    if "structure" not in pub:
+        pytest.skip("index predates the structure counts; run python -m bench.qplib --fetch")
+    st = pub["structure"]
+    p = read_qplib(os.path.join(DATA, f"QPLIB_{name}.qplib"))
+
+    assert p.n == st["nvars"]
+    assert p.m == st["ncons"]
+    assert int((p.kind == VarKind.BINARY).sum()) == st["nbinvars"]
+    assert int((p.kind == VarKind.INTEGER).sum()) == st["nintvars"]
+    assert st["nlincons"] == p.m and st["nquadcons"] == 0   # the reader's scope
+    assert p.A.nnz == st["njacobiannz"]
+
+    # objective terms: Q is stored symmetric in full, the page counts the
+    # triangle; a variable is "in the objective" through c or through Q
+    Q = p.Q
+    if Q is not None:
+        rows = np.repeat(np.arange(Q.rp.size - 1), np.diff(Q.rp))
+        diag = int((rows == Q.ri).sum())
+        off = int((rows != Q.ri).sum())
+        assert off % 2 == 0                                   # symmetric
+        qvars = np.unique(np.concatenate([rows, Q.ri]))
+    else:
+        diag = off = 0
+        qvars = np.array([], dtype=np.int64)
+    assert diag == st["nobjquaddiagnz"]
+    assert diag + off // 2 == st["nobjquadnz"]
+    assert np.union1d(np.flatnonzero(p.c != 0.0), qvars).size == st["nobjnz"]
+
+    # sense and curvature as the page states them
+    assert (p.sense == ObjSense.MINIMISE) == (pub["sense"] == "min")
+    if pub.get("curvature") == "convex":
+        assert index[name]["convex"] is True

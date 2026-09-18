@@ -230,8 +230,8 @@ without the `gpu` extra the fifteen tests in `tests/test_gpu.py` skip with
 `no usable GPU: ModuleNotFoundError: No module named 'cupy'` and the
 message now says which extra would have run them; on a machine with an
 NVIDIA driver, install it before reading the count as covering the GPU
-path (a fresh clone with `[dev,ui,gpu]`, measured: 637 passed, 35
-skipped, none of them GPU tests -- 32 for benchmark instances a clone
+path (a fresh clone with `[dev,ui,gpu]`, measured: 637 passed, 36
+skipped, none of them GPU tests -- 33 for benchmark instances a clone
 does not carry, two random draws that happened to stay feasible, and the
 one UI test that only runs *without* a GPU).
 
@@ -276,7 +276,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 706 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 740 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -1840,9 +1840,19 @@ feasibility and objective have to match, and on the first attempt the
 objective did not -- the file's off-diagonal entries are the *whole*
 coefficient of `x_i x_j` inside the `½(...)`, so the symmetric Hessian carries
 half on each side, a factor of two on every cross term that still parses.
-The **engines** are checked against the published value: a convex instance
-must reach it, and a non-convex instance must never report a certified bound
-above it.
+It is checked a second way against the counts each instance page
+publishes about the model itself -- variables by kind, constraints,
+objective terms and square terms, Jacobian nonzeros, sense, curvature --
+which the fetch reads by machine into the index and a test asserts on
+every fetched instance; that is the check `9002`, which publishes no
+solution, can be given, and it was the one test the suite used to skip on
+this machine. Two of the page's counts are read and not asserted, because
+QPLIB's page disagrees with QPLIB's own file on them: on `8906` the page
+says 1,941 of 5,223 variables have a single bound where the file's bound
+section is a default of 0 and +inf with no exceptions, and `8845` and
+`4270` differ the same way. The file is the model. The **engines** are
+checked against the published value: a convex instance must reach it, and
+a non-convex instance must never report a certified bound above it.
 
 ```
 python -m bench.qplib --fetch                      # once, 35 instances
@@ -1852,7 +1862,7 @@ python -m bench.qplib --run --time-limit 60 --max-vars 6000
 | | |
 |---|---|
 | parsed | **29/29** (32/32 with the three box-only giants) |
-| published point verified | **28/29** (`9002` publishes none) |
+| published point verified | **28/29** (`9002` publishes none) -- and the published structure counts reproduced on **35/35** |
 | certified bound never above the published value | **24/24** |
 | convex, continuous: optimal to 1e-8 | **9/10** — `8845` 1.2 s, `8938` 1.4 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 4.6 s, `8790` (39,204) 1.9 s, `8515` (16,002) 6.1 s; `8559` (10,000 vars, 5,000 rows) 12 iterations, `8567` (10,000, 7,500 rows) 10 iterations, both about 100 s; `9002` solved to a 1e-9 gap and refused by the absolute yardstick, below |
 | convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 1.9% / 0.28% in 60 s (was 3.6% / 1.6%); `10069` closed; `3980`, `3913`, `3871`, `4270` have incumbents 15%, 2.6%, 27% and 12% above the published values (Known limits) |
@@ -1940,6 +1950,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates, Williams' refinery LP, Haverly pooling
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        706 tests including regressions for every bug above
+tests/        740 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```
