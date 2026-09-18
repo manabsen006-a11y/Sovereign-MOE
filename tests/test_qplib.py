@@ -214,22 +214,23 @@ def _fetched():
     for f in sorted(os.listdir(DATA)):
         if f.endswith(".qplib"):
             name = f[6:-6]
-            sol = os.path.join(DATA, f"QPLIB_{name}.sol")
-            if name in index and "published" in index[name] and os.path.exists(sol):
+            if name in index and "published" in index[name]:
                 out.append(name)
     return out
 
 
 def _with_published_point():
-    """The fetched instances whose page carries a solution value. QPLIB
-    publishes none for 9002 (no ``solobjvalue`` on the page, an empty
-    solution file), so it is not a case of this claim; its reader check is
+    """The fetched instances whose page carries a solution value and whose
+    solution file is on disk. QPLIB publishes none for 9002 (no
+    ``solobjvalue`` on the page, and the solution file is a 404), so it is
+    not a case of this claim; its reader check is
     :func:`test_reader_reproduces_qplibs_published_structure`."""
     if not _fetched():
         return []
     index = json.load(open(os.path.join(DATA, "index.json")))
     return [n for n in _fetched()
-            if index[n]["published"].get("objective") is not None]
+            if index[n]["published"].get("objective") is not None
+            and os.path.exists(os.path.join(DATA, f"QPLIB_{n}.sol"))]
 
 
 @pytest.mark.parametrize("name", _with_published_point() or ["none"])

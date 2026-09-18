@@ -230,9 +230,23 @@ without the `gpu` extra the fifteen tests in `tests/test_gpu.py` skip with
 `no usable GPU: ModuleNotFoundError: No module named 'cupy'` and the
 message now says which extra would have run them; on a machine with an
 NVIDIA driver, install it before reading the count as covering the GPU
-path (a fresh clone with `[dev,ui,gpu]`, measured: 639 passed, 34
-skipped, none of them GPU tests -- 33 for benchmark instances a clone
-does not carry, and the one UI test that only runs *without* a GPU).
+path.
+
+The tests that read a benchmark instance fetch it on first use. `data/` is
+gitignored and the benches fetch the sets they run, so a clone used to
+skip 33 tests for want of them; now `tests/conftest.py` fetches, before
+collection and through the same fetchers, exactly the files those tests
+name -- five MIPLIB instances, ten Netlib problems, five QPLIB instances
+with their solution files and page records, one fixed-charge
+transportation model from plato, about 2.3 MB in all, each with its
+machine-read reference in its header -- and never anything larger.
+`SOVOPT_FETCH=0` turns this off, and a fetch that fails (no network, a
+source down) is reported once and leaves those tests skipping with their
+own reasons. A fresh clone with `[dev,ui,gpu]` and a network, measured:
+679 passed, 1 skipped, 0 failed -- the one skip is the UI test that only
+runs *without* a GPU, and the collected count is below the 740 of a
+folder with every set fetched because two QPLIB tests parametrize over
+the instances on disk (five on a clone, 35 here).
 
 The `gpu` extra is `cupy-cuda12x[ctk]`: the `[ctk]` part pulls the CUDA
 libraries in as wheels, so the GPU path needs only an NVIDIA driver -- no
