@@ -11,9 +11,13 @@ machine described under
 after another so that no two solves shared the CPU. The LP, QP and
 literature tables are from commit `0d019ca`; the three MILP tables are
 from `a52bcf8`, the commit that carries the fixes the first pass over the
-MILP sets found (section 6), re-run once those were in. Every number below is
-regenerable from the command shown with it; the raw listings the tables were
-cut from are what the commands print.
+MILP sets found (section 6), re-run once those were in; and the Netlib
+interior-point row is from `62d9a1d`, the fix for the defect that
+table itself exposed (bug 15), re-run alone once it was in (Mittelmann's
+interior-point column was re-run at the same commit too, and the outcome
+is in the text under that table). Every number below is regenerable from
+the command shown with it; the raw listings the tables were cut from are
+what the commands print.
 
 **Where the answer keys come from.** Every reference value in a table was
 read by machine from a published source and written into the instance file's
@@ -38,7 +42,7 @@ duals were asked to certify optimality.
 | category | set | instances | proved / certified | on the published value | verifier-accepted | note |
 |---|---|---|---|---|---|---|
 | LP | Netlib, simplex | 89 | **87 certified** | 78 (the other 8 are the readme's, by certificate) | 89 | 3 at the limit; 554 s |
-| LP | Netlib, interior point | 89 | **82 certified** | 71 | 83 | 6 real failures, 6 pessimistic statuses; 310 s |
+| LP | Netlib, interior point | 89 | **82 certified** | 75 | 83 | 6 real failures: 3 wrong infeasibility verdicts, pilot4, forplan, fit2p; 316 s |
 | LP | MIPLIB relaxations | 45 | **45 certified** | 30/30 | 45 | HiGHS agrees 45/45 to 4e-14; 6.2× slower than HiGHS |
 | LP | Mittelmann, GPU PDLP | 13 | **9 optimal** (7 certified) | — (no published values) | 9 | the best engine on the set; qap15 in 11 s |
 | LP | Mittelmann, interior point | 13 | 8 optimal (9 certified) | — | 10 | HiGHS 8; ours faster on the three 160k-row models |
@@ -51,8 +55,9 @@ duals were asked to certify optimality.
 | literature | Haverly pooling | 3 | **3 proved global** | 400 / 600 / 750 | 3 | recursion wrong from 20/21 starts |
 | generated | refinery ladders | 15 LP + 5 MILP | LP to 4.4M nnz; MILP k=1, 2 proved, k=16 within 0.4% | — | all | GPU wins wide, IPM wins tall |
 
-Six defects found and fixed on the way (section 6): three time limits
-that were not limits, two soundness holes in the tree, one crash.
+Seven defects found and fixed on the way (section 6): three time limits
+that were not limits, two soundness holes in the tree, one crash, and
+one status more pessimistic than the answer it came with.
 
 ---
 
@@ -66,21 +71,31 @@ SUMMARY TABLE; "certified" is the verifier's line from the returned duals.
 | engine | parse | match the readme to 1e-6 | **certified optimal** | at the limit | wrong or no answer | total |
 |---|---|---|---|---|---|---|
 | revised simplex | 89/89 | 78/89 | **87/89** | 3: cycle (its point certifies anyway), dfl001, maros-r7 | 0 | 554 s |
-| interior point | 89/89 | 71/89 | **82/89** | 1: fit2p | 6: agg, finnis, perold (`INFEASIBLE_OR_UNBOUNDED`, wrong), pilot4 (`NUMERICAL`, a bad point), forplan (iteration limit, no point), etamacro (optimal to 2e-8, not certified) | 310 s |
+| interior point | 89/89 | 75/89 | **82/89** | 1: fit2p | 6: agg, finnis, perold (`INFEASIBLE_OR_UNBOUNDED`, wrong), pilot4 (`NUMERICAL`, a bad point), forplan (iteration limit, no point), etamacro (optimal to 2e-8, not certified) | 316 s |
 
 The simplex reproduces the committed record to the instance: the eleven
 readme mismatches are the eight the verifier certifies as *better than the
 readme* (80bau3b, greenbea, greenbeb, nesm, pilot, pilot87, scrs8 by a
 strictly better feasible point; ganges by a bound that excludes the readme
-value) plus the three at the limit. The interior point is half the simplex's
-time over the set and certifies 82; on five of its `NUMERICAL` exits --
-greenbea, maros, pilot, shell, sierra -- and on fffff800's iteration limit
-the point it returns is certified optimal by the verifier, so its own status
-is more pessimistic than its answer on six instances, which is a reporting
-defect rather than a solving one. The six real failures are the ones Known
-limits already names: three wrong infeasibility verdicts on the instances
-whose scaling the unit cannot fix, pilot4 and forplan, and fit2p over the
-limit (dfl001 now solves in 96 s).
+value) plus the three at the limit. The interior point is a little over
+half the simplex's time over the set and certifies 82, and its own status
+now agrees with the verifier's on every row. It did not on the campaign's
+first pass over this table: five `NUMERICAL` exits -- greenbea, maros,
+pilot, shell, sierra -- and fffff800's iteration limit returned points the
+verifier certified optimal, the solver's column saying less than the
+verifier's beside it. That was bug 15 (section 6): the CLI had passed its
+1e-8 `tol` to the interior point as the absolute feasibility cap that
+exists to be the verifier's 1e-6 line, so a converged point 8.8e-8 off its
+rows on an objective of 1.2e9 was demoted; and the loop's test in the
+scaled space never fired on fffff800's proved point. With the cap at the
+verifier's line and the verifier's certificate applied before reporting,
+the six are `OPTIMAL`, four of them now also on the readme's value (71 →
+75 matched; greenbea and pilot are better than the readme, by
+certificate), and the table above is the re-run. The six real failures
+are the ones Known limits already names: three wrong infeasibility
+verdicts on the instances whose scaling the unit cannot fix, pilot4 and
+forplan, and fit2p over the limit (dfl001 solves in 116 s, against 96 s
+on the first pass; the machine's noise, not the code's).
 
 ## 2. MIPLIB
 
@@ -229,7 +244,7 @@ checks, and they agree wherever both apply.
 | nug08-3rd | 19,728 × 20,448 | 139k | refused: 192M entries in L, 2.5e12 flops | limit | **certified, 2.7 s** | limit |
 | nug20 | 15,240 × 72,600 | 305k | refused: 95M entries in L, 7.5e11 flops | limit | **accepted, 59 s** | limit |
 | pds-20 | 33,874 × 105,728 | 230k | limit | limit | **certified, 41 s** | 2.2 s |
-| qap15 | 6,330 × 22,275 | 95k | limit at 456 s (489 s in the comparator run), point certified | limit | **accepted, 11 s** | limit |
+| qap15 | 6,330 × 22,275 | 95k | limit at 456 s (489 s in the comparator run), point certified -- see below | limit | **accepted, 11 s** | limit |
 | rail507 | 507 × 63,009 | 409k | certified, 7.3 s | certified, 12 s | certified, 35 s | **4.5 s** |
 | rail516 | 516 × 47,311 | 315k | certified, 3.3 s | certified, 7.3 s | **certified, 2.3 s** | 2.1 s |
 | rail582 | 582 × 55,515 | 402k | certified, 7.4 s | certified, 7.9 s | certified, 52 s | **3.6 s** |
@@ -240,8 +255,22 @@ checks, and they agree wherever both apply.
 "Certified" is the verifier's line; "accepted" is a point feasible to 1e-6
 whose duals do not close the 1e-9 bound (the first-order method's normal
 finish); "rejected" is an unconverged iterate the verifier refuses, which
-is what PDLP hands back at a limit. Three things this table says that the
-smaller sets could not:
+is what PDLP hands back at a limit. The interior-point column was re-run
+alone at the commit that fixes bug 15 (section 6), after which the engine
+reports `OPTIMAL` on a point its duals certify whatever its loop
+concluded; qap15's row is the one that could have changed, since its
+point was certified at a time limit. It did not, and the reason is worth
+the sentence: on the re-run the machine was 1.3× slower throughout
+(nug08-3rd's symbolic analysis, code the fix does not touch, 8.1 s against
+6.0 s; cont11 36 s against 29 s, and the same 39 s with the fix and 39 s
+without it, back to back), so the clock check between qap15's 40 s
+iterations landed at 308 s on an iterate the verifier accepts but does
+not yet certify, where in the campaign it landed at 456 s on one it does.
+Every other row kept its status. A proof that depends on which iteration
+the clock lands on is a coin, and the table shows the campaign's draw
+with the HiGHS column measured in the same sitting; the re-run's timings
+are not comparable with that column and are not substituted for it.
+Three things this table says that the smaller sets could not:
 
 - **The GPU first-order method is the best engine on this set.** Nine of
   thirteen, including the three the CPU engines cannot touch in 300 s --
@@ -530,9 +559,10 @@ lacks.
 
 A campaign over sets the solver had never seen is a test of the solver
 more than of the sets, and this one found six defects before it could
-produce a clean table. Each is recorded under [Bugs worth
-recording](../README.md#bugs-worth-recording), numbers 9 to 14, with the
-measurement that found it and the one that closed it; the short form:
+produce a clean table, and a seventh in the Netlib table it produced. Each
+is recorded under [Bugs worth recording](../README.md#bugs-worth-recording),
+numbers 9 to 15, with the measurement that found it and the one that
+closed it; the short form:
 
 | # | found on | what | fixed by |
 |---|---|---|---|
@@ -542,13 +572,18 @@ measurement that found it and the one that closed it; the short form:
 | 12 | gmu-35-40 | `ZeroDivisionError` out of the tree: the kernel's failed factorisation was installed and solved through | a NUMERICAL exit's factors are discarded and the basis refactorised through its repairing path |
 | 13 | gmu-35-40 | every INFEASIBLE verdict was wrong: the basic values through the eta file were 7e10 infeasible, through a fresh LU 2e3 | both dual loops refactorise before believing "no entering column"; refused verdicts on gmu-35-40 22 → 0, danoint 7 → 0 |
 | 14 | nug08-3rd, nug20 | the interior point spent forty minutes past a 300 s limit inside its first factorisation, 192M entries in `L` | the factorisation's cost is known from the symbolic analysis; one predicted to outlast the limit is refused in six seconds |
+| 15 | greenbea, maros, pilot, shell, sierra, fffff800 | the interior point's `NUMERICAL` and iteration-limit exits returned points the verifier certified optimal: the CLI passed its 1e-8 `tol` as the absolute feasibility cap that exists to be the verifier's 1e-6, and the loop's test in the scaled space never fired on fffff800's proved point | the cap is the verifier's line and `tol` does not reach it; `_finish` applies the verifier's own certificate from the duals before reporting, and a feasible point within 1e-9 of its bound is `OPTIMAL` whatever the loop said |
 
-Three of the six -- 9, 10, 14 -- are the same defect in three places: a
+Three of the seven -- 9, 10, 14 -- are the same defect in three places: a
 time limit checked between units of work whose size nobody had bounded,
 and a compiled unit that cannot look at a clock. Two -- 11 and 13 -- are a
 soundness defect that the small set never exercised, because a
-120-column model rarely drifts an eta file by seven orders. The README's
-own sentence applies: a set the solver has always passed is not evidence
+120-column model rarely drifts an eta file by seven orders. One -- 15 --
+is the opposite of a soundness defect, a solver claiming less than it
+had proved, and it was visible only because the table carries the
+verifier's verdict beside the solver's; the two columns disagreeing on
+six rows is what a reporting defect looks like. The README's own
+sentence applies: a set the solver has always passed is not evidence
 about the set it has never seen.
 
 **What was measured and left alone,** because the campaign is a
@@ -573,11 +608,6 @@ measurement and each of these has its reason on record:
   changed.
 - danoint's node LPs still stall; the fix bounded the stall's cost, not
   its cause, which is the dual simplex's handling of dual degeneracy.
-- One reporting defect: the interior point's `NUMERICAL` on greenbea,
-  maros, pilot, shell and sierra, and fffff800's iteration limit, return
-  points the verifier certifies optimal. The status is more pessimistic
-  than the answer on six Netlib instances, and could be corrected by
-  applying the verifier's own test before reporting.
 - Every row in the final tables ran alone on the machine. One row of the
   earlier pass (mod008, 30 s against 18 s) had a diagnostic run of mine
   overlapping it; that pass is not the one reported.
@@ -627,9 +657,10 @@ million nonzeros for the LP engines and 6,144 binaries within 0.4% for
 the tree; MIPLIB's own lot-sizing, location, network and scheduling
 models as above.
 
-**And the campaign itself performed as a test should:** it found six
+**And the campaign itself performed as a test should:** it found seven
 defects the eleven-instance set had never exercised -- three time limits
-that were not limits, two soundness holes, one crash -- and every one is
-fixed, tested, and recorded with the measurement that found it. The
-solver that finished the campaign is not the one that started it, which
-is the reason to run one.
+that were not limits, two soundness holes, one crash, and one solver
+claiming less than it had proved -- and every one is fixed, tested, and
+recorded with the measurement that found it. The solver that finished
+the campaign is not the one that started it, which is the reason to run
+one.
