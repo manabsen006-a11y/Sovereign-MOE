@@ -268,7 +268,16 @@ def test_an_infeasible_verdict_comes_with_a_certificate_that_holds(kernel, seed)
     Farkas row they return is computed from a fresh LU. The tree prunes on
     that row only if it certifies the box empty (bug 11); a verdict whose
     row does not certify is a wasted node. Random LPs, made infeasible by
-    a bound the rows cannot meet: every INFEASIBLE must certify."""
+    a row bound the box cannot meet: every INFEASIBLE must certify.
+
+    The child is infeasible by construction on every draw. The row with the
+    largest activity at the root vertex is pinned, and the vertex's eight
+    largest columns are fixed to zero; on three of the four seeds that
+    alone puts the vertex activity outside what the row's remaining columns
+    can reach, and the pin stays there. On seed 2 it does not (−57.3 inside
+    [−75.4, 44.9]) and the child stayed feasible, which this test used to
+    skip on; the pin is then placed one unit past the nearer end of the
+    row's range, so the draw is a case and the verdict is asserted."""
     import numpy as np
     from sovopt.mip.conflict import farkas_value
 
@@ -284,12 +293,21 @@ def test_an_infeasible_verdict_comes_with_a_certificate_that_holds(kernel, seed)
     lo_r, hi_r = p.row_lb.copy(), p.row_ub.copy()
     act = p.A.matvec(root.x)
     i = int(np.argmax(np.abs(act)))
-    lo_r[i] = hi_r[i] = act[i]
+    # the row's reachable range over the tightened box, by interval
+    # arithmetic; a pin outside it is infeasible whatever the other rows do
+    A = p.A
+    cols = A.ri[A.rp[i]:A.rp[i + 1]]
+    vals = A.rx[A.rp[i]:A.rp[i + 1]]
+    lo_act = float(np.where(vals > 0.0, vals * lo[cols], vals * hi[cols]).sum())
+    hi_act = float(np.where(vals > 0.0, vals * hi[cols], vals * lo[cols]).sum())
+    pin = float(act[i])
+    if lo_act <= pin <= hi_act:
+        pin = lo_act - 1.0 if pin - lo_act <= hi_act - pin else hi_act + 1.0
+    lo_r[i] = hi_r[i] = pin
     child = p.with_bounds(lo, hi, lo_r, hi_r)
     ns2 = NodeSolver(child, SimplexParams(refactor_freq=60, node_kernel=kernel))
     r = ns2.solve(lo, hi, warm_basis=root.basis)
-    if r.status != Status.INFEASIBLE:
-        pytest.skip("this draw stayed feasible")
+    assert r.status == Status.INFEASIBLE, f"an infeasible child came back {r.status.name}"
     y = np.asarray(r.farkas)
     big = float(np.abs(y).max())
     yc = np.where(np.abs(y) <= 1e-12 * big, 0.0, y)

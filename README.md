@@ -230,10 +230,9 @@ without the `gpu` extra the fifteen tests in `tests/test_gpu.py` skip with
 `no usable GPU: ModuleNotFoundError: No module named 'cupy'` and the
 message now says which extra would have run them; on a machine with an
 NVIDIA driver, install it before reading the count as covering the GPU
-path (a fresh clone with `[dev,ui,gpu]`, measured: 637 passed, 36
+path (a fresh clone with `[dev,ui,gpu]`, measured: 639 passed, 34
 skipped, none of them GPU tests -- 33 for benchmark instances a clone
-does not carry, two random draws that happened to stay feasible, and the
-one UI test that only runs *without* a GPU).
+does not carry, and the one UI test that only runs *without* a GPU).
 
 The `gpu` extra is `cupy-cuda12x[ctk]`: the `[ctk]` part pulls the CUDA
 libraries in as wheels, so the GPU path needs only an NVIDIA driver -- no
