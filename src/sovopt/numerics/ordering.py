@@ -37,7 +37,7 @@ its graph is a long thin strip and this exploits it directly.
 order: eliminate the node of least degree, replace it by the clique of its
 neighbours, repeat. The quotient graph keeps that clique as an *element*
 rather than as edges, so the graph never grows past the size of the matrix;
-the degree is *approximated* by the bound ``|A_i| + |L_p \ i| + Σ_e |L_e \ L_p|``,
+the degree is *approximated* by the bound ``|A_i| + |L_p \\ i| + Σ_e |L_e \\ L_p|``,
 which costs one pass over the elements touching the pivot's clique instead of
 a set union per node; elements absorbed by the pivot and variables whose only
 neighbour is the pivot are removed in the same pass. Rows with more than
