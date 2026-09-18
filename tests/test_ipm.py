@@ -438,3 +438,114 @@ def test_an_unaffordable_factorisation_is_refused_at_once():
     assert __import__("time").perf_counter() - t0 < 5.0
     ok = solve_ipm(p, IPMParams(time_limit=10))
     assert ok.status == Status.OPTIMAL
+
+
+# --------------------------------------------------------------------------- #
+# the verifier's own test, applied before reporting                           #
+# --------------------------------------------------------------------------- #
+
+
+def _equality_lp_at_scale(seed, scale, m=40, n=60):
+    """A feasible all-equality LP whose rows sum terms of size ``scale``, so
+    the unscaled residual double precision leaves behind is of order
+    ``scale * 1e-13`` -- shell's and sierra's situation, at a size that
+    solves in ten iterations."""
+    rng = np.random.default_rng(seed)
+    cols = np.repeat(np.arange(n), 4)
+    rows = rng.integers(0, m, cols.size)
+    vals = rng.standard_normal(cols.size) * scale
+    A = SparseMatrix.from_triplets(rows, cols, vals, m, n)
+    b = A.matvec(rng.random(n))
+    return Problem(A=A, c=rng.standard_normal(n), row_lb=b, row_ub=b.copy(),
+                   col_lb=np.zeros(n), col_ub=np.full(n, 10.0), name="eq-scale")
+
+
+def test_the_feasibility_cap_is_the_verifiers_line_and_not_the_cli_tol():
+    """shell, sierra, maros, pilot and greenbea: the loop converged and the
+    point was inside the verifier's 1e-6, and the CLI's tol of 1e-8, passed
+    on as the absolute cap, turned every one into NUMERICAL. This model
+    lands at 7e-8 by the same mechanism."""
+    from bench.verify import verify
+    from sovopt.cli import solve
+    p = _equality_lp_at_scale(seed=2, scale=1e5)
+    old = solve_ipm(p, IPMParams(feas_cap=1e-8))
+    assert old.status == Status.NUMERICAL          # what the CLI used to ask
+    s = solve(p, method="ipm", tol=1e-8)
+    assert s.status == Status.OPTIMAL
+    assert 1e-8 < s.info["worst_violation"] < 1e-6
+    v = verify(p, s.x, feas_tol=1e-6, y=s.y, opt_tol=1e-9)
+    assert v.ok, v.report()
+    assert "certified_from" not in s.info          # the loop's own verdict
+    assert s.info["certified_gap"] <= 1e-9
+    assert s.dual_bound <= s.objective + 1e-9 * abs(s.objective)
+
+
+def test_a_point_outside_the_verifiers_line_is_still_numerical():
+    """The cap itself has not moved: a point at 4e-5 absolute -- 9002's case
+    in the README -- is reported NUMERICAL and not certified, because the
+    certificate is gated on feasibility to the cap."""
+    p = _equality_lp_at_scale(seed=2, scale=1e6)
+    s = solve_ipm(p)
+    assert s.info["worst_violation"] > 1e-6
+    assert s.status == Status.NUMERICAL
+    assert "certified_bound" not in s.info
+
+
+@pytest.mark.parametrize("sense", [ObjSense.MINIMISE, ObjSense.MAXIMISE])
+def test_an_iteration_limit_with_a_certified_point_is_optimal(sense):
+    """fffff800: 200 iterations, ITERATION_LIMIT, and a point the verifier
+    certified to 3e-12. A loop test that can never fire leaves the point
+    to the certificate, which proves it from the duals on the unscaled
+    model -- in the model's own sense -- and says where the status came
+    from."""
+    from bench.verify import verify
+    p = random_lp(seed=1)
+    if sense == ObjSense.MAXIMISE:
+        p.sense = sense
+        p.c = -p.c
+    exact = solve_simplex(p)
+    never = IPMParams(eps_gap=-1.0, gap_stall_accept=-1.0, max_iter=40)
+    s = solve_ipm(p, never)
+    assert s.status == Status.OPTIMAL
+    assert s.info["certified_from"] in ("ITERATION_LIMIT", "NUMERICAL")
+    assert s.info["certified_gap"] <= 1e-9
+    assert abs(s.objective - exact.objective) <= 1e-7 * max(1.0, abs(exact.objective))
+    assert s.dual_bound == s.info["certified_bound"]
+    # the bound holds over the exact feasible set, and the point is feasible
+    # to 1e-6, so its objective may sit a rounding past the bound
+    slack = 1e-9 * max(1.0, abs(s.objective))
+    if sense == ObjSense.MINIMISE:
+        assert s.dual_bound <= s.objective + slack
+    else:
+        assert s.dual_bound >= s.objective - slack
+    v = verify(p, s.x, feas_tol=1e-6, y=s.y, opt_tol=1e-9)
+    assert v.ok, v.report()
+    # switched off, the loop's verdict stands
+    off = solve_ipm(p, IPMParams(eps_gap=-1.0, gap_stall_accept=-1.0,
+                                 max_iter=40, cert_tol=0.0))
+    assert off.status in (Status.ITERATION_LIMIT, Status.NUMERICAL)
+    assert "certified_from" not in off.info and "certified_bound" not in off.info
+
+
+def test_the_certificate_never_promotes_an_infeasible_point():
+    """A stagnated INFEASIBLE_OR_UNBOUNDED exit holds a point that violates
+    its rows; no bound from its duals makes that OPTIMAL."""
+    A = SparseMatrix.from_triplets(np.array([0, 0, 1, 1, 2, 2]),
+                                   np.array([0, 1, 0, 1, 0, 1]),
+                                   np.array([1.0, 1.0, 1.0, -1.0, 1.0, 2.0]), 3, 2)
+    p = Problem(A=A, c=np.array([1.0, 1.0]),
+                row_lb=np.array([1.0, 3.0, 0.0]), row_ub=np.array([1.0, 3.0, 0.0]),
+                col_lb=np.zeros(2), col_ub=np.full(2, INF), name="bad")
+    s = solve_ipm(p)
+    assert s.status == Status.INFEASIBLE_OR_UNBOUNDED
+    assert "certified_from" not in s.info
+
+
+def test_the_verifier_and_the_engine_share_one_certificate():
+    """One definition of "certified" for the whole repository: the verifier's
+    optimality line is the engine's :func:`certified_bound`, so the status
+    the interior point reports by certificate is the one the verifier will
+    give it."""
+    import bench.verify as verify_mod
+    from sovopt.mip.safebound import certified_bound
+    assert verify_mod.certified_bound is certified_bound

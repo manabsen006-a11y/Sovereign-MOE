@@ -25,6 +25,14 @@ what settled the eight Netlib instances whose objective disagreed with the
 library's readme: the verifier certifies the vertex, and the readme is what
 is off (see the README's Netlib section, and Koch 2004).
 
+The certificate's arithmetic is :func:`sovopt.mip.safebound.certified_bound`,
+one definition for the whole repository: the tree prunes on it, the interior
+point applies it to its own final point before reporting, and this verifier
+checks with it. The verifier's independence is in its data, not in a second
+copy of a theorem -- it re-reads the model and the point from disk and
+recomputes every activity with compensated arithmetic, and the bound it
+then forms is valid for whatever ``y`` the solver handed over.
+
 Usage:
     python -m bench.verify model.mps solution.json
 """
@@ -37,10 +45,9 @@ import sys
 
 import numpy as np
 
-from sovopt.core.problem import ObjSense, VarKind
-from sovopt.core.tolerances import INF
+from sovopt.core.problem import ObjSense
 from sovopt.io.mps import read_mps
-from sovopt.mip.safebound import safe_qp_bound
+from sovopt.mip.safebound import certified_bound
 from sovopt.numerics.refine import compensated_residual
 
 
@@ -65,51 +72,6 @@ class Verdict:
         lines.append("")
         lines.append(f"  VERDICT: {'ACCEPTED' if self.ok else 'REJECTED'}")
         return "\n".join(lines)
-
-
-def certified_bound(prob, x, y, dual_tol=1e-6):
-    """A bound on the optimum from a dual vector, in the model's own sense:
-    a lower bound for a minimisation, an upper bound for a maximisation.
-    Valid for any ``y``; ``-inf`` (``+inf``) when vacuous.
-
-    Returns ``(bound, perturbation)``. A reduced cost that points at an
-    infinite column bound makes the bound vacuous however small it is, and
-    a solver's duals carry rounding of order 1e-15 on exactly such columns.
-    Those, when no larger than ``dual_tol`` (relative to the cost scale),
-    are absorbed into the cost vector -- the bound is then exact for a model
-    whose costs differ from this one's by at most ``perturbation`` -- and
-    the verdict reports that number rather than hiding it. A simplex stops
-    at reduced costs of 1e-7, so a perturbation of that order is what an
-    optimal vertex carries (pilotnov: 1.9e-8); larger ones stay, and the
-    bound is vacuous, which is the right answer.
-    """
-    y = np.asarray(y, dtype=np.float64)
-    c, Q, off = prob.c, prob.Q, prob.obj_offset
-    if prob.sense == ObjSense.MAXIMISE:
-        # bound the negated minimisation, whose duals are the negated ones
-        c = -c
-        off = -off
-        if Q is not None:
-            Q = Q.copy()
-            Q.cx = -Q.cx
-            Q.rx = -Q.rx
-        y = -y
-    rl, ru, lo, hi = prob.row_lb, prob.row_ub, prob.col_lb, prob.col_ub
-    yy = np.where((y > 0.0) & (rl <= -INF), 0.0, y)
-    yy = np.where((yy < 0.0) & (ru >= INF), 0.0, yy)
-    g = c + (Q.matvec(x) if Q is not None else 0.0)
-    d = g - prob.A.rmatvec(yy)
-    bad = ((d > 0.0) & (lo <= -INF)) | ((d < 0.0) & (hi >= INF))
-    scale = 1.0 + float(np.abs(c).max(initial=0.0))
-    pert = float(np.abs(d[bad]).max(initial=0.0))
-    c_use = c
-    if bad.any() and pert <= dual_tol * scale:
-        c_use = c.copy()
-        c_use[bad] -= d[bad]                 # those reduced costs become 0
-    else:
-        pert = 0.0 if not bad.any() else pert
-    b = safe_qp_bound(prob.A, c_use, Q, rl, ru, lo, hi, x, yy, strict=True) + off
-    return (-b if prob.sense == ObjSense.MAXIMISE else b), pert
 
 
 def verify(prob, x, claimed_obj=None, feas_tol=1e-6, int_tol=1e-6,

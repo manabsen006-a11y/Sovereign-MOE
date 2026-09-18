@@ -83,10 +83,11 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..core.problem import ObjSense
 from ..core.tolerances import INF
 
 __all__ = ["safe_dual_bound", "safe_qp_bound", "safe_dual_bound_batch",
-           "bound_slack"]
+           "bound_slack", "certified_bound"]
 
 
 def _term(coef, lo, hi, xp):
@@ -240,3 +241,56 @@ def bound_slack(bound: float, incumbent: float, gap_abs: float,
     if not np.isfinite(incumbent):
         return False
     return bound >= incumbent - max(gap_abs, gap_rel * abs(incumbent))
+
+
+def certified_bound(prob, x, y, dual_tol: float = 1e-6):
+    """A bound on the optimum of ``prob`` from a dual vector, in the model's
+    own sense: a lower bound for a minimisation, an upper bound for a
+    maximisation. Valid for any ``y``; ``-inf`` (``+inf``) when vacuous.
+
+    This is the certificate the independent verifier (``bench/verify.py``)
+    checks a solution's optimality with, and what an engine applies to its
+    own point before reporting: a feasible ``x`` whose objective lies within
+    tolerance of this bound is optimal to that tolerance whatever the
+    engine's termination test concluded, because the bound owes nothing to
+    that test.
+
+    Returns ``(bound, perturbation)``. A reduced cost that points at an
+    infinite column bound makes the bound vacuous however small it is, and
+    a solver's duals carry rounding of order 1e-15 on exactly such columns.
+    Those, when no larger than ``dual_tol`` (relative to the cost scale),
+    are absorbed into the cost vector -- the bound is then exact for a model
+    whose costs differ from this one's by at most ``perturbation`` -- and
+    the caller reports that number rather than hiding it. A simplex stops
+    at reduced costs of 1e-7, so a perturbation of that order is what an
+    optimal vertex carries (pilotnov: 1.9e-8); larger ones stay, and the
+    bound is vacuous, which is the right answer.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    c, Q, off = prob.c, prob.Q, prob.obj_offset
+    if prob.sense == ObjSense.MAXIMISE:
+        # bound the negated minimisation, whose duals are the negated ones
+        c = -c
+        off = -off
+        if Q is not None:
+            Q = Q.copy()
+            Q.cx = -Q.cx
+            Q.rx = -Q.rx
+        y = -y
+    rl, ru, lo, hi = prob.row_lb, prob.row_ub, prob.col_lb, prob.col_ub
+    yy = np.where((y > 0.0) & (rl <= -INF), 0.0, y)
+    yy = np.where((yy < 0.0) & (ru >= INF), 0.0, yy)
+    g = c + (Q.matvec(x) if Q is not None else 0.0)
+    d = g - prob.A.rmatvec(yy)
+    bad = ((d > 0.0) & (lo <= -INF)) | ((d < 0.0) & (hi >= INF))
+    scale = 1.0 + float(np.abs(c).max(initial=0.0))
+    pert = float(np.abs(d[bad]).max(initial=0.0))
+    c_use = c
+    if bad.any() and pert <= dual_tol * scale:
+        c_use = c.copy()
+        c_use[bad] -= d[bad]                 # those reduced costs become 0
+    else:
+        pert = 0.0 if not bad.any() else pert
+    b = safe_qp_bound(prob.A, c_use, Q, rl, ru, lo, hi, x, yy, strict=True) + off
+    return (-b if prob.sense == ObjSense.MAXIMISE else b), pert

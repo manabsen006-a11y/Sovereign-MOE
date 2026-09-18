@@ -143,8 +143,14 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
                                         verbose=verbose))
     if method == "ipm":
         from .lp.ipm import IPMParams, solve_ipm
+        # ``tol`` is not passed on: the interior point's convergence tests
+        # are relative and already tighter than any tol the CLI is given,
+        # and its absolute feasibility cap is the verifier's line, not a
+        # tolerance -- passing tol as that cap (1e-8 here) demanded of a
+        # model with rows at 1e6 what double precision cannot deliver, and
+        # returned NUMERICAL on five Netlib instances the loop had converged
+        # on (see IPMParams.feas_cap).
         return solve_ipm(prob, IPMParams(time_limit=time_limit,
-                                         feas_cap=max(tol, 1e-9),
                                          verbose=verbose))
     if method == "bnb":
         return solve_mip(prob, MIPParams(device=device, gap_rel=gap,

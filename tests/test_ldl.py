@@ -170,7 +170,10 @@ def test_a_refused_pivot_hands_the_solve_to_an_affordable_lu():
     would need correcting. Correcting it was measured harmful. The LU is
     small here, so it takes the rest of the solve; told it is not
     affordable, the LDLᵀ is retried with both blocks shifted instead and
-    reaches the same answer; forced and unshifted, it fails."""
+    reaches the same answer; forced and unshifted, the loop fails -- and
+    since bug 15 the point it fails on, feasible to 2e-10 and within 6e-10
+    of its own certified bound, is reported OPTIMAL by certificate with the
+    loop's NUMERICAL kept in ``info["certified_from"]``."""
     path = os.path.join(DATA, "mod010.mps")
     if not os.path.exists(path):
         pytest.skip("instance not fetched")
@@ -190,7 +193,10 @@ def test_a_refused_pivot_hands_the_solve_to_an_affordable_lu():
     assert shifted.info["ldl_boosted"] >= 1
     assert shifted.info["ldl_iterations"] == shifted.iterations
     forced = solve_ipm(p, IPMParams(factorisation="ldl", ldl_boosts=()))
-    assert forced.status != Status.OPTIMAL       # the reason auto exists
+    assert forced.info.get("certified_from") == "NUMERICAL"   # the reason auto exists
+    assert forced.status == Status.OPTIMAL       # ...and what the point proves anyway
+    bare = solve_ipm(p, IPMParams(factorisation="ldl", ldl_boosts=(), cert_tol=0.0))
+    assert bare.status == Status.NUMERICAL
 
 
 def test_a_qp_goes_through_the_ldl_too():

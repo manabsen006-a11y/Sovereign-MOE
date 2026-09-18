@@ -124,6 +124,7 @@ import numpy as np
 from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import IDX, VAL
 from ..core.tolerances import DEFAULT, INF, Tolerances
+from ..mip.safebound import certified_bound
 from ..numerics.ldl import LDLSingular, LDLSymbolic
 from ..numerics.lu import LUSingular, lu_factor
 from ..numerics.lu import _column_order
@@ -150,7 +151,31 @@ class IPMParams:
     The same rule PDLP uses, and for the same reason: a relative test on a
     model with a large right-hand side permits an absolute violation the
     independent verifier rejects. Optimality stays relative, feasibility does
-    not, and the engine never claims a status its own checker would refuse."""
+    not, and the engine never claims a status its own checker would refuse.
+
+    This is the verifier's yardstick and not a convergence tolerance, which
+    is why the CLI's ``tol`` does not reach it: passed through as the cap it
+    demanded 1e-8 absolute of models whose rows sum terms at 1e6 and more,
+    where double precision leaves 5e-8 to 9e-8 behind -- and five Netlib
+    instances the loop had converged on (greenbea, maros, pilot, shell,
+    sierra) came back ``NUMERICAL`` with points the verifier certified."""
+
+    cert_tol: float = 1e-9
+    """Relative gap under which the final point's own certificate makes it
+    ``OPTIMAL`` whatever the loop concluded -- the verifier's ``opt_tol``.
+
+    The loop's test lives in the scaled space and can fail to fire on a point
+    that is nonetheless optimal by proof: fffff800 ran to its iteration limit
+    with a point the verifier certified to 1e-9. So :func:`_finish` forms the
+    Neumaier-Shcherbina bound from the returned duals on the *unscaled*
+    model (:func:`sovopt.mip.safebound.certified_bound`, valid for any dual
+    vector) and, when the point is feasible to ``feas_cap`` and its objective
+    is within ``cert_tol`` of that bound, reports ``OPTIMAL`` with the bound
+    in ``info["certified_bound"]`` and the loop's verdict in
+    ``info["certified_from"]``. Reduced costs at infinite column bounds are
+    absorbed up to ``eps_d`` of the cost scale, the same allowance the loop's
+    own dual test makes; larger ones leave the bound vacuous and the status
+    as the loop left it. ``0`` disables the test."""
 
     max_iter: int = 200
     time_limit: float = 600.0
@@ -1202,6 +1227,23 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
         # uses. Say so rather than claim an optimum the checker would reject.
         status = Status.NUMERICAL
 
+    # The verifier's own test, applied before reporting. A point feasible to
+    # the cap whose objective the duals bound within cert_tol is optimal by
+    # certificate, and the loop's verdict -- an iteration limit, a step that
+    # collapsed, a time limit -- was about the iteration, not the point.
+    # The bound is valid for any y, so this can only turn a proved point's
+    # status into OPTIMAL; it never turns an OPTIMAL into anything else.
+    certified = None
+    if (params.cert_tol > 0.0 and worst <= params.feas_cap
+            and np.isfinite(y).all()):
+        bnd, pert = certified_bound(prob, x, y, dual_tol=params.eps_d)
+        if np.isfinite(bnd):
+            cgap = (obj - bnd) if prob.sense == ObjSense.MINIMISE else (bnd - obj)
+            rel = cgap / max(1.0, abs(obj))
+            if rel <= params.cert_tol:
+                certified = (bnd, rel, pert, Status(status).name)
+                status = Status.OPTIMAL
+
     if worst > params.feas_cap and Status(status).has_solution:
         # An unconverged iterate is not a solution, and ``has_solution`` is
         # true for TIME_LIMIT and ITERATION_LIMIT -- so handing the point back
@@ -1221,6 +1263,15 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
     sol.info = {"iterations": iterations, "worst_violation": worst,
                 "scaling": sc.method, "scaling_unit": sc.unit,
                 "kkt_ordering": ordering}
+    if certified is not None:
+        bnd, rel, pert, came_from = certified
+        sol.dual_bound = bnd
+        sol.info["certified_bound"] = bnd
+        sol.info["certified_gap"] = rel
+        if pert:
+            sol.info["cost_perturbation"] = pert
+        if came_from != Status.OPTIMAL.name:
+            sol.info["certified_from"] = came_from
     if kkt_failures:
         sol.info["ldl_failures"] = kkt_failures[0]
         sol.info["ldl_corrected"] = kkt_failures[1]

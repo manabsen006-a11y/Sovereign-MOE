@@ -267,7 +267,7 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 700 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 706 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -426,8 +426,9 @@ names -- MIPLIB (the whole classical set), Netlib, Mittelmann's LP and MILP
 benchmarks, QPLIB -- and the refinery, blending, planning and supply-chain
 models from the literature, run in one sitting with every reference value
 machine-read from its source, is [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
-It found six defects on the way (bugs 9-14 below), all fixed, and its
-summary table is the shortest honest statement of where the solver stands.
+It found six defects on the way (bugs 9-14 below) and its own Netlib
+table found a seventh (bug 15), all fixed, and its summary table is the
+shortest honest statement of where the solver stands.
 
 ---
 
@@ -1125,6 +1126,39 @@ six now have regression tests.
     fix is the same clock at a finer grain: on qap15 an iteration is 40 s
     and a 300 s limit ended at 489 s.
 
+15. **The interior point reported `NUMERICAL` on five Netlib instances it
+    had converged on, and an iteration limit on a sixth it had proved.**
+    The campaign's Netlib table showed greenbea, maros, pilot, shell and
+    sierra at `NUMERICAL` and fffff800 at `ITERATION_LIMIT`, every one
+    returning a point the verifier certified optimal from the duals. Two
+    causes. The CLI passed its `tol` (1e-8) to the interior point as
+    `feas_cap`, the absolute cap on the *unscaled* violation that exists
+    to be the verifier's 1e-6 line -- so a model whose rows sum terms at
+    1e6 and more, where double precision leaves 5e-8 to 9e-8 behind (shell:
+    8.8e-8 on an objective of 1.2e9), converged in the scaled space and
+    was demoted for missing a yardstick a hundred times finer than the
+    checker's. And the loop's termination test lives in the scaled space,
+    so fffff800 ran its 200 iterations without the three residuals ever
+    lining up, holding a point whose certified gap was 3e-12. The cap is
+    now the verifier's line and `tol` does not reach it, and `_finish`
+    applies the verifier's own test before reporting: the
+    Neumaier-Shcherbina bound from the returned duals on the unscaled
+    model (`sovopt.mip.safebound.certified_bound`, valid for any dual
+    vector, now the one definition of "certified" the verifier imports
+    too), and a point feasible to the cap within 1e-9 of that bound is
+    `OPTIMAL` with the bound in `info["certified_bound"]` and the loop's
+    verdict in `info["certified_from"]`. Six statuses corrected, no
+    number the verifier had not already certified; the three wrong
+    `INFEASIBLE_OR_UNBOUNDED` verdicts (agg, finnis, perold) hold points
+    2e9, 3.6 and 32 infeasible and are untouched, as is pilot4 at
+    1.004e-6. The same test caught one more: mod010 on the LDLᵀ with its
+    shifts disabled -- the case `factorisation="auto"` exists for -- fails
+    its pivot at iteration 18 holding a point feasible to 2e-10 and
+    certified to 6e-10, which is the optimum, and is now reported as one.
+    What the certificate cannot do is prove a point the clock stops
+    before the proof: qap15 on a slower day
+    ([`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), section 3a).
+
 ---
 
 ## Known limits
@@ -1471,13 +1505,14 @@ six now have regression tests.
   pilot4 draws its unit from 25% of its columns, exactly as 9002 does,
   and ganges and shell from 24% and 21%. A rule that kept the wins
   without the losses was not found.
-- **The interior-point method returns no basis and no certificate.** It solves
-  all 11 instances to the published value at a 0.061 s shifted geomean, but it
-  detects infeasibility by *stagnation* rather than by a Farkas certificate --
-  so it reports `INFEASIBLE_OR_UNBOUNDED` where the simplex reports
-  `INFEASIBLE`. That needs a homogeneous self-dual formulation, which this is
-  not. The missing basis, and with it the ranging and the warm start, is now
-  supplied by `--crossover`.
+- **The interior-point method returns no basis and no infeasibility
+  certificate.** It solves all 11 instances to the published value at a
+  0.061 s shifted geomean, and since bug 15 it certifies its own optimum
+  from the duals -- but it detects infeasibility by *stagnation* rather than
+  by a Farkas certificate, so it reports `INFEASIBLE_OR_UNBOUNDED` where the
+  simplex reports `INFEASIBLE`. That needs a homogeneous self-dual
+  formulation, which this is not. The missing basis, and with it the
+  ranging and the warm start, is now supplied by `--crossover`.
 - **Presolve exists, is correct, and does not pay.** `--presolve` reduces
   fixed columns, singleton rows and redundant rows to a fixpoint and postsolves
   the primal, the duals and the reduced costs exactly -- objective identical to
@@ -1529,12 +1564,6 @@ six now have regression tests.
   interior-point iteration on qap15 is 40 s (489 s against 300). The
   MILP set's overruns were 218 s, 333 s and hours before; these are what
   is left.
-- **The interior point's own status is more pessimistic than its answer on
-  six Netlib instances.** Its `NUMERICAL` exits on greenbea, maros, pilot,
-  shell and sierra, and fffff800's iteration limit, return points the
-  verifier certifies optimal from the duals. The engine could apply the
-  verifier's own test before reporting and does not yet; the certified
-  count (82 of 89 at 120 s) is the verifier's, not the solver's.
 - **danoint's node LPs stall, and the fix bounded the cost rather than the
   cause.** Bug 10 keeps a dual-degenerate stall from consuming the limit;
   the stall itself -- 1,184 of 1,185 reduced costs exactly zero at a vertex
@@ -1735,7 +1764,7 @@ python -m bench.netlib             # 89 problems, 377 s
 | match the readme's optimum to 1e-6 | **78/89** |
 | **certified optimal by the independent verifier** | **87/89** |
 | hit the 60 s limit | 3 (`dfl001`, `maros-r7`, `cycle` -- and `cycle`'s point is certified optimal anyway) |
-| the interior point alone, 120 s (`--method ipm`) | **82/89 certified optimal** in 310 s for the set (from 77 before the unit and the LDLᵀ retry, Known limits); six of its `NUMERICAL`/iteration-limit exits return certified points anyway (greenbea, maros, pilot, shell, sierra, fffff800); the real failures: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, forplan at the iteration limit with no point, pilot4 `NUMERICAL`, fit2p over the limit (dfl001 solves at 96 s) |
+| the interior point alone, 120 s (`--method ipm`) | **82/89 certified optimal** in 316 s for the set (from 77 before the unit and the LDLᵀ retry, Known limits), 75 on the readme's value, and since bug 15 its own status is `OPTIMAL` on every certified row -- it used to say `NUMERICAL` on five of them and hit the iteration limit on a sixth; the real failures: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, forplan at the iteration limit with no point, pilot4 `NUMERICAL`, fit2p over the limit (dfl001 solves at 116 s) |
 
 **The eight "accuracy shortfalls" were the readme's, not the engine's.** This
 table used to say the simplex fell short of the published optimum on eight
@@ -1902,6 +1931,6 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates, Williams' refinery LP, Haverly pooling
 bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        700 tests including regressions for every bug above
+tests/        706 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```
