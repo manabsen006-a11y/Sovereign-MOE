@@ -84,6 +84,15 @@ with warnings.catch_warnings():
         _cp = None
         _HAVE_CUPY = False
         GPU_ERROR = f"{type(_e).__name__}: {_e}"
+        if isinstance(_e, ModuleNotFoundError) and _e.name == "cupy":
+            # The one failure that is an install step and not an environment:
+            # say so where the message lands (the demo's note, the GPU tests'
+            # skip reason), because a fresh clone with the dev extras alone
+            # skipped the fifteen GPU tests and the summary line did not say
+            # what would have run them.
+            GPU_ERROR += (" -- the gpu extra is not installed; "
+                          "pip install -e '.[gpu]' (CuPy with the CUDA "
+                          "libraries as wheels, needing only an NVIDIA driver)")
 
 
 def gpu_available() -> bool:

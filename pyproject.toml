@@ -10,7 +10,12 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "numba>=0.59"]
 
 [project.optional-dependencies]
-gpu = ["cupy-cuda12x"]
+# [ctk] brings the CUDA runtime, NVRTC and the BLAS/sparse libraries in as
+# nvidia-*-cu12 wheels, so the GPU path needs an NVIDIA driver and nothing
+# else -- no system CUDA Toolkit, no CUDA_PATH. Without it, cupy imports on a
+# machine that has the toolkit and fails to load on one that does not, and
+# a fresh clone's suite then skips the GPU tests; with it, the tests run
+gpu = ["cupy-cuda12x[ctk]"]
 ui = ["fastapi>=0.100", "uvicorn>=0.20"]
 # httpx2 is what starlette's TestClient drives (1.6 deprecated httpx there);
 # without it and the ui extra, tests/test_ui.py skips rather than fails --

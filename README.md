@@ -219,16 +219,25 @@ The measurements and the reason the metric cannot work as posed are recorded in
 pip install -e .                # numpy + numba: the solver and the CLI
 pip install -e ".[ui]"          # adds FastAPI + uvicorn for python -m ui.server
 pip install -e ".[dev,ui]"      # adds pytest, scipy and httpx: what the test suite needs
-pip install cupy-cuda12x[ctk]   # optional, for the GPU path
+pip install -e ".[dev,ui,gpu]"  # ...and CuPy with the CUDA libraries as wheels: the GPU path, and the GPU tests
 ```
 
 The engine itself depends on nothing but numpy and numba. On a fresh clone
 with only the first line, `tests/test_ui.py` skips rather than fails, so a
 green suite is not proof the UI was exercised: install the `ui` extra
-before reading the test count as covering it.
+before reading the test count as covering it. The same holds for the GPU:
+without the `gpu` extra the fifteen tests in `tests/test_gpu.py` skip with
+`no usable GPU: ModuleNotFoundError: No module named 'cupy'` and the
+message now says which extra would have run them; on a machine with an
+NVIDIA driver, install it before reading the count as covering the GPU
+path (a fresh clone with `[dev,ui,gpu]`, measured: 637 passed, 35
+skipped, none of them GPU tests -- 32 for benchmark instances a clone
+does not carry, two random draws that happened to stay feasible, and the
+one UI test that only runs *without* a GPU).
 
-The `[ctk]` extra pulls the CUDA libraries in as wheels, so the GPU path needs
-only an NVIDIA driver -- no system CUDA Toolkit, and no `CUDA_PATH`. Run
+The `gpu` extra is `cupy-cuda12x[ctk]`: the `[ctk]` part pulls the CUDA
+libraries in as wheels, so the GPU path needs only an NVIDIA driver -- no
+system CUDA Toolkit, and no `CUDA_PATH`. Run
 `python -m sovopt.cli devices` to confirm; it reports the driver and runtime
 versions and whether the CUDA kernels actually compiled, which is the fact a
 solve depends on.
