@@ -34,7 +34,7 @@ except Exception:
     pass
 
 from bench.fetch import DATA_DIR, read_reference
-from bench.verify import verify
+from bench.verify import verify, verify_infeasible
 from sovopt.core.problem import Status, VarKind
 from sovopt.io.mps import read_mps
 
@@ -74,9 +74,20 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
             continue
 
         target = None
+        expected = ref.get("expected")             # "infeasible" / "unbounded"
         if mode == "lp":
             prob.kind[:] = VarKind.CONTINUOUS       # solve the relaxation
             target = ref.get("lp_soln")
+            if expected == "unbounded":
+                # an unbounded MILP's relaxation is unbounded too; an
+                # infeasible MILP's relaxation may well be feasible, so that
+                # expectation is only the MILP's
+                pass
+            elif expected == "infeasible" and ref.get("best_soln") is None \
+                    and "lp_soln" not in ref and prob.n_integer == 0:
+                pass                                # an infeasible LP set
+            elif expected == "infeasible":
+                expected = None
         else:
             target = ref.get("best_soln")
 
@@ -126,17 +137,38 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
             chk = "ok" if all(c[1] for c in feas) else "BAD"
             if chk == "ok" and opt:
                 chk = "opt" if opt[0][1] else "ok"
+        if expected == "infeasible":
+            # The answer key is a status. "cert" is an INFEASIBLE verdict
+            # whose dual ray the verifier certifies; "inf" is the verdict
+            # without a certificate (the tree gives none, and the interior
+            # point's INFEASIBLE_OR_UNBOUNDED is a stagnation test, not a
+            # proof); "point!" is a verifier-accepted point on a model
+            # published as infeasible, which is one side being wrong.
+            if sol.status == Status.INFEASIBLE:
+                ray = getattr(sol, "farkas", None)
+                chk = "cert" if verify_infeasible(prob, ray).ok else "inf"
+            elif sol.status == Status.INFEASIBLE_OR_UNBOUNDED:
+                chk = "i/u"
+            elif chk in ("ok", "opt"):
+                chk = "point!"
+            else:
+                chk = "-"
+        elif expected == "unbounded":
+            chk = "unb" if sol.status in (Status.UNBOUNDED, Status.INFEASIBLE_OR_UNBOUNDED) \
+                else ("point!" if chk in ("ok", "opt") and sol.status == Status.OPTIMAL else "-")
 
+        ref_col = (f"{target:>16.8g}" if target is not None
+                   else f"{expected.upper():>16}" if expected else f"{float('nan'):>16.8g}")
         print(f"{name:<14} {prob.m:>6} {prob.n:>6} {prob.nnz:>8} "
               f"{sol.status.name:<10} "
               f"{sol.objective if sol.x is not None else float('nan'):>16.8g} "
-              f"{target if target is not None else float('nan'):>16.8g} "
+              f"{ref_col} "
               f"{relerr:>9.2e} {dt:>7.2f}s {chk:>4}{spread}")
 
         rows.append({
             "name": name, "status": sol.status, "obj": sol.objective,
-            "ref": target, "relerr": relerr, "time": dt, "check": chk,
-            "nodes": sol.nodes,
+            "ref": target, "expected": expected, "relerr": relerr, "time": dt,
+            "check": chk, "nodes": sol.nodes,
         })
 
     # ---- summary ---------------------------------------------------------- #
@@ -162,6 +194,19 @@ def run(mode, paths, time_limit, device, tol, gap, verbose=False,
     print(f"  shifted geomean time {shifted_geomean([r['time'] for r in rows], shift):.3f}s "
           f"(shift {shift:g}s)")
     print(f"  total time           {sum(r['time'] for r in rows):.1f}s")
+    exp_inf = [r for r in rows if r["expected"] == "infeasible"]
+    if exp_inf:
+        rec = [r for r in exp_inf if r["check"] in ("cert", "inf", "i/u")]
+        cert = [r for r in exp_inf if r["check"] == "cert"]
+        wrong = [r for r in exp_inf if r["check"] == "point!"]
+        print(f"  published infeasible {len(exp_inf)}: recognised {len(rec)}, "
+              f"certified {len(cert)}"
+              + (f", feasible point returned on {', '.join(r['name'] for r in wrong)}"
+                 if wrong else ""))
+    exp_unb = [r for r in rows if r["expected"] == "unbounded"]
+    if exp_unb:
+        rec = [r for r in exp_unb if r["check"] == "unb"]
+        print(f"  published unbounded  {len(exp_unb)}: recognised {len(rec)}")
     if bad:
         print(f"  !! VERIFIER REJECTED: {', '.join(r['name'] for r in bad)}")
     worst = max((r for r in rows if np.isfinite(r["relerr"])),
@@ -188,7 +233,8 @@ def main(argv=None):
                     help="solve each instance this many times; report the median time")
     a = ap.parse_args(argv)
 
-    paths = sorted(glob.glob(os.path.join(a.dir, "*.mps")))
+    paths = sorted(glob.glob(os.path.join(a.dir, "*.mps"))
+                   + glob.glob(os.path.join(a.dir, "*.qps")))
     if a.only:
         keep = set(a.only)
         paths = [p for p in paths

@@ -1033,6 +1033,20 @@ class NodeSolver:
         }
 
 
+def _phase1_ray(S: _Simplex) -> np.ndarray:
+    """Phase 1 stalled with infeasibility left: its own duals are the
+    certificate. ``y1 = B^-T c1`` prices the rows in a combination no
+    feasible point can satisfy -- the node solver has returned this since
+    bug 11 made the tree check every INFEASIBLE before pruning on it, and
+    the top-level solve now returns it too, so an infeasible model's
+    verdict can be verified like a feasible one's point."""
+    B = S.B
+    ph1 = np.zeros(S.m, dtype=VAL)
+    _phase1_costs(S.zB, B.basic, B.lower, B.upper, S.p.feas_tol, ph1)
+    B.btran(ph1)
+    return ph1
+
+
 def _infeasible_threshold(prob, feas_tol: float) -> float:
     """How much phase-1 infeasibility is too much to call it feasible.
 
@@ -1144,6 +1158,7 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
                     if S.primal_infeasibility() > _infeasible_threshold(
                             scaled, params.feas_tol):
                         status = Status.INFEASIBLE
+                        S.farkas = _phase1_ray(S)
                     else:
                         S.farkas = None      # the dual verdict was numerical
                         status = _primal_loop(S, phase=2)
@@ -1157,6 +1172,7 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
                 if S.primal_infeasibility() > _infeasible_threshold(
                         scaled, params.feas_tol):
                     status = Status.INFEASIBLE
+                    S.farkas = _phase1_ray(S)
                 else:
                     status = _primal_loop(S, phase=2)
             else:
@@ -1200,11 +1216,25 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
     # Only the statuses that *claim* a solution: INFEASIBLE and UNBOUNDED
     # already report has_solution False, and their last iterate is worth
     # keeping for diagnostics and for the JSON report.
+    unscaled_violation = None
     if x is not None and Status(status).has_solution and status != Status.OPTIMAL:
         row_v, col_v, _ = prob.violation(x)
         if max(row_v, col_v) > max(params.feas_tol, 1e-6):
             x = None
             obj = float("nan")
+    elif x is not None and status == Status.OPTIMAL:
+        # An OPTIMAL point is judged where the answer is read, too. The
+        # loops test feasibility in the scaled space, and a model whose
+        # right-hand side scales to below the tolerance -- min 1e8 x with
+        # 1e6 x >= 1e-4, where the row scales to x >= 1e-10 -- ends with
+        # x = 0 called optimal: 1e-4 off its one row, the whole objective
+        # wrong. The interior point and PDLP have refused such a point since
+        # bug 2; the simplex did not look. It now reports NUMERICAL with the
+        # violation, which is what the verifier would have said of it.
+        row_v, col_v, _ = prob.violation(x)
+        unscaled_violation = max(row_v, col_v)
+        if unscaled_violation > max(params.feas_tol, 1e-6):
+            status = Status.NUMERICAL
 
     sol = Solution(status=status, x=x, objective=obj, y=y, reduced_costs=d,
                    basis_status=B.status.copy(), iterations=S.iters,
@@ -1214,7 +1244,16 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
         from .sensitivity import compute_sensitivity
         sol.sensitivity = compute_sensitivity(S, sc, prob, flip)
     sol.dual_bound = obj
+    if status == Status.INFEASIBLE and S.farkas is not None:
+        # A ray of the scaled model is a ray of the original under the row
+        # scaling alone (the column scaling cancels between d and the
+        # bounds), which is what unscale_dual applies up to a positive
+        # factor; the objective's sense plays no part in feasibility, so
+        # the ray is not flipped with the duals.
+        sol.farkas = sc.unscale_dual(np.asarray(S.farkas, dtype=VAL))
     sol.info = {**B.stats(), "algorithm": method,
                 "perturbed": S.perturbed,
                 "primal_infeasibility": S.primal_infeasibility()}
+    if unscaled_violation is not None:
+        sol.info["worst_violation"] = unscaled_violation
     return sol.drop_objective_if_unsolved()

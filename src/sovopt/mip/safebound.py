@@ -100,11 +100,15 @@ def _term(coef, lo, hi, xp):
 
 
 def safe_dual_bound(A, c, row_lb, row_ub, col_lb, col_ub, y,
-                    strict: bool = False) -> float:
+                    strict: bool = False, zero=None) -> float:
     """A valid lower bound on ``min cᵀx`` over the node, for arbitrary ``y``.
 
     ``y`` uses the textbook sign convention (``d = c − Aᵀy``). Returns ``-inf``
-    when the bound is vacuous, which is always safe.
+    when the bound is vacuous, which is always safe. ``zero`` is a mask of
+    columns whose reduced cost is taken as exactly zero: the caller's
+    statement that it has absorbed those residues into the cost vector,
+    which :func:`certified_bound` does and reports, and which recomputing
+    ``c − Aᵀy`` here cannot reproduce to the last bit.
     """
     y = np.asarray(y, dtype=np.float64)
     # A dual component that points at an infinite row bound makes the bound
@@ -116,6 +120,8 @@ def safe_dual_bound(A, c, row_lb, row_ub, col_lb, col_ub, y,
     y = np.where((y > 0.0) & (row_lb <= -INF), 0.0, y)
     y = np.where((y < 0.0) & (row_ub >= INF), 0.0, y)
     d = c - A.rmatvec(y)
+    if zero is not None:
+        d = np.where(zero, 0.0, d)
 
     row_terms = _term(y, row_lb, row_ub, np)
     col_terms = _term(d, col_lb, col_ub, np)
@@ -138,7 +144,7 @@ def safe_dual_bound(A, c, row_lb, row_ub, col_lb, col_ub, y,
 
 
 def safe_qp_bound(A, c, Q, row_lb, row_ub, col_lb, col_ub, x_hat, y,
-                  strict: bool = False) -> float:
+                  strict: bool = False, zero=None) -> float:
     """A valid lower bound on ``min ½xᵀQx + cᵀx`` over the node, for any
     ``x_hat`` and any ``y``, given ``Q ⪰ 0``.
 
@@ -148,12 +154,12 @@ def safe_qp_bound(A, c, Q, row_lb, row_ub, col_lb, col_ub, x_hat, y,
     """
     if Q is None:
         return safe_dual_bound(A, c, row_lb, row_ub, col_lb, col_ub, y,
-                               strict=strict)
+                               strict=strict, zero=zero)
     x_hat = np.asarray(x_hat, dtype=np.float64)
     qx = Q.matvec(x_hat)
     g = c + qx
     linear = safe_dual_bound(A, g, row_lb, row_ub, col_lb, col_ub, y,
-                             strict=strict)
+                             strict=strict, zero=zero)
     if not np.isfinite(linear):
         return -np.inf
     # −½ x̂ᵀQx̂, and in strict mode an allowance for the rounding in Qx̂ and
@@ -286,11 +292,16 @@ def certified_bound(prob, x, y, dual_tol: float = 1e-6):
     bad = ((d > 0.0) & (lo <= -INF)) | ((d < 0.0) & (hi >= INF))
     scale = 1.0 + float(np.abs(c).max(initial=0.0))
     pert = float(np.abs(d[bad]).max(initial=0.0))
-    c_use = c
+    zero = None
     if bad.any() and pert <= dual_tol * scale:
-        c_use = c.copy()
-        c_use[bad] -= d[bad]                 # those reduced costs become 0
+        # those reduced costs are taken as zero: the bound is then exact for
+        # a model whose costs differ from this one's by at most ``pert``.
+        # Told to the bound as a mask rather than by editing ``c``, because
+        # a QP's reduced cost is recomputed inside from c + Qx - A'y and the
+        # rounding of that sum left 1e-16 residues that made every
+        # equality-constrained Maros-Meszaros certificate vacuous.
+        zero = bad
     else:
         pert = 0.0 if not bad.any() else pert
-    b = safe_qp_bound(prob.A, c_use, Q, rl, ru, lo, hi, x, yy, strict=True) + off
+    b = safe_qp_bound(prob.A, c, Q, rl, ru, lo, hi, x, yy, strict=True, zero=zero) + off
     return (-b if prob.sense == ObjSense.MAXIMISE else b), pert

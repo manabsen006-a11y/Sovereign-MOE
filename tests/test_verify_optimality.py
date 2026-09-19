@@ -101,3 +101,40 @@ def test_integer_models_get_no_optimality_line():
     s = solve_simplex(p)
     v = verify(p, s.x, s.objective, y=s.y)
     assert not any(c[0] == "optimality" for c in v.checks)
+
+
+def test_a_point_below_the_certified_bound_is_not_optimal():
+    """A valid bound holds over every feasible point, so an objective below
+    it is a proof of infeasibility at the bound's resolution -- whatever
+    the absolute feasibility line made of the point. Maros-Meszaros
+    liswet1 was the case: 3e-7 off its rows, 0.19% below the bound, and a
+    one-sided gap test called it certified optimal. Here: min 1e8 x with
+    1e6 x >= 1e-4; the optimum is x = 1e-10, and x = 1e-10 - 5e-13 violates
+    the row by 5e-7, inside the 1e-6 line, while sitting 5e-5 below the
+    bound the exact duals give."""
+    A = SparseMatrix.from_triplets(np.array([0]), np.array([0]), np.array([1e6]), 1, 1)
+    p = Problem(A=A, c=np.array([1e8]), row_lb=np.array([1e-4]), row_ub=np.array([INF]),
+                col_lb=np.zeros(1), col_ub=np.full(1, INF), name="steep")
+    x_opt, y_opt = np.array([1e-10]), np.array([100.0])       # the exact pair
+    good = verify(p, x_opt, float(p.c @ x_opt), y=y_opt)
+    assert good.ok, good.report()
+    x_bad = x_opt - 5e-13
+    v = verify(p, x_bad, float(p.c @ x_bad), y=y_opt)
+    checks = dict((c[0], c) for c in v.checks)
+    assert checks["row constraints"][1]                    # inside the 1e-6 line
+    assert not checks["optimality"][1]
+    assert "BELOW" in checks["optimality"][2]
+
+
+def test_the_simplex_does_not_call_a_point_optimal_that_the_verifier_rejects():
+    """The same model found the simplex returning x = 0 as OPTIMAL: the row
+    scales to x >= 1e-10, below the scaled feasibility tolerance, and no
+    check looked at the unscaled model. It is NUMERICAL now, with the
+    violation in ``info``, as the interior point has done since bug 2."""
+    A = SparseMatrix.from_triplets(np.array([0]), np.array([0]), np.array([1e6]), 1, 1)
+    p = Problem(A=A, c=np.array([1e8]), row_lb=np.array([1e-4]), row_ub=np.array([INF]),
+                col_lb=np.zeros(1), col_ub=np.full(1, INF), name="steep")
+    s = solve_simplex(p)
+    assert s.status != Status.OPTIMAL
+    if s.x is not None:
+        assert not verify(p, s.x, feas_tol=1e-6).ok or s.status == Status.NUMERICAL

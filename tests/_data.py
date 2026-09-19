@@ -14,7 +14,9 @@ file carries its machine-read reference value in its header:
   (1.4 MB), one of each class the reader handles and 9002, which
   publishes no solution;
 - one fixed-charge transportation model from plato (3 KB), for the
-  provenance-header check.
+  provenance-header check;
+- three of Netlib's infeasible models (18 KB), for the infeasibility
+  certificate.
 
 It runs before collection because two tests parametrize over what is on
 disk. ``SOVOPT_FETCH=0`` disables it, and a fetch that fails -- no
@@ -35,6 +37,7 @@ NETLIB = ["afiro", "adlittle", "blend", "share2b", "sc50a", "beaconfd",
           "bandm", "boeing2", "e226", "bore3d"]
 QPLIB = ["0018", "0031", "10050", "8845", "9002"]
 FCTP = ["bk4x3"]
+NETLIB_INFEAS = ["galenet", "woodinfe", "refinery"]
 
 
 def enabled() -> bool:
@@ -86,6 +89,17 @@ def ensure() -> None:
             fetch(qplib, only=QPLIB)
         except Exception as e:                            # noqa: BLE001
             _report("QPLIB instances", e)
+
+    infeas = os.path.join(DATA, "netlib-infeasible")
+    missing = [n for n in NETLIB_INFEAS if not os.path.exists(os.path.join(infeas, f"{n}.mps"))]
+    if missing:
+        print(f"  tests/_data: fetching {len(missing)} infeasible Netlib model(s) into data/netlib-infeasible")
+        try:
+            from bench.fetch import fetch_one
+            for name in missing:
+                fetch_one(name, infeas, source="netlib-infeasible")
+        except Exception as e:                            # noqa: BLE001
+            _report("Netlib's infeasible models", e)
 
     fctp = os.path.join(DATA, "fctp")
     missing = [n for n in FCTP if not os.path.exists(os.path.join(fctp, f"{n}.mps"))]

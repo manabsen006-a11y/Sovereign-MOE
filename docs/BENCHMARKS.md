@@ -44,8 +44,8 @@ duals were asked to certify optimality.
 | LP | Netlib, simplex | 89 | **87 certified** | 78 (the other 8 are the readme's, by certificate) | 89 | 3 at the limit; 554 s |
 | LP | Netlib, interior point | 89 | **82 certified** | 75 | 83 | 6 real failures: 3 wrong infeasibility verdicts, pilot4, forplan, fit2p; 316 s |
 | LP | MIPLIB relaxations | 45 | **45 certified** | 30/30 | 45 | HiGHS agrees 45/45 to 4e-14; 6.2× slower than HiGHS |
-| LP | Mittelmann, GPU PDLP | 13 | **9 optimal** (7 certified) | — (no published values) | 9 | the best engine on the set; qap15 in 11 s |
-| LP | Mittelmann, interior point | 13 | 8 optimal (9 certified) | — | 10 | HiGHS 8; ours faster on the three 160k-row models |
+| LP | Mittelmann, GPU PDLP | 13 | **9 optimal** (5 certified; 7 under the one-sided test of the time, see §3a) | — (no published values) | 9 | the best engine on the set; qap15 in 11 s |
+| LP | Mittelmann, interior point | 13 | 8 optimal (8 certified; qap15's limit point was a ninth under the one-sided test, see §3a) | — | 10 | HiGHS 8; ours faster on the three 160k-row models |
 | LP | Mittelmann, simplex | 13 | 3 | — | 5 | out of its depth past 400k nnz |
 | MILP | MIPLIB classical, 120 s | 45 | **22 proved** | 27 | 44 | air05 no incumbent |
 | MILP | Mittelmann fctp, 120 s | 17 | **8 proved** | 1 of the 3 with a value | 17 | flow-cover territory |
@@ -244,11 +244,11 @@ checks, and they agree wherever both apply.
 | nug08-3rd | 19,728 × 20,448 | 139k | refused: 192M entries in L, 2.5e12 flops | limit | **certified, 2.7 s** | limit |
 | nug20 | 15,240 × 72,600 | 305k | refused: 95M entries in L, 7.5e11 flops | limit | **accepted, 59 s** | limit |
 | pds-20 | 33,874 × 105,728 | 230k | limit | limit | **certified, 41 s** | 2.2 s |
-| qap15 | 6,330 × 22,275 | 95k | limit at 456 s (489 s in the comparator run), point certified -- see below | limit | **accepted, 11 s** | limit |
+| qap15 | 6,330 × 22,275 | 95k | limit at 456 s (489 s in the comparator run), point accepted (certified under the one-sided test of the time) -- see below | limit | **accepted, 11 s** | limit |
 | rail507 | 507 × 63,009 | 409k | certified, 7.3 s | certified, 12 s | certified, 35 s | **4.5 s** |
 | rail516 | 516 × 47,311 | 315k | certified, 3.3 s | certified, 7.3 s | **certified, 2.3 s** | 2.1 s |
 | rail582 | 582 × 55,515 | 402k | certified, 7.4 s | certified, 7.9 s | certified, 52 s | **3.6 s** |
-| **solved** | | | **8 optimal, 9 certified** | 3 | **9 optimal, 7 certified** | 8 |
+| **solved** | | | **8 optimal, 8 certified** | 3 | **9 optimal, 5 certified** | 8 |
 | HiGHS agrees | | | 6/6 where both solve, worst 1.5e-10 | | | |
 | total | | | 1,370 s | 3,106 s | 1,249 s | 1,841 s |
 
@@ -270,7 +270,19 @@ Every other row kept its status. A proof that depends on which iteration
 the clock lands on is a coin, and the table shows the campaign's draw
 with the HiGHS column measured in the same sitting; the re-run's timings
 are not comparable with that column and are not substituted for it.
-Three things this table says that the smaller sets could not:
+
+The certificate counts in this table are as the second campaign's bug 19
+left them. The verifier's optimality line was one-sided at the time
+(`gap <= 1e-9`, with any negative gap passing), and three points this
+table called certified were in fact *below* their bounds: PDLP's
+nug08-3rd by 6.1e-8 relative and rail582 by 1.7e-9 -- points feasible to
+1e-6 whose objectives beat a valid bound, which is to say points not
+feasible at the bound's resolution, PDLP's normal finish -- and the
+interior point's qap15 limit point. Under the two-sided test they are
+"accepted"; the engines' own optimal statuses, the objectives and the
+HiGHS agreements are unchanged, and the counts above and in the summary
+say 5 and 8 where the sitting's listings said 7 and 9. Three things this
+table says that the smaller sets could not:
 
 - **The GPU first-order method is the best engine on this set.** Nine of
   thirteen, including the three the CPU engines cannot touch in 300 s --

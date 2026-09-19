@@ -46,6 +46,7 @@ import sys
 import numpy as np
 
 from sovopt.core.problem import ObjSense
+from sovopt.core.tolerances import INF
 from sovopt.io.mps import read_mps
 from sovopt.mip.safebound import certified_bound
 from sovopt.numerics.refine import compensated_residual
@@ -72,6 +73,84 @@ class Verdict:
         lines.append("")
         lines.append(f"  VERDICT: {'ACCEPTED' if self.ok else 'REJECTED'}")
         return "\n".join(lines)
+
+
+def verify_infeasible(prob, ray, rel_tol=1e-9, dual_tol=1e-9) -> Verdict:
+    """Check a claim of infeasibility from the solver's dual ray.
+
+    For any ``y``, ``Σ_i y_i·(rl_i if y_i>0 else ru_i) + Σ_j d_j·(lo_j if
+    d_j>0 else hi_j)`` with ``d = -Aᵀy`` is a lower bound on zero over every
+    point in the box that satisfies the rows, so a strictly positive value
+    proves that no such point exists. This is the arithmetic the tree
+    prunes on (:mod:`sovopt.mip.conflict`), evaluated on the original model
+    with the ray the solver handed over. A ray's sign is the solver's
+    convention, so both are tried and the verdict says which held.
+
+    Rounding is handled as the optimality certificate handles it. A ray
+    component of 1e-19 on a row with no bound on that side, or a reduced
+    ray ``d_j`` of 1e-16 on a column with none, makes the value ``-inf``
+    however small it is -- and a phase-1 basis leaves exactly such residues
+    on its basic columns (the infeasible set: 20 of 29 valid rays refused
+    for terms of 1e-19 to 1e-11 of the ray's largest entry). Those, when no
+    larger than ``dual_tol`` of the ray's scale, are dropped -- the value
+    is then exact for a model whose matrix differs from this one's by at
+    most that much -- and the verdict reports the perturbation. Larger ones
+    stay, and the ray certifies nothing, which is the right answer.
+
+    The acceptance threshold is relative to the ray's scale on the finite
+    bounds, ``1 + |y|·(|rl|+|ru|)``, so a certificate is neither refused for
+    being small on a small model nor accepted for being rounding on a large
+    one.
+    """
+    v = Verdict()
+    if ray is None:
+        v.add("certificate", False, "no dual ray was returned with the verdict")
+        return v
+    y = np.asarray(ray, dtype=np.float64)
+    if y.shape[0] != prob.m or not np.isfinite(y).all():
+        v.add("certificate", False, "dual ray has the wrong length or is not finite")
+        return v
+    rl, ru, lo, hi = prob.row_lb, prob.row_ub, prob.col_lb, prob.col_ub
+    big = float(np.abs(y).max(initial=0.0))
+    if big == 0.0:
+        v.add("certificate", False, "the ray is zero")
+        return v
+    amax = float(np.abs(prob.A.rx).max(initial=0.0))
+    noise = dual_tol * big * max(1.0, amax)
+    # INF is a sentinel, not np.inf, so finite bounds are picked by comparison
+    finite = np.where(rl > -INF, np.abs(rl), 0.0) + np.where(ru < INF, np.abs(ru), 0.0)
+    scale = 1.0 + float(np.abs(y) @ finite)
+
+    best = (-np.inf, "+", 0.0, "")
+    for sgn, yy in (("+", y), ("-", -y)):
+        ypos = yy > 0.0
+        row_bad = np.where(ypos, rl <= -INF, ru >= INF) & (yy != 0.0)
+        if row_bad.any():
+            if float(np.abs(yy[row_bad]).max()) > noise:
+                continue                                  # a real term, unbounded
+            yy = np.where(row_bad, 0.0, yy)
+        d = -prob.A.rmatvec(yy)
+        dpos = d > 0.0
+        col_bad = np.where(dpos, lo <= -INF, hi >= INF) & (d != 0.0)
+        pert = float(np.abs(d[col_bad]).max(initial=0.0))
+        if pert > noise:
+            continue
+        row_total = float(np.sum(np.where(yy > 0.0, rl, ru) * yy))
+        terms = np.where(dpos, lo, hi) * d
+        val = row_total + float(terms[~col_bad].sum())
+        rowp = float(np.abs(y[row_bad]).max(initial=0.0)) if row_bad.any() else 0.0
+        if val > best[0]:
+            best = (val, sgn, max(pert, rowp), "")
+    val, sign, pert, _ = best
+    if not np.isfinite(val):
+        v.add("certificate", False,
+              "the ray certifies nothing: a term larger than rounding points at an infinite bound")
+        return v
+    ok = val > rel_tol * scale
+    detail = (f"Farkas value {val:.6g} ({val / scale:.2e} of the ray's scale), sign {sign}"
+              + (f", terms of {pert:.1e} at infinite bounds dropped" if pert else ""))
+    v.add("certificate", ok, detail)
+    return v
 
 
 def verify(prob, x, claimed_obj=None, feas_tol=1e-6, int_tol=1e-6,
@@ -138,9 +217,20 @@ def verify(prob, x, claimed_obj=None, feas_tol=1e-6, int_tol=1e-6,
             else:
                 gap = (obj - bnd) if prob.sense == ObjSense.MINIMISE else (bnd - obj)
                 rel = gap / max(1.0, abs(obj))
-                v.add("optimality", rel <= opt_tol,
-                      f"certified bound {bnd:.12g}, gap {gap:.3e} ({rel:.2e} relative)"
-                      + (f", costs perturbed by {pert:.1e}" if pert else ""))
+                # A gap below -opt_tol is a point that beats a valid bound
+                # on every feasible point -- which is to say a point that
+                # is not feasible at the bound's resolution, whatever the
+                # 1e-6 feasibility line above made of it. Maros-Meszaros'
+                # liswet1: 3e-7 off its rows, 0.19% below the bound.
+                if rel < -opt_tol:
+                    v.add("optimality", False,
+                          f"objective {gap:.3e} BELOW the certified bound {bnd:.12g} "
+                          f"({-rel:.2e} relative): the point is infeasible at the "
+                          f"bound's resolution, not optimal")
+                else:
+                    v.add("optimality", rel <= opt_tol,
+                          f"certified bound {bnd:.12g}, gap {gap:.3e} ({rel:.2e} relative)"
+                          + (f", costs perturbed by {pert:.1e}" if pert else ""))
 
     return v
 

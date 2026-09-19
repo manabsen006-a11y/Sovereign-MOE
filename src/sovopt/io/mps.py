@@ -133,6 +133,7 @@ def read_mps(path, name: str | None = None) -> Problem:
 
     bound_lo: dict[int, float] = {}
     bound_hi: dict[int, float] = {}
+    bounded_cols: set[int] = set()
     forced_int: set[int] = set()
     semicont: dict[int, float] = {}
 
@@ -141,6 +142,13 @@ def read_mps(path, name: str | None = None) -> Problem:
     section = None
     int_marker = False
     pending_objsense = False
+    # A file whose ROWS section has a name with a space in it is a
+    # fixed-column file throughout (Maros-Meszaros qforplan: rows
+    # "DEDO3 1R", columns "DEDO3 11"), and from then on every data line is
+    # split on the column positions rather than on whitespace -- a COLUMNS
+    # line with such a name has four tokens where three are expected and
+    # a number where a row name should be.
+    fixed_mode = False
 
     with _open_maybe_compressed(path) as fh:
         for lineno, raw in enumerate(fh, 1):
@@ -172,7 +180,7 @@ def read_mps(path, name: str | None = None) -> Problem:
                 # Not a known section but unindented -- some writers do this for
                 # OBJSENSE values. Fall through and treat as data.
 
-            tok = raw.split()
+            tok = _fixed_fields(raw) if fixed_mode else raw.split()
             if not tok:
                 continue
 
@@ -184,8 +192,13 @@ def read_mps(path, name: str | None = None) -> Problem:
 
             # ---------------- ROWS ---------------- #
             if section == "ROWS":
-                if len(tok) < 2:
+                # a free-format ROWS line is exactly a type and a name; more
+                # tokens is a name with a space in it (Maros-Meszaros
+                # qforplan: "E  DEDO3 1R"), which only the fixed columns
+                # can split
+                if len(tok) != 2:
                     tok = _fixed_fields(raw)
+                    fixed_mode = len(tok) == 2
                 if len(tok) < 2:
                     raise MPSError("ROWS entry needs a type and a name", lineno, raw)
                 s, rname = tok[0].upper(), tok[1]
@@ -307,6 +320,7 @@ def read_mps(path, name: str | None = None) -> Problem:
                     col_is_int.append(False)
 
                 val = _num(vtok[0], lineno, raw) if vtok else 0.0
+                bounded_cols.add(j)                   # any bound line at all
 
                 if btype == "UP":
                     bound_hi[j] = val
@@ -398,6 +412,17 @@ def read_mps(path, name: str | None = None) -> Problem:
 
     col_lb = np.zeros(n, dtype=VAL)
     col_ub = np.full(n, INF, dtype=VAL)
+    # An integer column in a MARKER block with no bound line of any kind is
+    # binary: the MPSX convention CPLEX, SCIP and MIPLIB keep (an LI, LO or
+    # UP line of any value leaves the other side at its default). MIPLIB's
+    # page for neos-2626858-aoos counts 209 binaries where the file bounds
+    # 192 columns by UP 1 and leaves 17 integer columns without a line;
+    # read as [0, +inf) those 17 make a model MIPLIB publishes as infeasible
+    # feasible, with an exactly feasible integer point at 311.567 -- the
+    # verifier accepts it, because it is a point of a different model.
+    for j in range(n):
+        if col_is_int[j] and j not in bounded_cols:
+            col_ub[j] = 1.0
     for j, v in bound_lo.items():
         col_lb[j] = v
     for j, v in bound_hi.items():

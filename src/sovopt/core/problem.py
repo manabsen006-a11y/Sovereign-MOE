@@ -300,6 +300,13 @@ class Solution:
     log: list = field(default_factory=list)
     sensitivity: object = None
     """Cost and RHS ranging, when it was requested and the solve was optimal."""
+    farkas: np.ndarray | None = None
+    """On ``INFEASIBLE``, a dual ray in the model's row space: a vector ``y``
+    for which the Farkas value ``Σ_i y_i·(rl_i if y_i>0 else ru_i) +
+    Σ_j d_j·(lo_j if d_j>0 else hi_j)`` with ``d = -Aᵀy`` is strictly
+    positive, which no point in the box satisfying the rows can be. The
+    verifier checks it (``bench.verify.verify_infeasible``), as it checks a
+    point; INFEASIBLE is otherwise the one answer a caller cannot check."""
 
     def drop_objective_if_unsolved(self) -> "Solution":
         """Erase an objective that no feasible point stands behind.

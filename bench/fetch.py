@@ -28,8 +28,34 @@ names where it came from:
 * Mittelmann's fixed-charge transportation set (``fctp/`` on the same site):
   small classical MILPs. Same: no values in the files.
 
+* Netlib's infeasible LP set (netlib.org/lp/infeas, Chinneck 1993): 29
+  models published *as infeasible* -- five from a petrochemical plant,
+  three from BP operations models, the original greenbea. The header says
+  ``*INFEASIBLE: yes`` and names the readme; the answer key is the status.
+* Netlib's Kennington set (netlib.org/lp/data/kennington): sixteen larger
+  LPs, doubly compressed (gzip, then Netlib's own format); the readme's
+  table of optimal values is read by machine into ``*LP SOLN:``.
+* Mittelmann's LP test set, top level (the files added from MIPLIB 2017 and
+  the PDE-constrained models): the next size class, 0.3-5 MB compressed.
+* MIPLIB 2017's *easy* listing (miplib.zib.de/tag_easy.html): one table of
+  every proven-optimal instance with its size, group, tags and objective.
+  ``miplib-draw2`` is every easy instance under ``MIPLIB_DRAW2_MAX_NNZ``
+  nonzeros that no earlier set ran, and ``miplib-infeasible`` the easy
+  instances whose published status is Infeasible or Unbounded -- the
+  status is the answer key. The objective is written from the listing.
+* Maros and Meszaros' convex QP set (doc.ic.ac.uk/~im/QPDATA*.ZIP, 138
+  QPS files): no published values in a machine-readable form anywhere the
+  fetch could find, so the header names the source and the verifier's
+  certificate is the check.
+* OR-Library's capacitated and uncapacitated warehouse location sets
+  (people.brunel.ac.uk/~mastjjb/jeb/orlib): Beasley's data files, saved as
+  they are, with ``capopt.txt`` and ``uncapopt.txt`` beside them;
+  ``bench.orlib`` builds the models and reads the optima.
+
     python -m bench.fetch --set small
     python -m bench.fetch --set mittelmann-lp
+    python -m bench.fetch --set netlib-infeasible
+    python -m bench.fetch --set miplib-draw2
     python -m bench.fetch --list
 """
 
@@ -49,6 +75,13 @@ MIPLIB_URL = "https://miplib.zib.de/WebData/instances/{}.mps.gz"
 MIPLIB_PAGE = "https://miplib.zib.de/instance_details_{}.html"
 MIPLIB3_URL = "https://raw.githubusercontent.com/coin-or-tools/Data-miplib3/master/{}.gz"
 PLATO_URL = "https://plato.asu.edu/ftp/lptestset/{}"
+NETLIB_INFEAS_URL = "https://netlib.org/lp/infeas/{}"
+NETLIB_INFEAS_README = "https://netlib.org/lp/infeas/readme"
+KENNINGTON_URL = "https://netlib.org/lp/data/kennington/{}.gz"
+KENNINGTON_README = "https://netlib.org/lp/data/kennington/readme"
+MIPLIB_EASY = "https://miplib.zib.de/tag_easy.html"
+MARMES_URL = "http://www.doc.ic.ac.uk/~im/QPDATA{}.ZIP"
+ORLIB_URL = "https://people.brunel.ac.uk/~mastjjb/jeb/orlib/files/{}"
 
 # Small, classical instances -- fast enough for a development loop, and all
 # with published optima.
@@ -97,15 +130,73 @@ MITTELMANN_MILP = [
     "cbs-cta", "neos-1122047",
 ]
 
+# Netlib's infeasible LP set: every name in the readme's PROBLEM SUMMARY
+# TABLE, all published as infeasible (Chinneck 1993).
+NETLIB_INFEAS = [
+    "bgdbg1", "bgetam", "bgindy", "bgprtr", "box1", "ceria3d", "chemcom",
+    "cplex1", "cplex2", "ex72a", "ex73a", "forest6", "galenet", "gosh",
+    "gran", "greenbea", "itest2", "itest6", "klein1", "klein2", "klein3",
+    "mondou2", "pang", "pilot4i", "qual", "reactor", "refinery", "vol1",
+    "woodinfe",
+]
+
+# Netlib's Kennington set: sixteen LPs, optimal values in the readme.
+KENNINGTON = [
+    "cre-a", "cre-b", "cre-c", "cre-d", "ken-07", "ken-11", "ken-13",
+    "ken-18", "osa-07", "osa-14", "osa-30", "osa-60", "pds-02", "pds-06",
+    "pds-10", "pds-20",
+]
+
+# Mittelmann's LP test set, top level: the next size class above the
+# thirteen the first campaign ran, everything under 5 MB compressed. The
+# two without an mps suffix are Netlib-compressed like the first set.
+PLATO2 = {
+    "brazil3": "brazil3.mps.bz2",
+    "irish-electricity": "irish-electricity.mps.bz2",
+    "chromaticindex1024-7": "chromaticindex1024-7.mps.bz2",
+    "Linf_520c": "Linf_520c.bz2",
+    "supportcase10": "supportcase10.mps.bz2",
+    "bdry2": "bdry2.bz2",
+    "rmine15": "rmine15.mps.bz2",
+    "physiciansched3-3": "physiciansched3-3.mps.bz2",
+    "ex10": "ex10.mps.bz2",
+    "s250r10": "s250r10.mps.bz2",
+    "datt256": "datt256_lp.mps.bz2",
+}
+
+MIPLIB_DRAW2_MAX_NNZ = 10000
+"""The second MIPLIB draw is every *easy* instance with at most this many
+nonzeros that no earlier set ran (114 at 10,000, from a listing of 694)."""
+
+# OR-Library warehouse location: Beasley's file names and the optima files.
+ORLIB_CAP = ([f"cap{i}{j}" for i in (4, 6, 7, 8, 9, 10, 11, 12, 13) for j in (1, 2, 3, 4)]
+             + ["cap51", "capa", "capb", "capc"])
+ORLIB_UNCAP = ([f"cap{i}{j}" for i in (7, 10, 13) for j in (1, 2, 3, 4)]
+               + ["capa", "capb", "capc"])
+ORLIB_FILES = sorted({f"{n}.txt" for n in ORLIB_CAP} | {"capopt.txt", "uncapopt.txt"})
+
 SETS = {"small": SMALL, "medium": MEDIUM, "all": SMALL + MEDIUM,
         "mittelmann-lp": sorted(MITTELMANN_LP), "fctp": FCTP,
-        "mittelmann-milp": MITTELMANN_MILP}
+        "mittelmann-milp": MITTELMANN_MILP,
+        "netlib-infeasible": NETLIB_INFEAS, "kennington": KENNINGTON,
+        "mittelmann-lp2": list(PLATO2),
+        "miplib-draw2": None, "miplib-infeasible": None,   # from the listing
+        "marmes": None, "orlib": ORLIB_FILES}
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(_ROOT, "data", "instances")
 SET_DIRS = {"mittelmann-lp": os.path.join(_ROOT, "data", "mittelmann"),
             "fctp": os.path.join(_ROOT, "data", "fctp"),
-            "mittelmann-milp": os.path.join(_ROOT, "data", "mittelmann-milp")}
+            "mittelmann-milp": os.path.join(_ROOT, "data", "mittelmann-milp"),
+            "netlib-infeasible": os.path.join(_ROOT, "data", "netlib-infeasible"),
+            "kennington": os.path.join(_ROOT, "data", "kennington"),
+            "mittelmann-lp2": os.path.join(_ROOT, "data", "mittelmann2"),
+            "miplib-draw2": os.path.join(_ROOT, "data", "miplib2"),
+            "miplib-infeasible": os.path.join(_ROOT, "data", "miplib-infeasible"),
+            "marmes": os.path.join(_ROOT, "data", "marmes"),
+            "orlib": os.path.join(_ROOT, "data", "orlib")}
+SET_SOURCES = {"mittelmann-lp": "plato", "fctp": "plato", "mittelmann-lp2": "plato",
+               "netlib-infeasible": "netlib-infeasible", "kennington": "kennington"}
 
 
 def _context():
@@ -154,15 +245,55 @@ def miplib_reference(name, timeout=60):
         return None
 
 
-def fetch_one(name, dest_dir=DATA_DIR, timeout=60, source="miplib"):
+_KENNINGTON_TABLE = None
+
+
+def kennington_reference(timeout=60):
+    """``{name: optimal value}`` from the Kennington readme's table, read
+    once. The names there are upper case; the files are lower case."""
+    global _KENNINGTON_TABLE
+    if _KENNINGTON_TABLE is None:
+        text = _get(KENNINGTON_README, timeout).decode("latin-1")
+        table = {}
+        for m in re.finditer(r"^([A-Z]+-[0-9A-Z]+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(-?[0-9.]+e[+-]\d+)",
+                             text, re.M):
+            table[m.group(1).lower()] = float(m.group(2))
+        if len(table) != len(KENNINGTON):
+            raise ValueError(f"the Kennington readme's table gave {len(table)} "
+                             f"values, expected {len(KENNINGTON)}")
+        _KENNINGTON_TABLE = table
+    return _KENNINGTON_TABLE
+
+
+def fetch_one(name, dest_dir=DATA_DIR, timeout=60, source="miplib", extra=""):
     """Save ``name`` as ``dest_dir/name.mps``, plain text, with any reference
-    value the source publishes written into the header comments."""
+    value the source publishes written into the header comments; ``extra``
+    is appended to the header lines on a first fetch."""
     os.makedirs(dest_dir, exist_ok=True)
     out = os.path.join(dest_dir, f"{name}.mps")
     if os.path.exists(out) and os.path.getsize(out) > 0:
         return out, "cached"
     header = ""
-    if source == "miplib":
+    if source == "netlib-infeasible":
+        from sovopt.io.netlib import expand
+        blob = _get(NETLIB_INFEAS_URL.format(name), timeout)
+        text = expand(blob.decode("latin-1"))
+        header = (f"*NAME:         {name}\n"
+                  f"*INFEASIBLE:   yes\n"
+                  f"*SOURCE:       netlib.org/lp/infeas/readme, PROBLEM SUMMARY TABLE "
+                  f"(Chinneck 1993): published as infeasible\n")
+        how = "netlib/lp/infeas"
+    elif source == "kennington":
+        from sovopt.io.netlib import expand
+        blob = _get(KENNINGTON_URL.format(name), timeout)
+        text = expand(_decompress(blob).decode("latin-1"))
+        obj = kennington_reference(timeout)[name]
+        header = (f"*NAME:         {name}\n"
+                  f"*LP SOLN:      {obj!r}\n"
+                  f"*SOURCE:       netlib.org/lp/data/kennington/readme (optimal values "
+                  f"computed by Vanderbei's ALPO)\n")
+        how = "netlib/kennington"
+    elif source == "miplib":
         try:
             blob = _get(MIPLIB_URL.format(name), timeout)
             text = _decompress(blob).decode("utf-8", errors="replace")
@@ -182,7 +313,7 @@ def fetch_one(name, dest_dir=DATA_DIR, timeout=60, source="miplib"):
             text = _decompress(blob).decode("utf-8", errors="replace")
             how = "miplib3 mirror"
     elif source == "plato":
-        path = MITTELMANN_LP.get(name, f"fctp/{name}.mps.bz2")
+        path = MITTELMANN_LP.get(name) or PLATO2.get(name) or f"fctp/{name}.mps.bz2"
         blob = _get(PLATO_URL.format(path), timeout)
         text = _decompress(blob).decode("utf-8", errors="replace")
         if not path.endswith(".mps.bz2"):
@@ -207,12 +338,148 @@ def fetch_one(name, dest_dir=DATA_DIR, timeout=60, source="miplib"):
     else:
         raise ValueError(f"unknown source {source!r}")
     with open(out, "w", encoding="utf-8") as fh:
-        fh.write(header + text)
+        fh.write(header + extra + text)
     return out, f"{how}, {len(blob):,}B"
+
+
+# --------------------------------------------------------------------------- #
+# MIPLIB 2017's easy listing                                                  #
+# --------------------------------------------------------------------------- #
+
+_LISTING = None
+
+
+def miplib_easy_listing(timeout=120):
+    """Every row of miplib.zib.de/tag_easy.html as a dict: name, vars,
+    binaries, integers, continuous, rows, nnz, submitter, group, tags, and
+    ``objective`` (a float) or ``status`` ("Infeasible" / "Unbounded")
+    where the listing shows a word instead of a value. Read once."""
+    global _LISTING
+    if _LISTING is not None:
+        return _LISTING
+    page = _get(MIPLIB_EASY, timeout).decode("utf-8", "replace")
+    recs = []
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", page, re.S):
+        cells = [html.unescape(re.sub(r"<[^>]+>", " ", c)).split()
+                 for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)]
+        if len(cells) != 12 or cells[1] != ["easy"]:
+            continue
+        rec = {"name": cells[0][0], "submitter": " ".join(cells[8]),
+               "group": " ".join(cells[9]), "tags": cells[11]}
+        try:
+            (rec["vars"], rec["binaries"], rec["integers"], rec["continuous"],
+             rec["rows"], rec["nnz"]) = (int(float(c[0])) for c in cells[2:8])
+        except (ValueError, IndexError):
+            continue
+        try:
+            rec["objective"] = float(cells[10][0])
+        except ValueError:
+            rec["status"] = cells[10][0]
+        recs.append(rec)
+    if len(recs) < 500:
+        raise ValueError(f"the easy listing parsed to {len(recs)} rows")
+    _LISTING = recs
+    return recs
+
+
+def miplib_draw2(max_nnz=MIPLIB_DRAW2_MAX_NNZ):
+    """The easy instances with a value, at most ``max_nnz`` nonzeros, that
+    no earlier set ran; smallest first."""
+    done = set(SMALL) | set(MEDIUM) | set(MITTELMANN_MILP) | set(FCTP)
+    recs = [r for r in miplib_easy_listing()
+            if "objective" in r and r["nnz"] <= max_nnz and r["name"] not in done]
+    return sorted(recs, key=lambda r: (r["nnz"], r["name"]))
+
+
+def miplib_infeasible(max_nnz=100000):
+    """The easy instances whose published status is Infeasible or
+    Unbounded, at most ``max_nnz`` nonzeros; smallest first."""
+    recs = [r for r in miplib_easy_listing() if "status" in r and r["nnz"] <= max_nnz]
+    return sorted(recs, key=lambda r: (r["nnz"], r["name"]))
+
+
+def _listing_header(rec):
+    """Header lines for an instance saved from the listing: the value with
+    ``(opt)`` (every row of the easy listing is proven), or the status."""
+    lines = [f"*NAME:         {rec['name']}\n"]
+    if "objective" in rec:
+        lines.append(f"*BEST SOLN:    {rec['objective']!r} (opt)\n")
+    else:
+        lines.append(f"*STATUS:       {rec['status']}\n")
+    lines.append("*SOURCE:       miplib.zib.de/tag_easy.html listing (status easy: "
+                 "solved to proven optimality)\n")
+    lines.append(f"*GROUP:        {rec['group']}\n")
+    lines.append(f"*TAGS:         {' '.join(rec['tags'])}\n")
+    return "".join(lines)
+
+
+def fetch_listed(rec, dest_dir, timeout=300):
+    """Fetch a listed MIPLIB 2017 instance, header from the listing."""
+    os.makedirs(dest_dir, exist_ok=True)
+    out = os.path.join(dest_dir, f"{rec['name']}.mps")
+    if os.path.exists(out) and os.path.getsize(out) > 0:
+        return out, "cached"
+    blob = _get(MIPLIB_URL.format(rec["name"]), timeout)
+    text = _decompress(blob).decode("utf-8", errors="replace")
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(_listing_header(rec) + text)
+    return out, f"miplib2017 + listing, {len(blob):,}B"
+
+
+# --------------------------------------------------------------------------- #
+# Maros and Meszaros, and OR-Library                                          #
+# --------------------------------------------------------------------------- #
+
+def fetch_marmes(dest_dir, timeout=600):
+    """The 138 QPS files from the three archives, saved as ``<name>.qps``
+    with a header naming the archive. Skipped when the directory already
+    holds 138 of them."""
+    import io as _io
+    import zipfile
+    os.makedirs(dest_dir, exist_ok=True)
+    have = [f for f in os.listdir(dest_dir) if f.endswith(".qps")]
+    if len(have) >= 138:
+        return len(have), "cached"
+    got = 0
+    for k in (1, 2, 3):
+        blob = _get(MARMES_URL.format(k), timeout)
+        zf = zipfile.ZipFile(_io.BytesIO(blob))
+        for member in zf.namelist():
+            if not member.upper().endswith(".QPS"):
+                continue
+            name = os.path.splitext(os.path.basename(member))[0].lower()
+            out = os.path.join(dest_dir, f"{name}.qps")
+            if os.path.exists(out) and os.path.getsize(out) > 0:
+                continue
+            text = zf.read(member).decode("latin-1")
+            header = (f"*NAME:         {name}\n"
+                      f"*SOURCE:       doc.ic.ac.uk/~im/QPDATA{k}.ZIP (Maros and Meszaros, "
+                      f"A repository of convex quadratic programming problems, OMS 1999); "
+                      f"no published value in machine-readable form\n")
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write(header + text)
+            got += 1
+    return got, "doc.ic.ac.uk"
+
+
+def fetch_orlib(dest_dir, timeout=300):
+    """Beasley's warehouse-location data files and the two optima files,
+    saved as they are."""
+    os.makedirs(dest_dir, exist_ok=True)
+    got = 0
+    for f in ORLIB_FILES:
+        out = os.path.join(dest_dir, f)
+        if os.path.exists(out) and os.path.getsize(out) > 0:
+            continue
+        with open(out, "wb") as fh:
+            fh.write(_get(ORLIB_URL.format(f), timeout))
+        got += 1
+    return got, "people.brunel.ac.uk/~mastjjb/jeb/orlib"
 
 
 _REF = re.compile(r"^\*\s*(BEST SOLN|LP SOLN|ROWS|COLUMNS|INTEGER|NONZERO)\s*:\s*(\S+)",
                   re.IGNORECASE)
+_STATUS = re.compile(r"^\*\s*(INFEASIBLE|STATUS|GROUP)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
 def read_reference(path):
@@ -234,6 +501,15 @@ def read_reference(path):
                     pass
             if "(opt)" in line.lower() and "best" in line.lower():
                 ref["proved_optimal"] = True
+            m = _STATUS.match(line)
+            if m:
+                key, val = m.group(1).lower(), m.group(2)
+                if key == "infeasible" and val.lower().startswith("y"):
+                    ref["expected"] = "infeasible"
+                elif key == "status":
+                    ref["expected"] = val.lower()          # infeasible / unbounded
+                elif key == "group":
+                    ref["group"] = val
     return ref
 
 
@@ -250,9 +526,36 @@ def main(argv=None):
             print(f"{k:8s} {len(v):3d} instances")
         return 0
 
-    names = a.only if a.only else SETS[a.set]
     dest = a.dir if a.dir != DATA_DIR else SET_DIRS.get(a.set, DATA_DIR)
-    source = "plato" if a.set in ("mittelmann-lp", "fctp") else "miplib"
+    if a.set == "marmes":
+        n, how = fetch_marmes(dest)
+        print(f"  {n} QPS files ({how}) -> {dest}")
+        return 0
+    if a.set == "orlib":
+        n, how = fetch_orlib(dest)
+        print(f"  {n} new files ({how}) -> {dest}")
+        return 0
+    if a.set in ("miplib-draw2", "miplib-infeasible"):
+        recs = miplib_draw2() if a.set == "miplib-draw2" else miplib_infeasible()
+        if a.only:
+            want = set(a.only)
+            recs = [r for r in recs if r["name"] in want]
+        ok = fail = 0
+        for rec in recs:
+            try:
+                path, how = fetch_listed(rec, dest)
+                what = (f"{rec['objective']:.8g} (opt)" if "objective" in rec
+                        else rec["status"])
+                print(f"  {rec['name']:<28s} {rec['nnz']:>7d} nnz  {how:<30s} {what}  [{rec['group']}]")
+                ok += 1
+            except Exception as e:                        # noqa: BLE001
+                print(f"  {rec['name']:<28s} FAILED  {type(e).__name__}: {str(e)[:70]}")
+                fail += 1
+        print(f"\n  {ok} fetched, {fail} failed -> {dest}")
+        return 0 if ok else 1
+
+    names = a.only if a.only else SETS[a.set]
+    source = SET_SOURCES.get(a.set, "miplib")
     ok = fail = 0
     for nm in names:
         try:
@@ -263,6 +566,8 @@ def main(argv=None):
                 bits.append(f"LP {ref['lp_soln']:.6g}")
             if "best_soln" in ref:
                 bits.append(f"MILP {ref['best_soln']:.6g}")
+            if "expected" in ref:
+                bits.append(ref["expected"].upper())
             print(f"  {nm:<18s} {how:<34s} {'  '.join(bits)}")
             ok += 1
         except Exception as e:

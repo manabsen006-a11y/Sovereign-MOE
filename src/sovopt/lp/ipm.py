@@ -937,11 +937,19 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
     if Q is not None:
         c_norm += float(np.abs(Q.diagonal()).max(initial=0.0))
 
-    if ncomp == 0:
+    unbounded = ~has_lo & ~has_hi
+    if ncomp == 0 and not unbounded.any():
         # Every variable pinned: there is nothing for a barrier to do.
         z = np.where(has_lo, lo, np.where(has_hi, hi, 0.0))
         return _finish(prob, work, scaled, sc, flip, z[:n], np.zeros(m),
                        np.zeros(n), Status.OPTIMAL, 0, t0, params, "ipm")
+    # ncomp == 0 with free columns is the equality-constrained QP -- every
+    # row an equality, every column free or fixed, no complementarity pair
+    # anywhere -- whose optimum is one Newton step on the KKT system. The
+    # loop below does exactly that with mu = 0 and full steps; this branch
+    # used to return the zero vector as "every variable pinned" and
+    # _finish demoted it to NUMERICAL, on nine Maros-Meszaros problems
+    # (hs51, genhs28, dtoc3, aug2d, aug3d and their variants, dpklo1).
 
     # ---- starting point ---------------------------------------------------- #
     if kkt is None:
@@ -1016,7 +1024,8 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
         rd = r - zl + zu
         rd[fixed] = 0.0
 
-        mu = float((g[free_lo] @ zl[free_lo] + t[free_hi] @ zu[free_hi]) / ncomp)
+        mu = (float((g[free_lo] @ zl[free_lo] + t[free_hi] @ zu[free_hi]) / ncomp)
+              if ncomp else 0.0)
         if pmm:
             rho = delta = float(min(params.pmm_cap,
                                     max(params.pmm_floor, params.pmm_scale * mu)))
@@ -1157,10 +1166,10 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
 
         ap = min(_max_step(g, dz_a, free_lo), _max_step(t, -dz_a, free_hi))
         ad = min(_max_step(zl, dzl_a, free_lo), _max_step(zu, dzu_a, free_hi))
-        mu_aff = float(
+        mu_aff = (float(
             ((g[free_lo] + ap * dz_a[free_lo]) @ (zl[free_lo] + ad * dzl_a[free_lo])
              + (t[free_hi] - ap * dz_a[free_hi]) @ (zu[free_hi] + ad * dzu_a[free_hi]))
-            / ncomp)
+            / ncomp) if ncomp else 0.0)
         sigma = (mu_aff / mu) ** 3 if mu > 0.0 else 0.0
         sigma = float(min(max(sigma, 0.0), 1.0))
 
@@ -1240,7 +1249,13 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
         if np.isfinite(bnd):
             cgap = (obj - bnd) if prob.sense == ObjSense.MINIMISE else (bnd - obj)
             rel = cgap / max(1.0, abs(obj))
-            if rel <= params.cert_tol:
+            # Both signs are tested. A gap below -cert_tol is a point whose
+            # objective beats a valid bound on every feasible point, which
+            # a feasible point cannot do: the point is infeasible past what
+            # the cap resolves, and the bound has just measured it. liswet1
+            # is the case -- a point 3e-7 off its rows and 0.19% below the
+            # bound, which a one-sided test called OPTIMAL.
+            if abs(rel) <= params.cert_tol:
                 certified = (bnd, rel, pert, Status(status).name)
                 status = Status.OPTIMAL
 

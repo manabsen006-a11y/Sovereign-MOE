@@ -13,3 +13,10 @@ data/qplib/
 data/fctp/
 data/mittelmann/
 data/mittelmann-milp/
+data/netlib-infeasible/
+data/kennington/
+data/mittelmann2/
+data/miplib2/
+data/miplib-infeasible/
+data/marmes/
+data/orlib/

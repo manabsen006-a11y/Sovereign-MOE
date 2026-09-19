@@ -342,3 +342,26 @@ def test_quadratic_objective_is_never_silently_dropped():
     lp = qp.copy()
     lp.Q = None
     assert solve(lp).status == Status.OPTIMAL
+
+
+def test_an_unbounded_relaxation_is_reported_as_such_not_as_a_node_limit():
+    """MIPLIB 2017's five published-unbounded instances: the root LP
+    returned UNBOUNDED in under a second and the tree reported NODE_LIMIT
+    at 13-73 s, a status about the search for a fact about the model. An
+    unbounded relaxation makes the integer model unbounded or infeasible
+    (Meyer 1974), so that is the answer, at once."""
+    import numpy as np
+    from sovopt.core.problem import Problem, Status, VarKind
+    from sovopt.core.sparse import SparseMatrix
+    from sovopt.core.tolerances import INF
+    from sovopt.mip.tree import MIPParams, solve_mip
+    # min -x - y  s.t.  x - y <= 1, x, y integer >= 0: the ray (1, 1)
+    A = SparseMatrix.from_triplets(np.array([0, 0]), np.array([0, 1]),
+                                   np.array([1.0, -1.0]), 1, 2)
+    p = Problem(A=A, c=np.array([-1.0, -1.0]), row_lb=np.array([-INF]),
+                row_ub=np.array([1.0]), col_lb=np.zeros(2), col_ub=np.full(2, INF),
+                kind=np.full(2, VarKind.INTEGER, dtype=np.int8), name="ray")
+    s = solve_mip(p, MIPParams(time_limit=30))
+    assert s.status == Status.INFEASIBLE_OR_UNBOUNDED
+    assert s.info.get("root") == "unbounded relaxation"
+    assert s.nodes == 0

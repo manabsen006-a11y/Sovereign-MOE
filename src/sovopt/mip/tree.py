@@ -39,6 +39,9 @@ Achterberg, Koch & Martin, "Branching rules revisited", Oper. Res. Letters 33
   (2005) 42-54 -- pseudocost and reliability branching.
 Linderoth & Savelsbergh, "A computational study of search strategies for mixed
   integer programming", INFORMS J. Computing 11 (1999) 173-187.
+Meyer, "On the existence of optimal solutions to integer and mixed-integer
+  programming problems", Math. Programming 7 (1974) 223-235 -- a MILP with
+  rational data and an unbounded relaxation is unbounded or infeasible.
 """
 
 from __future__ import annotations
@@ -619,6 +622,20 @@ def solve_mip(prob: Problem, params: MIPParams | None = None) -> Solution:
         if rr.status == Status.INFEASIBLE:
             return Solution(status=Status.INFEASIBLE, nodes=0,
                             time=time.perf_counter() - t0, method="bb")
+        if rr.status == Status.UNBOUNDED:
+            # An unbounded relaxation: the integer model is unbounded if it
+            # has a point at all and infeasible otherwise (Meyer 1974, for
+            # rational data), and no branching changes that -- every child
+            # is unbounded or empty. Measured on MIPLIB 2017's five
+            # published-unbounded instances: the root returned UNBOUNDED
+            # in under a second, the tree then carried the node as
+            # unsolved, re-solved it cold, dropped it undecided and
+            # reported NODE_LIMIT at 13-73 s -- a status about the search
+            # for a fact about the model.
+            sol = Solution(status=Status.INFEASIBLE_OR_UNBOUNDED, nodes=0,
+                           time=time.perf_counter() - t0, method="bb")
+            sol.info = {"root": "unbounded relaxation"}
+            return sol
         if rr.status != Status.OPTIMAL or rr.x is None:
             root_bound, root_x = -np.inf, np.zeros(n, dtype=VAL)
         else:

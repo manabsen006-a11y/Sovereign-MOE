@@ -280,6 +280,13 @@ python -m bench.fetch --set small     # download MIPLIB instances (--set all: th
 python -m bench.fetch --set mittelmann-lp   # Mittelmann's LP test set, expanded from Netlib's compressed MPS
 python -m bench.fetch --set fctp            # his fixed-charge transportation MILPs
 python -m bench.fetch --set mittelmann-milp # his MILP benchmark's MIPLIB 2017 instances, optima from the pages
+python -m bench.fetch --set netlib-infeasible  # Netlib's 29 infeasible LPs (Chinneck 1993)
+python -m bench.fetch --set kennington      # Netlib's Kennington set, optima from its readme
+python -m bench.fetch --set mittelmann-lp2  # his LP test set's next size class, to 1.5M nonzeros
+python -m bench.fetch --set miplib-draw2    # every easy MIPLIB 2017 instance under 10k nnz not run before (114)
+python -m bench.fetch --set miplib-infeasible  # the easy ones published Infeasible or Unbounded (31)
+python -m bench.fetch --set marmes          # Maros and Meszaros' 138 convex QPs
+python -m bench.fetch --set orlib           # OR-Library warehouse location, with its optima files
 python -m bench.harness --mode lp                  # validate against published values
 python -m bench.harness --mode lp --repeat 3       # the same, medians of three with the spread
 python -m bench.harness --mode lp --method simplex  # force one engine
@@ -289,7 +296,9 @@ python -m bench.netlib                # 89 problems vs published optima
 python -m bench.scale --mode lp       # how far the engines actually go
 python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
-python -m pytest tests/               # 740 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m bench.orlib --set cap       # Beasley's warehouse-location MILPs against capopt.txt
+python -m bench.williams              # seven of Williams' textbook models against the book, every engine
+python -m pytest tests/               # 761 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -421,9 +430,17 @@ checks below all reach for something external.
 | Batched safe bound vs exact simplex | 40 root relaxations, **0 invalid bounds** |
 | **HiGHS on all 45 MIPLIB relaxations** ([campaign](docs/BENCHMARKS.md)) | 45/45 agree, max relative difference **4.4e-14** |
 | HiGHS on Mittelmann's LP set | 6/6 agree where both solve, worst 1.5e-10; HiGHS 8 solved, our interior point 8, the GPU first-order method 9 |
+| HiGHS on Mittelmann's next size class ([campaign 2](docs/BENCHMARKS-2.md)) | 3/3 agree where both solve; HiGHS 5 of 11, ours 6 by one engine or the other; ex10's 1.16M nonzeros in 2 s on the GPU against 159 s |
 | Published MIPLIB 2017 optima, machine-read from the instance pages | 27/45 classical and 4/48 benchmark instances on the value; every proved one matches |
 | QPLIB published values, 29 instances | bound never above the published value, **28/28**; published point verified 28/29 |
 | Williams' textbook refinery LP | £211,365.13 with the book's plan, all three engines, certified |
+| Six more of Williams' models, every applicable engine ([campaign 2](docs/BENCHMARKS-2.md)) | 15/15 solves on the book's value to the penny: food manufacture 1 and 2, factory planning 1, distribution 1, tariff rates, mining |
+| Netlib's Kennington set, optima from its readme | **15/16 certified** by the interior point and 16/16 on the value by the GPU first-order method; HiGHS agrees 15/15 to 1e-10 |
+| Netlib's infeasible LP set (Chinneck 1993) | **29/29 recognised and 29/29 certified infeasible** by the simplex; the ray checked on the original model |
+| OR-Library warehouse location (Beasley), `capopt.txt` / `uncapopt.txt` | **49/49** of the 16-50 warehouse problems proved on the published value; the 100 × 1,000 ones do not start (Known limits) |
+| MIPLIB 2017 published infeasible / unbounded (31) | 11/26 proved infeasible, 4/5 unbounded recognised at the root; the other two "feasible points" were bug 16 |
+| MIPLIB 2017 easy, ≤ 10k nnz, not run before (114) | 20 proved, 32 on the value, 98 verifier-accepted in 120 s |
+| Maros and Meszaros' 138 convex QPs | **121 optimal, 97 certified** (no machine-readable optima exist; the certificate is the check) |
 
 The last two are recent, and they are there because everything above them
 passed while `node_solver="bnr"` was returning wrong answers. Enumerating every
@@ -451,6 +468,16 @@ machine-read from its source, is [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 It found six defects on the way (bugs 9-14 below) and its own Netlib
 table found a seventh (bug 15), all fixed, and its summary table is the
 shortest honest statement of where the solver stands.
+
+**The second campaign**, on sets the first never touched --
+Netlib's infeasible LPs and its Kennington set, Maros and Meszaros' 138
+convex QPs, Mittelmann's next size class, MIPLIB 2017's published
+infeasible and unbounded models and a 114-instance draw of its small
+easy ones, OR-Library's warehouse location sets, and six more of
+Williams' models -- is [`docs/BENCHMARKS-2.md`](docs/BENCHMARKS-2.md).
+It found five more (bugs 16-20), all fixed, and built the simplex's
+infeasibility certificate, which the first campaign's categories had
+never asked for.
 
 ---
 
@@ -1181,6 +1208,95 @@ six now have regression tests.
     before the proof: qap15 on a slower day
     ([`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), section 3a).
 
+16. **The MPS reader gave an integer column with no bound line the
+    bounds [0, +inf), and MIPLIB's convention is [0, 1].** The second
+    campaign ([`docs/BENCHMARKS-2.md`](docs/BENCHMARKS-2.md)) ran the 31
+    easy MIPLIB 2017 instances whose published status is Infeasible or
+    Unbounded, and on two of them -- neos-2626858-aoos and
+    neos-2656603-coxs -- the tree returned incumbents the verifier
+    accepted: exactly integer, every row satisfied to the last bit, on
+    models published as infeasible. The points are real; the model was
+    not. MIPLIB's page counts 209 binaries and 315 integers for aoos, and
+    209 is the 192 columns the file bounds by `UP 1` plus the 17 integer
+    columns that carry no bound line at all: the MPSX convention that
+    CPLEX, SCIP and MIPLIB keep makes an integer column in a `MARKER`
+    block with no bound entry binary, and a bound line of any type on it
+    (`LI`, `LO`, `UP`) leaves the other side at its default -- gen-ip002's
+    41 integers carry `LI 0` lines and are general integers on MIPLIB's
+    page, which pins the rule. The reader now applies it; the counts on
+    both models match MIPLIB's, and both are infeasible. Of the 190
+    MIPLIB instances the two campaigns fetched, nine others have such
+    columns, and each was re-run under the new reading: four changed --
+    the rest of the neos-pseudoapplication-7 family (amur 118 → 15.8,
+    brda 108 → 20.1 against published optima of 3.5 and 4.8; crna's
+    incumbent gone) and neos-3373491-avoca, whose old incumbent of
+    1.03e10 sat *below* the published optimum of 2.74e10, which only a
+    wrong model can do -- and five did not (motu, murg, kasai, and the
+    set-partitioning pair eil33-2 and qap10, whose rows bound those
+    columns to 1 anyway). Every MIPLIB number in
+    [`docs/BENCHMARKS-2.md`](docs/BENCHMARKS-2.md) is from the corrected
+    reading; of the first campaign's tables only the Mittelmann MILP one
+    carries any of the nine -- eil33-2 and qap10 -- and their rows are the
+    same under either reading.
+
+17. **The tree reported `NODE_LIMIT` on an unbounded model.** MIPLIB's
+    five published-unbounded instances: the root relaxation returned
+    `UNBOUNDED` in under a second, the tree carried the node as unsolved,
+    re-solved it cold, dropped it undecided and reported `NODE_LIMIT` at
+    13-73 s -- a status about the search for a fact about the model. An
+    unbounded relaxation makes a MILP with rational data unbounded or
+    infeasible and no branching changes that (Meyer 1974), so the tree now
+    returns `INFEASIBLE_OR_UNBOUNDED` at the root with
+    `info["root"] = "unbounded relaxation"`, in the time the root LP
+    takes.
+
+18. **The interior point returned the zero vector for an
+    equality-constrained QP with free variables.** Nine of Maros and
+    Meszaros' 138 convex QPs -- hs51, genhs28, dpklo1, dtoc3, aug2d, aug2dc,
+    aug3d, aug3dc, and boyd1 in part -- have every row an equality and
+    every column free: no bound anywhere, so no complementarity pair, so
+    nothing for a barrier to do. The method's shortcut for "no
+    complementarity pairs" assumed every variable was *pinned*, returned
+    the bound values -- zero, for a free column -- as OPTIMAL, and `_finish`
+    demoted the point to `NUMERICAL` for violating its rows by the whole
+    right-hand side. The problem is a linear KKT system, which is one
+    Newton step; the shortcut now applies only when no column is free,
+    and the loop takes that step with `mu = 0` and a full step length.
+    Eight of the nine solve in two or three iterations to certified
+    optima (aug2d 1,687,411.75, aug3d 554.068, dtoc3 235.262, in 0.01 to
+    0.25 s); boyd1 still fails, on its own conditioning.
+
+19. **Both optimality certificates were one-sided.** A certified bound
+    holds over every feasible point, so an objective *below* it is not
+    "within tolerance" -- it is a point that is not feasible at the
+    bound's resolution. The verifier and the interior point's
+    self-certificate (bug 15) both tested `gap <= tol` and let any
+    negative gap through. Maros and Meszaros' liswet1 found it: the
+    interior point stops at its iteration limit 3e-7 off its rows, inside
+    the 1e-6 line, with an objective 0.19% *below* its own certified
+    bound, and reported `OPTIMAL`. Both tests are `|gap| <= tol` now, and
+    the verifier says which side a refusal is on. The first campaign's
+    certified sets were re-run under the two-sided test: Netlib's 87 and
+    82 and MIPLIB's 45 are unchanged (the negative gaps at a true optimum
+    are rounding: shell −1.5e-13, sierra −9e-12), and three of
+    Mittelmann's certificates were withdrawn -- PDLP's nug08-3rd, 6.1e-8
+    below its bound, and rail582, 1.7e-9 below, and the interior point's
+    qap15 limit point: feasible to 1e-6, and below a bound no feasible
+    point can beat. Those three are "accepted" now, and
+    [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) says so.
+
+20. **The simplex called a point OPTIMAL that violated the model by
+    1e-4.** `min 1e8·x` subject to `1e6·x >= 1e-4`: the row scales to
+    `x >= 1e-10`, below the scaled feasibility tolerance, and `x = 0` is
+    optimal in the scaled space -- 1e-4 off the row and the whole
+    objective wrong in the model's own units. The interior point and
+    PDLP have rechecked an OPTIMAL point against the unscaled model since
+    bug 2; the simplex checked only its limit statuses. It checks OPTIMAL
+    now and reports `NUMERICAL` with `info["worst_violation"]` when the
+    point fails the verifier's line. Found by the test written for bug
+    19, not by an instance: no simplex OPTIMAL in either campaign was ever
+    refused by the verifier.
+
 ---
 
 ## Known limits
@@ -1586,6 +1702,36 @@ six now have regression tests.
   interior-point iteration on qap15 is 40 s (489 s against 300). The
   MILP set's overruns were 218 s, 333 s and hours before; these are what
   is left.
+- **The tree's root is the dual simplex, and on a 100,000-row relaxation
+  it does not start.** OR-Library's 100 × 1,000 warehouse-location
+  problems in the strong formulation have a 101,100-row root; the tree
+  spent 167-268 s against a 120 s limit inside the first factorisations
+  of that basis and reported nothing, on all fifteen. The interior point
+  certifies the same relaxation in 35 s (18,832,965.5 on capa at capacity
+  8,000, 2.1% under the published MILP optimum), and the crossover that
+  would hand its answer to the children as a basis exists. The tree does
+  not use either yet; that is the next thing to build for it.
+- **PDLP cannot say "infeasible", and the interior point cannot prove
+  it.** On Netlib's 29 infeasible LPs the first-order method returns
+  time and iteration limits with unconverged iterates, and the interior
+  point says `INFEASIBLE_OR_UNBOUNDED` on 27 by a stagnation test that
+  is evidence rather than proof (and was wrong on three feasible Netlib
+  models in the first campaign). The simplex recognises and certifies
+  all 29; route a model whose feasibility is in question to it.
+- **Maros and Meszaros' `liswet` family, boyd1, boyd2 and cont-300 are
+  what the interior point cannot do on the standard QP set.** liswet
+  (10,000 rows, twelve instances) stalls at a primal residual of 3e-7
+  with the point 0.2% below its own bound; boyd1 and boyd2 (93,000
+  variables) fail on conditioning and size; cont-300's 90,000-row KKT
+  does not factorise in 120 s; qfffff80 gets the stagnation verdict the
+  LP fffff800 does not. 121 of 138 optimal and 97 certified is the
+  rest.
+- **The tree has no integer reasoning beyond the LP bound.** MIPLIB's
+  p2m2p1m1p0n100 (one equality row, 100 integers, no integer solution),
+  ej (three variables) and the enlight family are infeasible or hard by
+  a parity or Diophantine argument; the tree enumerates where a presolve
+  that reasons about integers would stop at once, and reaches its limit
+  on all of them.
 - **danoint's node LPs stall, and the fix bounded the cost rather than the
   cause.** Bug 10 keeps a dual-degenerate stall from consuming the limit;
   the stall itself -- 1,184 of 1,185 reduced costs exactly zero at a vertex
@@ -1961,8 +2107,11 @@ src/sovopt/
   presolve.py reductions and the postsolve stack
   mip/        safe bounds, batched node relaxation, propagation, tree, MIQP
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
-  models/     refinery templates, Williams' refinery LP, Haverly pooling
-bench/        fetch, harness, verifier, GPU benchmark, Netlib, QPLIB, scale
-tests/        740 tests including regressions for every bug above
+  models/     refinery templates, Williams' refinery LP, six more of his models
+              (food manufacture, factory planning, distribution, tariff rates,
+              mining), Haverly pooling
+bench/        fetch, harness, verifier (points and infeasibility rays), GPU
+              benchmark, Netlib, QPLIB, OR-Library, Williams, scale
+tests/        761 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```
