@@ -23,7 +23,10 @@ component)::
     minimum    the least that must be used (a must-run stream); blank = 0
     qualities  every other numeric column is a quality -- sulfur, density,
                aromatics, a blending index -- carried into the blend in
-               proportion to the quantity (linear blending)
+               proportion to the quantity (linear blending); the columns
+               the planning and pooling layers add (line, storage_max,
+               storage_cost, opening_stock, closing_stock, direct) are
+               not qualities and are ignored here
 
 ``products.csv`` -- one row per product::
 
@@ -93,7 +96,10 @@ from ._builder import Builder
 __all__ = ["BlendTables", "read_blending_csv", "parse_blending_csv",
            "blending_from_tables", "blend_plan", "plan_to_csv", "plan_text"]
 
-_RESERVED_COMPONENT = {"name", "cost", "available", "minimum"}
+# the planning layer's columns are reserved here too, so a components table
+# written for a horizon reads as a single-period table without them
+_RESERVED_COMPONENT = {"name", "cost", "available", "minimum", "line", "storage_max",
+                       "storage_cost", "opening_stock", "closing_stock", "direct"}
 _RESERVED_PRODUCT = {"name", "price", "demand_min", "demand_max"}
 
 

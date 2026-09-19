@@ -5,6 +5,8 @@
     sovopt solve   model.mps|model.lp        solve; --sensitivity for shadow prices
     sovopt verify  model.mps solution.json   independent feasibility check
     sovopt blend   components.csv products.csv   a plan from a planner's tables
+                   --prices prices.csv           ... over a horizon (purchases, storage, capacities)
+                   --pools pools.csv             ... through pools, to proven global optimality
     sovopt devices                           what hardware this build can use
 
 The problem statement asks for an API or command line, not a GUI, so this is the
@@ -282,37 +284,73 @@ def cmd_verify(a):
 
 
 def cmd_blend(a):
-    """Build the blending model from two CSV tables, solve it, verify the
-    plan against the tables' own model, and print it in the planner's
-    terms (:mod:`sovopt.models.tabular`)."""
-    from .models.tabular import (TableError, blend_plan, plan_text, plan_to_csv,
-                                 read_blending_csv)
+    """Build a model from a planner's tables, solve it, verify the answer
+    against the model built from the tables, and print the plan in the
+    planner's terms. Two tables give the single-period blend
+    (:mod:`sovopt.models.tabular`); ``--prices`` adds a horizon
+    (:mod:`sovopt.models.tabular_planning`); ``--pools`` puts pools between
+    components and products and solves to proven global optimality
+    (:mod:`sovopt.models.tabular_pooling`)."""
+    from .models.tabular import TableError
+    if a.pools and a.prices:
+        print("--pools and --prices cannot be combined: pooled qualities over a horizon "
+              "is not a table-driven model yet")
+        return 2
     try:
-        tables = read_blending_csv(a.components, a.products)
+        if a.pools:
+            from .models.tabular_pooling import (pooling_plan, pooling_text, pooling_to_csv,
+                                                 read_pooling_csv)
+            tables = read_pooling_csv(a.components, a.products, a.pools)
+            kind, plan_fn, text_fn, csv_fn = "pooling", pooling_plan, pooling_text, pooling_to_csv
+        elif a.prices:
+            from .models.tabular_planning import (planning_plan, planning_text, planning_to_csv,
+                                                  read_planning_csv)
+            tables = read_planning_csv(a.components, a.products, a.prices, a.demand, a.capacity)
+            kind, plan_fn, text_fn, csv_fn = "planning", planning_plan, planning_text, planning_to_csv
+        else:
+            from .models.tabular import blend_plan, plan_text, plan_to_csv, read_blending_csv
+            tables = read_blending_csv(a.components, a.products)
+            kind, plan_fn, text_fn, csv_fn = "blending", blend_plan, plan_text, plan_to_csv
     except TableError as e:
         print(f"cannot build the model: {e}")
         return 2
-    prob = tables.problem
-    print(f"model: {len(tables.components)} components, {len(tables.products)} products, "
-          f"{len(tables.qualities)} qualities ({', '.join(tables.qualities)}) -> "
-          f"{prob.m} rows x {prob.n} columns")
+
     t = time.perf_counter()
-    sol = solve(prob, method=a.method, device=a.device, time_limit=a.time_limit,
-                verbose=a.verbose)
+    if kind == "pooling":
+        from .globalopt.spatial import SpatialParams, solve_global
+        bp = tables.problem
+        print(f"model: {len(tables.components)} components, {len(tables.pools)} pools, "
+              f"{len(tables.products)} products -> {bp.linear.m} rows x {bp.n} columns, "
+              f"{len(bp.terms)} bilinear terms; spatial branch-and-bound")
+        sol = solve_global(bp, SpatialParams(time_limit=a.time_limit))
+        prob = bp.linear
+    else:
+        prob = tables.problem
+        what = (f"{len(tables.periods)} periods, " if kind == "planning" else "")
+        print(f"model: {len(tables.components)} components, {len(tables.products)} products, "
+              f"{what}{len(tables.qualities)} qualities ({', '.join(tables.qualities)}) -> "
+              f"{prob.m} rows x {prob.n} columns")
+        sol = solve(prob, method=a.method, device=a.device, time_limit=a.time_limit,
+                    verbose=a.verbose)
     dt = time.perf_counter() - t
-    plan = blend_plan(tables, sol)
+    plan = plan_fn(tables, sol)
     plan["time"] = dt
     plan["method"] = sol.method
-    if sol.x is not None:
-        # the independent check, on the model built from the tables
-        from bench.verify import verify as _verify
+    if sol.x is not None and Status(sol.status).has_solution:
+        # the independent check, on the model built from the tables; for a
+        # pooling plan the bilinear identities are checked as well
         try:
-            v = _verify(prob, sol.x, sol.objective, feas_tol=1e-6, y=sol.y)
+            from bench.verify import verify as _verify
+            v = _verify(prob, sol.x, sol.objective, feas_tol=1e-6,
+                        y=(sol.y if kind != "pooling" else None))
+            ok = v.ok
+            if kind == "pooling":
+                ok = ok and tables.problem.max_violation(sol.x) <= 1e-6
             plan["verified"] = {c[0]: [bool(c[1]), c[2]] for c in v.checks}
-            plan["verifier_verdict"] = "ACCEPTED" if v.ok else "REJECTED"
-        except ImportError:                              # the bench package is not installed
+            plan["verifier_verdict"] = "ACCEPTED" if ok else "REJECTED"
+        except ImportError:
             plan["verifier_verdict"] = "not run (bench package not importable)"
-    print(plan_text(plan))
+    print(text_fn(plan))
     print()
     print(f"engine {sol.method}, {dt:.3f} s" + (f"; independent check: {plan['verifier_verdict']}"
                                                 if "verifier_verdict" in plan else ""))
@@ -322,8 +360,8 @@ def cmd_blend(a):
         print(f"report written to {a.out}")
     if a.plan:
         with open(a.plan, "w", encoding="utf-8", newline="") as fh:
-            fh.write(plan_to_csv(plan))
-        print(f"recipe written to {a.plan}")
+            fh.write(csv_fn(plan))
+        print(f"plan written to {a.plan}")
     return 0 if sol.status == Status.OPTIMAL else 1
 
 
@@ -471,11 +509,17 @@ def main(argv=None):
     p = sub.add_parser("blend", help="a blending plan from components.csv and products.csv")
     p.add_argument("components", help="one row per component: name, cost, available, minimum, qualities...")
     p.add_argument("products", help="one row per product: name, price, demand_min, demand_max, <quality>_min/_max...")
+    p.add_argument("--prices", help="prices.csv: one row per period, a column per component -- "
+                                    "makes it a multi-period plan with storage")
+    p.add_argument("--demand", help="demand.csv: period, product, price, demand_min, demand_max (optional)")
+    p.add_argument("--capacity", help="capacity.csv: line, capacity, period (optional)")
+    p.add_argument("--pools", help="pools.csv: name, capacity, inputs -- pooled qualities, solved "
+                                   "to proven global optimality")
     p.add_argument("--method", choices=["auto", "simplex", "ipm", "pdlp"], default="auto")
     p.add_argument("--device", choices=["auto", "cpu", "gpu"], default="auto")
     p.add_argument("--time-limit", type=float, default=300.0)
     p.add_argument("--out", help="write the full report as JSON")
-    p.add_argument("--plan", help="write the recipe as CSV (product, component, quantity, fraction)")
+    p.add_argument("--plan", help="write the plan as CSV (the recipe, the period table, or the flows)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(fn=cmd_blend)
 

@@ -1,0 +1,4 @@
+name,cost,available,direct,sulfur
+A,6,600,,3
+B,16,600,,1
+C,10,600,*,2

@@ -122,6 +122,22 @@ pre{margin:0;white-space:pre-wrap;color:var(--dim);font-size:12px}
     then a column per quality. One row per product: name, price, demand_min,
     demand_max, then &lt;quality&gt;_min / &lt;quality&gt;_max. Excel's "save as
     CSV". See examples/blending.</div>
+    <label style="margin-top:10px">prices.csv &mdash; optional: a horizon</label>
+    <input id="pricefile" type="file" accept=".csv,.txt">
+    <label style="margin-top:6px">demand.csv &mdash; optional, with prices</label>
+    <input id="demandfile" type="file" accept=".csv,.txt">
+    <label style="margin-top:6px">capacity.csv &mdash; optional, with prices</label>
+    <input id="capfile" type="file" accept=".csv,.txt">
+    <div class="muted">A prices table (one row per period, a column per
+    component) makes it a multi-period plan with purchases and storage; add
+    line, storage_max, storage_cost, opening_stock, closing_stock to the
+    components. See examples/planning.</div>
+    <label style="margin-top:10px">pools.csv &mdash; optional: pooled qualities</label>
+    <input id="poolfile" type="file" accept=".csv,.txt">
+    <div class="muted">Pools (name, capacity, inputs) between components and
+    products; a "direct" column on the components names the products they may
+    ship to without a pool. Solved to proven global optimality. See
+    examples/pooling.</div>
   </div>
 
   <div class="row">
@@ -165,6 +181,8 @@ function fmt(v,d){return v==null?'-':(typeof v==='number'?v.toLocaleString(undef
 function planCards(pl){
   if(!pl) return '';
   if(pl.objective==null) return '<div class="card"><h2 class="bad">no plan</h2><div>'+esc(pl.message||pl.status)+'</div></div>';
+  if(pl.periods) return planningCards(pl);
+  if(pl.pools) return poolingCards(pl);
   let h='<div class="card"><h2>plan &mdash; margin '+fmt(pl.objective,2)+'</h2>'
    +'<div class="muted">revenue '+fmt(pl.revenue,2)+' &minus; component cost '+fmt(pl.cost,2)
    +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>':'')+'</div>';
@@ -183,6 +201,44 @@ function planCards(pl){
   if(b.length){h+='<h2 style="margin-top:12px">binding specifications</h2><table><tr><th>specification</th><th>margin per unit relaxed</th></tr>';
     for(const x of b) h+='<tr><td>'+esc(x.row)+'</td><td>'+fmt(x.per_unit_of_quality,2)+'</td></tr>'; h+='</table>';}
   return h+'</div>';
+}
+
+function qualityCell(qs){
+  return Object.entries(qs).map(([q,v])=>q+' '+fmt(v.value)+(v.min!=null||v.max!=null?' ['+fmt(v.min)+' .. '+fmt(v.max)+']':'')+(v.binding?' <b>*'+v.binding+'</b>':'')).join('<br>');
+}
+
+function planningCards(pl){
+  const t=pl.totals;
+  let h='<div class="card"><h2>plan over the horizon &mdash; margin '+fmt(pl.objective,2)+'</h2>'
+   +'<div class="muted">revenue '+fmt(t.revenue,2)+' &minus; purchases '+fmt(t.purchases,2)+' &minus; storage '+fmt(t.storage,2)
+   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>':'')+'</div>';
+  for(const per of pl.periods){
+    h+='<h2 style="margin-top:12px">'+esc(per.period)+'</h2><table><tr><th>component</th><th>buy</th><th>@ price</th><th>use</th><th>store</th></tr>';
+    for(const c of per.components) h+='<tr><td>'+esc(c.name)+'</td><td>'+fmt(c.buy)+'</td><td>'+fmt(c.price)+'</td><td>'+fmt(c.use)+'</td><td>'+fmt(c.store)+'</td></tr>';
+    h+='</table><table style="margin-top:6px"><tr><th>product</th><th>make</th><th>revenue</th><th>qualities (value, spec)</th></tr>';
+    for(const p of per.products) h+='<tr><td>'+esc(p.name)+'</td><td>'+fmt(p.volume)+'</td><td>'+fmt(p.revenue,2)+'</td><td>'+qualityCell(p.qualities)+'</td></tr>';
+    h+='</table>';}
+  const b=pl.capacity.filter(c=>c.at_limit);
+  if(b.length){h+='<h2 style="margin-top:12px">capacities at their limit</h2><table><tr><th>line</th><th>period</th><th>used / capacity</th><th>shadow price</th></tr>';
+    for(const c of b) h+='<tr><td>'+esc(c.line)+'</td><td>'+esc(c.period)+'</td><td>'+fmt(c.used)+' / '+fmt(c.capacity)+'</td><td>'+fmt(c.shadow_price)+'</td></tr>'; h+='</table>';}
+  return h+'</div>';
+}
+
+function poolingCards(pl){
+  let h='<div class="card"><h2>pooling plan &mdash; margin '+fmt(pl.objective,2)+(pl.proved_global?' (proved globally optimal)':'')+'</h2>'
+   +'<div class="muted">revenue '+fmt(pl.revenue,2)+' &minus; component cost '+fmt(pl.cost,2)
+   +(pl.dual_bound!=null?' &middot; bound '+fmt(pl.dual_bound,2)+', '+pl.nodes+' nodes':'')
+   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>':'')+'</div>';
+  h+='<h2 style="margin-top:12px">pools</h2><table><tr><th>pool</th><th>throughput / capacity</th><th>composition</th><th>qualities</th></tr>';
+  for(const p of pl.pools){
+    const comp=Object.entries(p.composition).map(([c,s])=>c+' '+(100*s).toFixed(1)+'%').join(', ')||'idle';
+    const qs=Object.entries(p.qualities).map(([q,v])=>q+' '+fmt(v)).join('; ');
+    h+='<tr><td>'+esc(p.name)+'</td><td>'+fmt(p.throughput)+' / '+fmt(p.capacity)+(p.at_capacity?' <b>at capacity</b>':'')+'</td><td>'+esc(comp)+'</td><td>'+esc(qs)+'</td></tr>';}
+  h+='</table><h2 style="margin-top:12px">products</h2><table><tr><th>product</th><th>volume</th><th>revenue</th><th>qualities (value, spec)</th></tr>';
+  for(const p of pl.products) h+='<tr><td>'+esc(p.name)+'</td><td>'+fmt(p.volume)+'</td><td>'+fmt(p.revenue,2)+'</td><td>'+qualityCell(p.qualities)+'</td></tr>';
+  h+='</table><h2 style="margin-top:12px">flows</h2><table><tr><th>from</th><th>to</th><th>quantity</th></tr>';
+  for(const f of pl.flows) h+='<tr><td>'+esc(f.from)+'</td><td>'+esc(f.to)+'</td><td>'+fmt(f.quantity)+'</td></tr>';
+  return h+'</table></div>';
 }
 fetch('/api/hw').then(r=>r.json()).then(h=>{
   $('hw').textContent=h.gpu? ('GPU: '+h.name+'  |  CPU threads: '+h.threads)
@@ -235,7 +291,9 @@ $('go').onclick=async()=>{
       if(!f) throw new Error('choose a model file first'); body.filename=f.name; body.data_b64=f.data;}
     if(body.source==='blend'){body.components_csv=await readText($('compfile'));
       body.products_csv=await readText($('prodfile'));
-      if(!body.components_csv||!body.products_csv) throw new Error('choose both CSV files first');}
+      if(!body.components_csv||!body.products_csv) throw new Error('choose both CSV files first');
+      body.prices_csv=await readText($('pricefile')); body.demand_csv=await readText($('demandfile'));
+      body.capacity_csv=await readText($('capfile')); body.pools_csv=await readText($('poolfile'));}
     d=await (await fetch('/api/solve',{method:'POST',
         headers:{'content-type':'application/json'},body:JSON.stringify(body)})).json(); }
   catch(e){ d={error:String(e)}; }
@@ -319,13 +377,28 @@ def _build(body):
         return read_model(path, name=name)
 
     if body.get("source") == "blend":
-        from sovopt.models.tabular import parse_blending_csv
         comps = body.get("components_csv") or ""
         prods = body.get("products_csv") or ""
         if not comps.strip() or not prods.strip():
             raise ValueError("both components.csv and products.csv are needed")
-        tables = parse_blending_csv(comps, prods)
-        prob = tables.problem
+        pools = body.get("pools_csv") or ""
+        prices = body.get("prices_csv") or ""
+        if pools.strip() and prices.strip():
+            raise ValueError("pools and prices cannot be combined: pooled qualities over a "
+                             "horizon is not a table-driven model yet")
+        if pools.strip():
+            from sovopt.models.tabular_pooling import parse_pooling_csv
+            tables = parse_pooling_csv(comps, prods, pools)
+            prob = tables.problem.linear          # the LP part; the bilinear model is on tables
+        elif prices.strip():
+            from sovopt.models.tabular_planning import parse_planning_csv
+            tables = parse_planning_csv(comps, prods, prices, body.get("demand_csv") or None,
+                                        body.get("capacity_csv") or None)
+            prob = tables.problem
+        else:
+            from sovopt.models.tabular import parse_blending_csv
+            tables = parse_blending_csv(comps, prods)
+            prob = tables.problem
         prob.tables = tables                         # for the plan afterwards
         return prob
 
@@ -375,6 +448,26 @@ async def api_solve(request: Request):
         tl = float(body.get("time_limit", 30))
         results = []
         last_sol = None
+        tables = getattr(prob, "tables", None)
+        if tables is not None and hasattr(tables, "pools"):
+            # pooled qualities: one run, the spatial branch-and-bound on the
+            # CPU, the bilinear identities checked with the rows
+            from sovopt.globalopt.spatial import SpatialParams, solve_global
+            t = time.perf_counter()
+            sol = solve_global(tables.problem, SpatialParams(time_limit=tl))
+            dt = time.perf_counter() - t
+            rv, bv, iv = (prob.violation(sol.x) if sol.x is not None else (float("nan"),) * 3)
+            bil = tables.problem.max_violation(sol.x) if sol.x is not None else float("nan")
+            results.append({
+                "device": "cpu", "status": sol.status.name,
+                "objective": float(sol.objective) if np.isfinite(sol.objective) else None,
+                "dual_bound": float(sol.dual_bound) if np.isfinite(sol.dual_bound) else None,
+                "nodes": int(sol.nodes), "iterations": int(sol.iterations), "time": dt,
+                "method": "spatial branch-and-bound (pq-formulation)",
+                "viol_row": float(max(rv, bil) if np.isfinite(bil) else rv),
+                "viol_bound": float(bv), "viol_int": float(iv), "history": [],
+            })
+            devices, last_sol = [], sol
         for dev in devices:
             # A small LP routes to the simplex whatever the device, so a
             # "GPU" run of it is the CPU simplex a second time -- and the
@@ -415,18 +508,25 @@ async def api_solve(request: Request):
             agree = abs(a - b) / max(1.0, abs(a))
 
         plan = None
-        tables = getattr(prob, "tables", None)
         if tables is not None and last_sol is not None:
             # the plan in the planner's terms, from the first device's solve,
             # with the independent check on the model built from the tables
-            from sovopt.models.tabular import blend_plan
-            plan = blend_plan(tables, last_sol)
-            if last_sol.x is not None:
+            if hasattr(tables, "pools"):
+                from sovopt.models.tabular_pooling import pooling_plan as plan_fn
+            elif hasattr(tables, "periods"):
+                from sovopt.models.tabular_planning import planning_plan as plan_fn
+            else:
+                from sovopt.models.tabular import blend_plan as plan_fn
+            plan = plan_fn(tables, last_sol)
+            if last_sol.x is not None and Status(last_sol.status).has_solution:
                 try:
                     from bench.verify import verify as _verify
                     v = _verify(prob, last_sol.x, last_sol.objective, feas_tol=1e-6,
-                                y=last_sol.y)
-                    plan["verifier_verdict"] = "ACCEPTED" if v.ok else "REJECTED"
+                                y=(None if hasattr(tables, "pools") else last_sol.y))
+                    ok = v.ok
+                    if hasattr(tables, "pools"):
+                        ok = ok and tables.problem.max_violation(last_sol.x) <= 1e-6
+                    plan["verifier_verdict"] = "ACCEPTED" if ok else "REJECTED"
                 except ImportError:
                     pass
 

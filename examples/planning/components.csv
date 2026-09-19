@@ -1,0 +1,6 @@
+name,cost,available,minimum,line,storage_max,storage_cost,opening_stock,closing_stock,hardness
+VEG1,,,,VEG,1000,5,500,500,8.8
+VEG2,,,,VEG,1000,5,500,500,6.1
+OIL1,,,,NONVEG,1000,5,500,500,2.0
+OIL2,,,,NONVEG,1000,5,500,500,4.2
+OIL3,,,,NONVEG,1000,5,500,500,5.0
