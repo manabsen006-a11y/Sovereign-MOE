@@ -1,0 +1,7 @@
+name,cost,available,minimum,sulfur,density,aromatics
+LightNaphtha,540,1200,,0.02,0.680,8
+HeavyNaphtha,520,900,,0.05,0.740,18
+Reformate,610,1500,200,0.01,0.790,58
+FCCGasoline,560,2200,,0.35,0.750,30
+Alkylate,700,600,,0.01,0.700,0
+Isomerate,590,500,,0.01,0.660,1

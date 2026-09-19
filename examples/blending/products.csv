@@ -1,0 +1,4 @@
+name,price,demand_min,demand_max,sulfur_max,density_min,density_max,aromatics_max
+Premium,760,800,2500,0.05,0.720,0.775,35
+Regular,690,1500,4000,0.10,0.720,0.775,42
+Export,640,0,,0.15,0.700,0.790,45

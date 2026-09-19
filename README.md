@@ -264,12 +264,43 @@ python -m sovopt.cli info   model.lp              # stats + numerical health
 python -m sovopt.cli solve  model.mps --device gpu --out sol.json
 python -m sovopt.cli solve  model.mps --sensitivity     # shadow prices + ranging
 python -m sovopt.cli verify model.mps sol.json    # independent check: feasibility, and optimality from the duals
+python -m sovopt.cli blend  components.csv products.csv --plan plan.csv   # a blending plan from a planner's tables
 python -m ui.server                              # http://127.0.0.1:8000
 ```
 
 Models are read from MPS or CPLEX LP, plain or `.gz`/`.bz2`/`.xz`; the reader is
 chosen by extension. A `QUADOBJ` section is parsed and, if the Hessian is
 positive semi-definite, solved as a convex QP.
+
+**Your own data.** Three ways in, all local:
+
+- **A model file.** `sovopt solve model.mps` on the command line, or the
+  page's *upload a model file* (MPS, LP or QPS, compressed or not; the
+  file goes to the local server only). The page shows the status, the
+  objective, the engine, an independent feasibility check on the original
+  data and the convergence history.
+- **Two tables, no model.** A planner with a crude slate or a set of blend
+  stocks in a spreadsheet saves two sheets as CSV -- `components.csv`
+  (name, cost, available, minimum, then a column per quality) and
+  `products.csv` (name, price, demand_min, demand_max, then
+  `<quality>_min` / `<quality>_max` specifications) -- and
+  `sovopt blend components.csv products.csv` or the page's *blend from
+  CSV tables* builds the blending LP, solves it, verifies the plan against
+  the model built from the tables, and reports it in the planner's terms:
+  what to make, from what, at what quality against each specification,
+  which components are at their limit and what one more unit of each is
+  worth, and what relaxing each binding specification by one unit of
+  quality would gain. `--plan` writes the recipe as CSV, `--out` the whole
+  report as JSON. [`examples/blending`](examples/blending) is a worked
+  six-component, three-product gasoline blend; the schema and the model
+  are in [`models/tabular.py`](src/sovopt/models/tabular.py). Qualities
+  blend linearly (sulfur, density, aromatics, or the blending indices
+  refinery LPs use for octane and vapour pressure); a quality that has to
+  pass through a shared pool is the pooling model's business, not this
+  table's.
+- **From Python.** `read_model(path)` or `parse_blending_csv(...)`, then
+  `sovopt.cli.solve(prob, ...)`; the model builders in `sovopt.models` are
+  worked examples of building a `Problem` from data.
 
 Presenting this? [`docs/DEMO.md`](docs/DEMO.md) is the runbook -- and run
 `warmup` first. Numba compiles each kernel on its first call and caches the
@@ -299,7 +330,7 @@ python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
 python -m bench.orlib --set cap       # Beasley's warehouse-location MILPs against capopt.txt
 python -m bench.williams              # seven of Williams' textbook models against the book, every engine
-python -m pytest tests/               # 761 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 781 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -2110,9 +2141,12 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates, Williams' refinery LP, six more of his models
               (food manufacture, factory planning, distribution, tariff rates,
-              mining), Haverly pooling
+              mining), Haverly pooling, blending from a planner's CSV tables
+              (tabular.py: components + products in, a named plan out)
+examples/     blending/: a six-component, three-product gasoline blend as the
+              two CSV tables `sovopt blend` and the page take
 bench/        fetch, harness, verifier (points and infeasibility rays), GPU
               benchmark, Netlib, QPLIB, OR-Library, Williams, scale
-tests/        761 tests including regressions for every bug above
+tests/        781 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

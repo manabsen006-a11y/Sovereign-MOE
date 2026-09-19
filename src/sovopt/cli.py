@@ -4,6 +4,7 @@
     sovopt info    model.mps|model.lp        model statistics and a numerical health check
     sovopt solve   model.mps|model.lp        solve; --sensitivity for shadow prices
     sovopt verify  model.mps solution.json   independent feasibility check
+    sovopt blend   components.csv products.csv   a plan from a planner's tables
     sovopt devices                           what hardware this build can use
 
 The problem statement asks for an API or command line, not a GUI, so this is the
@@ -280,6 +281,52 @@ def cmd_verify(a):
     return vmain([a.model, a.solution])
 
 
+def cmd_blend(a):
+    """Build the blending model from two CSV tables, solve it, verify the
+    plan against the tables' own model, and print it in the planner's
+    terms (:mod:`sovopt.models.tabular`)."""
+    from .models.tabular import (TableError, blend_plan, plan_text, plan_to_csv,
+                                 read_blending_csv)
+    try:
+        tables = read_blending_csv(a.components, a.products)
+    except TableError as e:
+        print(f"cannot build the model: {e}")
+        return 2
+    prob = tables.problem
+    print(f"model: {len(tables.components)} components, {len(tables.products)} products, "
+          f"{len(tables.qualities)} qualities ({', '.join(tables.qualities)}) -> "
+          f"{prob.m} rows x {prob.n} columns")
+    t = time.perf_counter()
+    sol = solve(prob, method=a.method, device=a.device, time_limit=a.time_limit,
+                verbose=a.verbose)
+    dt = time.perf_counter() - t
+    plan = blend_plan(tables, sol)
+    plan["time"] = dt
+    plan["method"] = sol.method
+    if sol.x is not None:
+        # the independent check, on the model built from the tables
+        from bench.verify import verify as _verify
+        try:
+            v = _verify(prob, sol.x, sol.objective, feas_tol=1e-6, y=sol.y)
+            plan["verified"] = {c[0]: [bool(c[1]), c[2]] for c in v.checks}
+            plan["verifier_verdict"] = "ACCEPTED" if v.ok else "REJECTED"
+        except ImportError:                              # the bench package is not installed
+            plan["verifier_verdict"] = "not run (bench package not importable)"
+    print(plan_text(plan))
+    print()
+    print(f"engine {sol.method}, {dt:.3f} s" + (f"; independent check: {plan['verifier_verdict']}"
+                                                if "verifier_verdict" in plan else ""))
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as fh:
+            json.dump(plan, fh, indent=2)
+        print(f"report written to {a.out}")
+    if a.plan:
+        with open(a.plan, "w", encoding="utf-8", newline="") as fh:
+            fh.write(plan_to_csv(plan))
+        print(f"recipe written to {a.plan}")
+    return 0 if sol.status == Status.OPTIMAL else 1
+
+
 def cmd_demo(a):
     from .demo import run
     return run(size=a.size)
@@ -420,6 +467,17 @@ def main(argv=None):
     p.add_argument("model")
     p.add_argument("solution")
     p.set_defaults(fn=cmd_verify)
+
+    p = sub.add_parser("blend", help="a blending plan from components.csv and products.csv")
+    p.add_argument("components", help="one row per component: name, cost, available, minimum, qualities...")
+    p.add_argument("products", help="one row per product: name, price, demand_min, demand_max, <quality>_min/_max...")
+    p.add_argument("--method", choices=["auto", "simplex", "ipm", "pdlp"], default="auto")
+    p.add_argument("--device", choices=["auto", "cpu", "gpu"], default="auto")
+    p.add_argument("--time-limit", type=float, default=300.0)
+    p.add_argument("--out", help="write the full report as JSON")
+    p.add_argument("--plan", help="write the recipe as CSV (product, component, quantity, fraction)")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.set_defaults(fn=cmd_blend)
 
     p = sub.add_parser("demo", help="end-to-end LP showcase")
     p.add_argument("--size", type=int, default=14,

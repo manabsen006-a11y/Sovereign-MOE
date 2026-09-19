@@ -117,3 +117,95 @@ def test_a_gpu_request_without_a_gpu_falls_back_to_the_cpu(client):
     body = r.json()
     assert "error" not in body, body.get("error")
     assert [x["device"] for x in body["results"]] == ["cpu"]
+
+
+# --------------------------------------------------------------------------- #
+# the user's own data: a model file, or the planner's two tables              #
+# --------------------------------------------------------------------------- #
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EXAMPLES = os.path.join(ROOT, "examples", "blending")
+
+TINY_MPS = """NAME          TINY
+ROWS
+ N  COST
+ L  R1
+ G  R2
+COLUMNS
+    X         COST         1.0   R1           1.0
+    X         R2           1.0
+    Y         COST         2.0   R1           1.0
+    Y         R2           3.0
+RHS
+    RHS       R1           4.0   R2           3.0
+ENDATA
+"""
+
+
+def _b64(data: bytes) -> str:
+    import base64
+    return base64.b64encode(data).decode("ascii")
+
+
+def test_an_uploaded_model_file_is_read_by_its_suffix(client):
+    """The page sends the file's bytes and its name; the suffix picks the
+    reader, and a compression suffix is looked through as on the command
+    line. min x + 2y with x + y <= 4, x + 3y >= 3: y = 1, cost 2."""
+    r = client.post("/api/solve", json={"source": "file", "filename": "tiny.mps",
+                                        "data_b64": _b64(TINY_MPS.encode()),
+                                        "device": "cpu", "time_limit": 30})
+    body = r.json()
+    assert "error" not in body, body.get("error")
+    (res,) = body["results"]
+    assert res["status"] == "OPTIMAL" and abs(res["objective"] - 2.0) < 1e-9
+
+
+def test_an_uploaded_gzipped_model_is_decompressed(client):
+    import gzip
+    r = client.post("/api/solve", json={"source": "file", "filename": "tiny.mps.gz",
+                                        "data_b64": _b64(gzip.compress(TINY_MPS.encode())),
+                                        "device": "cpu", "time_limit": 30})
+    body = r.json()
+    assert "error" not in body, body.get("error")
+    assert abs(body["results"][0]["objective"] - 2.0) < 1e-9
+
+
+def test_an_upload_with_an_unknown_suffix_is_refused_with_a_reason(client):
+    r = client.post("/api/solve", json={"source": "file", "filename": "model.xlsx",
+                                        "data_b64": _b64(b"PK..."), "device": "cpu"})
+    body = r.json()
+    assert "error" in body and "not a .mps, .lp or .qps" in body["error"]
+
+
+def test_the_two_csv_tables_give_a_plan_in_the_planners_terms(client):
+    """examples/blending through the page: the plan names products,
+    components, recipe rows and shadow prices, and the independent check
+    on the model built from the tables accepts it."""
+    comps = open(os.path.join(EXAMPLES, "components.csv"), encoding="utf-8").read()
+    prods = open(os.path.join(EXAMPLES, "products.csv"), encoding="utf-8").read()
+    r = client.post("/api/solve", json={"source": "blend", "components_csv": comps,
+                                        "products_csv": prods, "device": "cpu",
+                                        "time_limit": 30})
+    body = r.json()
+    assert "error" not in body, body.get("error")
+    assert body["results"][0]["status"] == "OPTIMAL"
+    plan = body["plan"]
+    assert plan["status"] == "OPTIMAL"
+    assert abs(plan["objective"] - 802000.0) < 1e-6 * 802000.0
+    assert plan["verifier_verdict"] == "ACCEPTED"
+    assert {p["name"] for p in plan["products"]} == {"Premium", "Regular", "Export"}
+    assert {c["name"] for c in plan["components"]} == {
+        "LightNaphtha", "HeavyNaphtha", "Reformate", "FCCGasoline", "Alkylate", "Isomerate"}
+    assert any(r["product"] == "Premium" and r["component"] == "Alkylate" for r in plan["recipe"])
+    light = next(c for c in plan["components"] if c["name"] == "LightNaphtha")
+    assert light["at_limit"] and abs(light["shadow_price"] - 191.6) < 1e-6
+    assert any(s["binding"] for s in plan["specs"])
+
+
+def test_a_table_the_model_cannot_be_built_from_says_why(client):
+    r = client.post("/api/solve", json={"source": "blend",
+                                        "components_csv": "name,cost,sulfur\nA,1,0.1\n",
+                                        "products_csv": "name,price,octane_min\nP,2,90\n",
+                                        "device": "cpu"})
+    body = r.json()
+    assert "error" in body and "no component has a 'octane' column" in body["error"]

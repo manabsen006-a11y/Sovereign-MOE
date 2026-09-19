@@ -83,7 +83,9 @@ pre{margin:0;white-space:pre-wrap;color:var(--dim);font-size:12px}
   <div><label>model source</label>
     <select id="src">
       <option value="template">built-in refinery template</option>
-      <option value="mps">paste MPS</option>
+      <option value="file">upload a model file (MPS / LP / QPS, .gz or .bz2)</option>
+      <option value="blend">blend from CSV tables (components + products)</option>
+      <option value="mps">paste MPS / LP text</option>
     </select></div>
 
   <div id="tmplBox">
@@ -101,6 +103,25 @@ pre{margin:0;white-space:pre-wrap;color:var(--dim);font-size:12px}
 
   <div id="mpsBox" style="display:none">
     <label>MPS text</label><textarea id="mps" placeholder="NAME  ..."></textarea>
+  </div>
+
+  <div id="fileBox" style="display:none">
+    <label>model file</label>
+    <input id="modelfile" type="file" accept=".mps,.lp,.qps,.gz,.bz2,.xz">
+    <div class="muted">Read by the same reader as the command line: free or
+    fixed-column MPS with QUADOBJ, CPLEX LP, compressed or not. The file is
+    sent to the local server only.</div>
+  </div>
+
+  <div id="blendBox" style="display:none">
+    <label>components.csv</label>
+    <input id="compfile" type="file" accept=".csv,.txt">
+    <label style="margin-top:8px">products.csv</label>
+    <input id="prodfile" type="file" accept=".csv,.txt">
+    <div class="muted">One row per component: name, cost, available, minimum,
+    then a column per quality. One row per product: name, price, demand_min,
+    demand_max, then &lt;quality&gt;_min / &lt;quality&gt;_max. Excel's "save as
+    CSV". See examples/blending.</div>
   </div>
 
   <div class="row">
@@ -123,8 +144,46 @@ pre{margin:0;white-space:pre-wrap;color:var(--dim);font-size:12px}
 </main>
 <script>
 const $=id=>document.getElementById(id);
-$('src').onchange=()=>{const t=$('src').value==='template';
-  $('tmplBox').style.display=t?'':'none';$('mpsBox').style.display=t?'none':'';};
+$('src').onchange=()=>{const v=$('src').value;
+  $('tmplBox').style.display=v==='template'?'':'none';
+  $('mpsBox').style.display=v==='mps'?'':'none';
+  $('fileBox').style.display=v==='file'?'':'none';
+  $('blendBox').style.display=v==='blend'?'':'none';};
+
+function readText(input){
+  return new Promise((res,rej)=>{const f=input.files&&input.files[0];
+    if(!f){res(null);return;} const r=new FileReader();
+    r.onload=()=>res(r.result); r.onerror=()=>rej(r.error); r.readAsText(f);});}
+function readBase64(input){
+  return new Promise((res,rej)=>{const f=input.files&&input.files[0];
+    if(!f){res(null);return;} const r=new FileReader();
+    r.onload=()=>res({name:f.name,data:r.result.split(',')[1]}); r.onerror=()=>rej(r.error);
+    r.readAsDataURL(f);});}
+
+function fmt(v,d){return v==null?'-':(typeof v==='number'?v.toLocaleString(undefined,{maximumFractionDigits:d==null?4:d}):esc(v));}
+
+function planCards(pl){
+  if(!pl) return '';
+  if(pl.objective==null) return '<div class="card"><h2 class="bad">no plan</h2><div>'+esc(pl.message||pl.status)+'</div></div>';
+  let h='<div class="card"><h2>plan &mdash; margin '+fmt(pl.objective,2)+'</h2>'
+   +'<div class="muted">revenue '+fmt(pl.revenue,2)+' &minus; component cost '+fmt(pl.cost,2)
+   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>':'')+'</div>';
+  h+='<h2 style="margin-top:12px">products</h2><table><tr><th>product</th><th>volume</th><th>revenue</th><th>qualities (value, spec)</th></tr>';
+  for(const p of pl.products){
+    const qs=Object.entries(p.qualities).map(([q,v])=>q+' '+fmt(v.value)+(v.min!=null||v.max!=null?' ['+fmt(v.min)+' .. '+fmt(v.max)+']':'')+(v.binding?' <b>*'+v.binding+'</b>':'')).join('<br>');
+    h+='<tr><td>'+esc(p.name)+'</td><td>'+fmt(p.volume)+'</td><td>'+fmt(p.revenue,2)+'</td><td>'+qs+'</td></tr>';}
+  h+='</table><h2 style="margin-top:12px">components</h2><table><tr><th>component</th><th>used</th><th>available</th><th>cost</th><th>shadow price</th></tr>';
+  for(const c of pl.components){
+    h+='<tr><td>'+esc(c.name)+'</td><td>'+fmt(c.used)+(c.at_limit?' <b>at limit</b>':'')+'</td><td>'+fmt(c.available)+'</td><td>'+fmt(c.cost)+'</td><td>'+fmt(c.shadow_price)+'</td></tr>';}
+  h+='</table><h2 style="margin-top:12px">recipe</h2><table><tr><th>product</th><th>component</th><th>quantity</th><th>fraction</th></tr>';
+  for(const r of pl.recipe){
+    h+='<tr><td>'+esc(r.product)+'</td><td>'+esc(r.component)+'</td><td>'+fmt(r.quantity)+'</td><td>'+(r.fraction==null?'-':(100*r.fraction).toFixed(1)+'%')+'</td></tr>';}
+  h+='</table>';
+  const b=pl.specs.filter(x=>x.binding);
+  if(b.length){h+='<h2 style="margin-top:12px">binding specifications</h2><table><tr><th>specification</th><th>margin per unit relaxed</th></tr>';
+    for(const x of b) h+='<tr><td>'+esc(x.row)+'</td><td>'+fmt(x.per_unit_of_quality,2)+'</td></tr>'; h+='</table>';}
+  return h+'</div>';
+}
 fetch('/api/hw').then(r=>r.json()).then(h=>{
   $('hw').textContent=h.gpu? ('GPU: '+h.name+'  |  CPU threads: '+h.threads)
                            : ('CPU only ('+h.threads+' threads)');});
@@ -171,7 +230,13 @@ $('go').onclick=async()=>{
     size:+$('size').value,seed:+$('seed').value,mps:$('mps').value,
     device:$('dev').value,time_limit:+$('tl').value};
   let d;
-  try{ d=await (await fetch('/api/solve',{method:'POST',
+  try{
+    if(body.source==='file'){const f=await readBase64($('modelfile'));
+      if(!f) throw new Error('choose a model file first'); body.filename=f.name; body.data_b64=f.data;}
+    if(body.source==='blend'){body.components_csv=await readText($('compfile'));
+      body.products_csv=await readText($('prodfile'));
+      if(!body.components_csv||!body.products_csv) throw new Error('choose both CSV files first');}
+    d=await (await fetch('/api/solve',{method:'POST',
         headers:{'content-type':'application/json'},body:JSON.stringify(body)})).json(); }
   catch(e){ d={error:String(e)}; }
   $('go').disabled=false;$('go').textContent='SOLVE';
@@ -184,6 +249,7 @@ $('go').onclick=async()=>{
     +'</table></div>';
 
   for(const r of d.results) html+=resultCard(r);
+  if(d.plan) html+=planCards(d.plan);
 
   if(d.results.length===2){
     const a=d.results[0],b=d.results[1];
@@ -226,7 +292,43 @@ def hw():
     return out
 
 
+_UPLOAD_SUFFIXES = (".mps", ".lp", ".qps", ".mps.gz", ".lp.gz", ".qps.gz",
+                    ".mps.bz2", ".lp.bz2", ".qps.bz2", ".mps.xz", ".lp.xz", ".gz", ".bz2")
+
+
 def _build(body):
+    if body.get("source") == "file":
+        # The browser sends the file's bytes as base64 with its name; the
+        # name's suffix picks the reader, and a compression suffix is looked
+        # through, exactly as the command line does. Written beside the page
+        # as _upload.<suffix> (gitignored), never anywhere else.
+        import base64
+        name = os.path.basename(str(body.get("filename", "")))
+        data = body.get("data_b64")
+        if not name or not data:
+            raise ValueError("no model file supplied")
+        low = name.lower()
+        suffix = next((sfx for sfx in _UPLOAD_SUFFIXES if low.endswith(sfx)), None)
+        if suffix is None:
+            raise ValueError(f"{name}: not a .mps, .lp or .qps file (optionally .gz/.bz2/.xz)")
+        if suffix in (".gz", ".bz2"):
+            suffix = ".mps" + suffix                 # a bare .gz is read as MPS
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_upload" + suffix)
+        with open(path, "wb") as fh:
+            fh.write(base64.b64decode(data))
+        return read_model(path, name=name)
+
+    if body.get("source") == "blend":
+        from sovopt.models.tabular import parse_blending_csv
+        comps = body.get("components_csv") or ""
+        prods = body.get("products_csv") or ""
+        if not comps.strip() or not prods.strip():
+            raise ValueError("both components.csv and products.csv are needed")
+        tables = parse_blending_csv(comps, prods)
+        prob = tables.problem
+        prob.tables = tables                         # for the plan afterwards
+        return prob
+
     if body.get("source") == "mps":
         text = body.get("mps", "")
         if not text.strip():
@@ -272,6 +374,7 @@ async def api_solve(request: Request):
 
         tl = float(body.get("time_limit", 30))
         results = []
+        last_sol = None
         for dev in devices:
             # A small LP routes to the simplex whatever the device, so a
             # "GPU" run of it is the CPU simplex a second time -- and the
@@ -284,6 +387,8 @@ async def api_solve(request: Request):
             t = time.perf_counter()
             sol = solve(prob, method=method, device=dev, time_limit=tl)
             dt = time.perf_counter() - t
+            if last_sol is None:
+                last_sol = sol
             rv, bv, iv = (prob.violation(sol.x) if sol.x is not None
                           else (float("nan"),) * 3)
             hist = [[int(h[0]), float(h[1]), float(h[2]), float(h[3])]
@@ -309,6 +414,22 @@ async def api_solve(request: Request):
             a, b = results[0]["objective"], results[1]["objective"]
             agree = abs(a - b) / max(1.0, abs(a))
 
+        plan = None
+        tables = getattr(prob, "tables", None)
+        if tables is not None and last_sol is not None:
+            # the plan in the planner's terms, from the first device's solve,
+            # with the independent check on the model built from the tables
+            from sovopt.models.tabular import blend_plan
+            plan = blend_plan(tables, last_sol)
+            if last_sol.x is not None:
+                try:
+                    from bench.verify import verify as _verify
+                    v = _verify(prob, last_sol.x, last_sol.objective, feas_tol=1e-6,
+                                y=last_sol.y)
+                    plan["verifier_verdict"] = "ACCEPTED" if v.ok else "REJECTED"
+                except ImportError:
+                    pass
+
         return JSONResponse({
             "summary": prob.summary(),
             "coeff_ratio": sc.ratio_before,
@@ -316,6 +437,7 @@ async def api_solve(request: Request):
             "scaling": sc.method,
             "results": results,
             "agreement": agree,
+            "plan": plan,
         })
     except Exception:
         return JSONResponse({"error": traceback.format_exc(limit=4)})

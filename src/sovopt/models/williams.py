@@ -60,64 +60,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..core.problem import ObjSense, Problem, VarKind
-from ..core.sparse import SparseMatrix
-from ..core.tolerances import INF
+from ..core.problem import ObjSense, Problem
+from ._builder import Builder as _Builder
 
 __all__ = ["food_manufacture_1", "food_manufacture_2", "factory_planning_1",
            "distribution_1", "tariff_rates", "mining", "PUBLISHED", "MODELS"]
-
-
-class _Builder:
-    """Columns and rows by name; ``problem()`` assembles them."""
-
-    def __init__(self, name, sense):
-        self.name, self.sense = name, sense
-        self.cols, self.lb, self.ub, self.kind, self.cost = [], [], [], [], []
-        self.ri, self.rj, self.rv = [], [], []
-        self.rlb, self.rub, self.rows = [], [], []
-        self.index = {}
-
-    def col(self, name, lo=0.0, hi=INF, c=0.0, kind=VarKind.CONTINUOUS):
-        self.index[name] = len(self.cols)
-        self.cols.append(name); self.lb.append(lo); self.ub.append(hi)
-        self.cost.append(c); self.kind.append(kind)
-        return name
-
-    def binary(self, name, c=0.0):
-        return self.col(name, 0.0, 1.0, c, VarKind.BINARY)
-
-    def integer(self, name, hi, c=0.0):
-        return self.col(name, 0.0, hi, c, VarKind.INTEGER)
-
-    def row(self, name, terms, lo, hi):
-        r = len(self.rows)
-        for v, a in terms.items():
-            if a:
-                self.ri.append(r); self.rj.append(self.index[v]); self.rv.append(float(a))
-        self.rlb.append(lo); self.rub.append(hi); self.rows.append(name)
-
-    def eq(self, name, terms, rhs=0.0):
-        self.row(name, terms, rhs, rhs)
-
-    def le(self, name, terms, rhs):
-        self.row(name, terms, -INF, rhs)
-
-    def ge(self, name, terms, rhs):
-        self.row(name, terms, rhs, INF)
-
-    def problem(self):
-        n = len(self.cols)
-        A = SparseMatrix.from_triplets(np.asarray(self.ri, dtype=np.int32),
-                                       np.asarray(self.rj, dtype=np.int32),
-                                       np.asarray(self.rv, dtype=np.float64),
-                                       len(self.rows), n)
-        return Problem(A=A, c=np.asarray(self.cost, dtype=np.float64),
-                       row_lb=np.asarray(self.rlb), row_ub=np.asarray(self.rub),
-                       col_lb=np.asarray(self.lb), col_ub=np.asarray(self.ub),
-                       kind=np.asarray(self.kind, dtype=np.int8),
-                       sense=self.sense, name=self.name,
-                       col_names=list(self.cols), row_names=list(self.rows))
 
 
 # --------------------------------------------------------------------------- #
