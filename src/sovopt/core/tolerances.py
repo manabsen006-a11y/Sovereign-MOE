@@ -54,6 +54,12 @@ class Tolerances:
     pivot: float = 1e-7
     """Smallest acceptable pivot magnitude in the simplex ratio test."""
 
+    pivot_agree: float = 1e-6
+    """Largest relative disagreement between a pivot read from the pivot row
+    and the same pivot read from the FTRAN'd entering column. Both are
+    ``alpha_rq``; when they differ by more, the factors have drifted and the
+    pivot is refused in favour of a refactorisation."""
+
     lu_pivot_rel: float = 0.01
     """Threshold-Markowitz relative pivot tolerance: a candidate pivot must be
     at least this fraction of the largest magnitude in its column. Lower means

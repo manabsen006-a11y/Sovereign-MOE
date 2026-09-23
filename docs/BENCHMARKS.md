@@ -70,14 +70,16 @@ SUMMARY TABLE; "certified" is the verifier's line from the returned duals.
 
 | engine | parse | match the readme to 1e-6 | **certified optimal** | at the limit | wrong or no answer | total |
 |---|---|---|---|---|---|---|
-| revised simplex | 89/89 | 78/89 | **87/89** | 3: cycle (its point certifies anyway), dfl001, maros-r7 | 0 | 554 s |
+| revised simplex | 89/89 | 79/89 | **88/89** | 2: cycle (its point certifies anyway), dfl001 | 0 | 554 s |
 | interior point | 89/89 | 75/89 | **82/89** | 1: fit2p | 6: agg, finnis, perold (`INFEASIBLE_OR_UNBOUNDED`, wrong), pilot4 (`NUMERICAL`, a bad point), forplan (iteration limit, no point), etamacro (optimal to 2e-8, not certified) | 316 s |
 
-The simplex reproduces the committed record to the instance: the eleven
+The simplex reproduces the committed record to the instance: the ten
 readme mismatches are the eight the verifier certifies as *better than the
 readme* (80bau3b, greenbea, greenbeb, nesm, pilot, pilot87, scrs8 by a
 strictly better feasible point; ganges by a bound that excludes the readme
-value) plus the three at the limit. The interior point is a little over
+value) plus the two at the limit. Its row is updated for bug 21 (README):
+`maros-r7` was a third at the limit and now solves in 50 s; the total is
+the run before that fix, whose counts were 78 and 87. The interior point is a little over
 half the simplex's time over the set and certifies 82, and its own status
 now agrees with the verifier's on every row. It did not on the campaign's
 first pass over this table: five `NUMERICAL` exits -- greenbea, maros,
@@ -631,7 +633,7 @@ the problem statement names. Answered by category, against the two
 yardsticks the campaign used -- the published value, and an independent
 check of every point:
 
-**LP: yes, and it can be certified.** Netlib 87/89 certified optimal by
+**LP: yes, and it can be certified.** Netlib 88/89 certified optimal by
 the simplex and 82/89 by the interior point, with the eight readme
 disagreements settled in the solver's favour by certificate; every one of
 45 MIPLIB relaxations certified and matching HiGHS to fourteen digits; on

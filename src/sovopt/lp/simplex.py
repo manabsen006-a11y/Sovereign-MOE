@@ -82,7 +82,7 @@ import numpy as np
 from ..core._jit import jit_kernel
 from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import VAL
-from ..core.tolerances import INF
+from ..core.tolerances import DEFAULT, INF
 from ..numerics.scaling import scale_problem
 from ..numerics.lu import LUSingular
 from .basis import AT_LOWER, AT_UPPER, BASIC, FIXED, FREE, Basis
@@ -117,8 +117,17 @@ class SimplexParams:
 
     feas_tol: float = 1e-7
     opt_tol: float = 1e-7
-    pivot_tol: float = 1e-9
-    harris_relax: float = 1e-9
+    pivot_tol: float = DEFAULT.pivot
+    """Smallest pivot either ratio test will take. It was a bare 1e-9 here
+    while :mod:`sovopt.core.tolerances` said 1e-7, and the difference is not
+    academic: on the first 24 hours of an hourly blending plan the dual
+    loop took a pivot of 1.4e-9, stepped 8.6e20, and never finished."""
+
+    pivot_agree: float = DEFAULT.pivot_agree
+    """Relative disagreement between the pivot read from the row and from
+    the column at which the pivot is refused and the basis refactorised."""
+
+    harris_relax: float = DEFAULT.harris_relax
 
     node_kernel: bool = True
     """Run a node LP's dual loop as one compiled kernel
@@ -486,6 +495,7 @@ class _Simplex:
         self.iters = 0
         self.degenerate_run = 0
         self.perturbed = False
+        self.n_shifts = 0
         self.t0 = time.perf_counter()
 
         self.zB = np.zeros(self.m, dtype=VAL)
@@ -535,16 +545,38 @@ class _Simplex:
         if self.perturbed:
             return
         rng = np.random.default_rng(0xC0FFEE)
-        self._cost_backup = self.B.cost.copy()
+        if self._cost_backup is None:
+            self._cost_backup = self.B.cost.copy()
         scale = self.p.perturb_scale * (1.0 + np.abs(self.B.cost))
         nb = self.B.status != BASIC
         self.B.cost[nb] += scale[nb] * rng.random(int(nb.sum()))
         self.perturbed = True
 
+    def shift_cost(self, q: int, dq: float):
+        """Shift ``c_q`` so the entering column's reduced cost is exactly zero.
+
+        The Harris test admits an entering column whose reduced cost sits up
+        to the relaxation on the wrong side of zero. The dual step
+        ``d_q / alpha_rq`` is then negative, and a negative step moves every
+        column on the far side of the pivot row the wrong way by
+        ``|step| * |alpha_rj|`` -- which the Harris bound does not cover at
+        all. On an hourly blending plan that was 1e-9 / 6.6e-5 = -1.5e-5,
+        and 1.2e-4 of dual infeasibility appeared in one pivot. Shifting the
+        cost makes the step exactly zero (Koberstein 2005, 6.2.2.3). The
+        shift is recorded against the perturbation's backup, removed at the
+        end with it, and the primal cleans up after both.
+        """
+        if self._cost_backup is None:
+            self._cost_backup = self.B.cost.copy()
+        self.B.cost[q] -= dq
+        self.perturbed = True
+        self.n_shifts += 1
+
     def unperturb(self):
         if not self.perturbed:
             return
         self.B.cost[:] = self._cost_backup
+        self._cost_backup = None
         self.perturbed = False
         self.degenerate_run = 0
 
@@ -665,8 +697,44 @@ def _primal_loop(S: _Simplex, phase: int):
         S.maybe_refactorize()
 
 
+@jit_kernel()
+def _dual_infeasibility(d, status):
+    """Largest reduced cost on the wrong side of zero for its status.
+
+    One pass and no allocation: it runs every dual pivot, and three numpy
+    masks over the columns cost cap6000 a fifth of its solve time."""
+    worst = 0.0
+    for j in range(d.shape[0]):
+        st = status[j]
+        if st == AT_LOWER:
+            v = -d[j]
+        elif st == AT_UPPER:
+            v = d[j]
+        elif st == FREE:
+            v = d[j] if d[j] > 0.0 else -d[j]
+        else:
+            continue
+        if v > worst:
+            worst = v
+    return worst
+
+
 def _dual_loop(S: _Simplex):
-    """Dual simplex: repair primal infeasibility, keeping duals feasible."""
+    """Dual simplex: repair primal infeasibility, keeping duals feasible.
+
+    Returns ``Status.NUMERICAL`` when a fresh factorisation shows the duals
+    are no longer feasible, or cannot agree on a pivot. Everything the loop
+    does rests on dual feasibility -- the ratio test, the monotone
+    objective, the INFEASIBLE verdict -- and a loop that carries on without
+    it is not a dual simplex any more. On the first 24 hours of an hourly
+    blending plan it did carry on: the dual objective, which must only
+    rise, fell from -1.8e7 to -5.5e11 within 9,000 pivots, and at 90 s the
+    loop had not finished. The loss can hide in the eta file -- with the
+    pivot fixes in, a 2.8e-5 loss showed only at the next refactorisation,
+    up to 150 pivots on -- so a suspicion is first checked on fresh
+    factors. The callers hand a NUMERICAL to the primal, which solves that
+    plan from a cold start in 8,800 pivots.
+    """
     p, B = S.p, S.B
 
     while True:
@@ -690,6 +758,14 @@ def _dual_loop(S: _Simplex):
 
         y = B.compute_duals()
         d = B.reduced_costs(y)
+        if _dual_infeasibility(d, B.status) > p.opt_tol:
+            if B._n_eta > 0:
+                # Possibly the eta file's rounding, not the basis: ask a
+                # fresh factorisation before believing it.
+                S.maybe_refactorize(force=True)
+                S.iters += 1
+                continue
+            return Status.NUMERICAL
 
         q, _tdual = _dual_ratio(alpha_row, d, B.status, sigma,
                                 p.pivot_tol, p.opt_tol, p.harris_relax)
@@ -710,6 +786,15 @@ def _dual_loop(S: _Simplex):
             S.farkas = S.rho.copy()
             return Status.INFEASIBLE
 
+        # The entering reduced cost may sit on the wrong side of zero by up
+        # to the Harris relaxation; shift it to exactly zero so the dual
+        # step cannot be negative. See _Simplex.shift_cost.
+        dq = d[q]
+        st_q = B.status[q]
+        if (st_q == AT_LOWER and dq < 0.0) or (st_q == AT_UPPER and dq > 0.0) \
+                or (st_q == FREE and dq != 0.0):
+            S.shift_cost(q, dq)
+
         # ---- primal step --------------------------------------------------
         j = B.basic[r]
         target = B.lower[j] if sigma > 0 else B.upper[j]
@@ -725,9 +810,21 @@ def _dual_loop(S: _Simplex):
         # alpha_row[q] and alpha[r] are the same number computed two ways -- one
         # from the pivot row, one from the FTRAN'd entering column. When the
         # factorisation has drifted they disagree, and the ratio test can pass
-        # on a pivot the update then finds to be zero. Refactorise and retry
-        # rather than raising out of the solver.
-        if abs(S.alpha[r]) <= p.pivot_tol:
+        # on a pivot the update then finds to be zero -- or, as on an hourly
+        # blending plan, on one the row puts at 9.5e-9 and the column at
+        # 3.6e-9, which stepped 3.5e14. Refactorise and retry rather than
+        # pivot on a number the factors cannot agree on.
+        #
+        # A fresh factorisation that still disagrees is a basis too ill
+        # conditioned to pivot from, not drift, and refactorising again
+        # repeats the same choice forever: on a six-hour blending plan the
+        # loop spun on one pivot for 8,000 iterations, every number frozen.
+        # That is the same verdict as lost dual feasibility, and gets the
+        # same answer.
+        if abs(S.alpha[r]) <= p.pivot_tol or \
+                abs(S.alpha[r] - arq) > p.pivot_agree * abs(S.alpha[r]):
+            if B._n_eta == 0:
+                return Status.NUMERICAL
             S.maybe_refactorize(force=True)
             S.iters += 1
             continue
@@ -909,6 +1006,13 @@ class NodeSolver:
                         status = primal_path()
                 else:
                     status = _dual_loop(S)
+                    if status == Status.NUMERICAL:
+                        # The dual lost dual feasibility and said so; the
+                        # primal finishes from here, as it does for a stall.
+                        S.unperturb()
+                        S.maybe_refactorize(force=True)
+                        S.refresh()
+                        status = primal_path()
                 if status == Status.OPTIMAL:
                     status = _primal_loop(S, phase=2)
             else:
@@ -1122,13 +1226,34 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
     # with an exception, and one bad node must not abort the search.
     method = "dual"
     status = Status.NOT_SOLVED
+
+    def two_phase():
+        st1 = _primal_loop(S, phase=1)
+        if st1 != Status.OPTIMAL:
+            return st1
+        S.refresh()
+        if S.primal_infeasibility() > _infeasible_threshold(scaled, params.feas_tol):
+            S.farkas = _phase1_ray(S)
+            return Status.INFEASIBLE
+        return _primal_loop(S, phase=2)
+
     try:
         if S.primal_infeasibility() <= params.feas_tol:
             method = "primal"
             status = _primal_loop(S, phase=2)
         elif _dual_feasible(B, params.opt_tol):
             status = _dual_loop(S)
-            if status == Status.OPTIMAL:
+            if status == Status.NUMERICAL:
+                # The dual loop lost dual feasibility and said so. Start the
+                # primal from the slack basis with the true costs: the basis
+                # the dual left is one it no longer trusted.
+                method = "primal(2-phase, after dual lost feasibility)"
+                S.unperturb()
+                B.set_logical_basis()
+                B.set_status_from_costs()
+                S.refresh()
+                status = two_phase()
+            elif status == Status.OPTIMAL:
                 # dual simplex ends primal feasible; polish residual dual error
                 status = _primal_loop(S, phase=2)
             elif status == Status.INFEASIBLE:
@@ -1166,17 +1291,7 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
                     status = st1
         else:
             method = "primal(2-phase)"
-            st1 = _primal_loop(S, phase=1)
-            if st1 == Status.OPTIMAL:
-                S.refresh()
-                if S.primal_infeasibility() > _infeasible_threshold(
-                        scaled, params.feas_tol):
-                    status = Status.INFEASIBLE
-                    S.farkas = _phase1_ray(S)
-                else:
-                    status = _primal_loop(S, phase=2)
-            else:
-                status = st1
+            status = two_phase()
     except LUSingular:
         status = Status.NUMERICAL
 
@@ -1252,7 +1367,7 @@ def solve_simplex(prob: Problem, params: SimplexParams | None = None,
         # the ray is not flipped with the duals.
         sol.farkas = sc.unscale_dual(np.asarray(S.farkas, dtype=VAL))
     sol.info = {**B.stats(), "algorithm": method,
-                "perturbed": S.perturbed,
+                "perturbed": S.perturbed, "cost_shifts": S.n_shifts,
                 "primal_infeasibility": S.primal_infeasibility()}
     if unscaled_violation is not None:
         sol.info["worst_violation"] = unscaled_violation

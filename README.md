@@ -355,7 +355,7 @@ python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
 python -m bench.orlib --set cap       # Beasley's warehouse-location MILPs against capopt.txt
 python -m bench.williams              # seven of Williams' textbook models against the book, every engine
-python -m pytest tests/               # 797 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 799 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -1354,6 +1354,45 @@ six now have regression tests.
     19, not by an instance: no simplex OPTIMAL in either campaign was ever
     refused by the verifier.
 
+21. **The dual simplex lost dual feasibility and never noticed.** Found by
+    the hourly gasoline-blending data in `Test_Data/`: the first 24 hours
+    of its plan (2,526 rows) ran 13,594 dual pivots in 90 s without
+    finishing, while the interior point solved it in 3.5 s; six hours
+    (654 rows) was enough to reproduce it. Four defects, each measured on
+    that model:
+    - the pivot floor was a bare `1e-9` in `SimplexParams` while
+      `core/tolerances.py` declared `1e-7`, and the loop pivoted on 1.9e-9
+      in a row whose largest entry was 1.2e9;
+    - the Harris test admits an entering column whose reduced cost is a
+      hair on the wrong side of zero, which makes the dual step negative;
+      a negative step moves every column on the far side of the pivot row
+      the wrong way, outside anything the Harris bound covers, and on a
+      pivot of 6.6e-5 it produced 1.2e-4 of dual infeasibility at once.
+      The entering cost is now shifted so the step is exactly zero
+      (Koberstein 2005, 6.2.2.3) and the shift removed with the
+      perturbation at the end;
+    - the pivot read from the row and from the FTRAN'd column were never
+      compared -- 9.5e-9 against 3.6e-9 was taken, and stepped 3.5e14;
+    - nothing checked the invariant the method rests on. The dual
+      objective, which may only rise, fell from -1.8e7 to -5.5e11, and a
+      loss could sit hidden in the eta file until the next
+      refactorisation, up to 150 pivots on.
+
+    The loop now checks dual feasibility every pivot, confirms any loss on
+    fresh factors, and returns `NUMERICAL` when it is real or when fresh
+    factors still cannot agree on a pivot; `solve_simplex` hands that to
+    the primal from the slack basis, and the node solver to its primal
+    path. The windows of 2 to 24 hours all solve now, on the interior
+    point's value (six hours: 2,781 pivots, 2.2 s, against a baseline that
+    ran out 40 s after 26,624). Against the unchanged engine: Netlib
+    certified 87 -> **88/89** and on the readme's value 78 -> **79/89** --
+    `maros-r7`, which timed out, solves in 50 s -- with no instance
+    changing status or objective otherwise; the MIPLIB LP relaxations
+    45/45 and Netlib's infeasible set 29/29 certified, as before; and the
+    30-instance small MIP set at 60 s identical instance for instance in
+    status and objective (17 optimal, 30 accepted by the verifier). The
+    six-hour model is a test fixture (`tests/fixtures/blend_plan_6h.mps.gz`).
+
 ---
 
 ## Known limits
@@ -1723,13 +1762,14 @@ six now have regression tests.
 - **Netlib is in, and so is Mittelmann now -- and Mittelmann's MILP
   benchmark is where the distance to the established solvers is.** All 89
   problems of the Netlib LP set expand and solve — see [Netlib](#netlib).
-  **78 of 89 match the readme's optimum** to 1e-6 and **87 of 89 are
+  **79 of 89 match the readme's optimum** to 1e-6 and **88 of 89 are
   certified optimal** by the independent verifier from the returned point
   and duals. The nine-instance difference is the readme's: on eight the
   vertex is certified and the readme's value is either beaten by a verified
   feasible point or excluded by a certified bound, and `cycle` is certified
-  from a point the simplex could not prove in 60 s. `dfl001` and `maros-r7`
-  remain over the limit with no point. The whole of MIPLIB's classical set,
+  from a point the simplex could not prove in 60 s. `dfl001` remains over
+  the limit with no point; `maros-r7`, which was too, solves since bug 21.
+  The whole of MIPLIB's classical set,
   Mittelmann's LP test set and his MILP benchmark were run in one sitting
   and are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md): the 45 classical
   MILPs at 22 proved and 27 on the published value; the 13 Mittelmann LPs
@@ -1986,9 +2026,9 @@ python -m bench.netlib             # 89 problems, 377 s
 | | |
 |---|---|
 | expand and parse | **89/89** |
-| match the readme's optimum to 1e-6 | **78/89** |
-| **certified optimal by the independent verifier** | **87/89** |
-| hit the 60 s limit | 3 (`dfl001`, `maros-r7`, `cycle` -- and `cycle`'s point is certified optimal anyway) |
+| match the readme's optimum to 1e-6 | **79/89** |
+| **certified optimal by the independent verifier** | **88/89** |
+| hit the limit | 2 (`dfl001`, and `cycle`, whose point is certified optimal anyway); `maros-r7` solves in 50 s since bug 21 |
 | the interior point alone, 120 s (`--method ipm`) | **82/89 certified optimal** in 316 s for the set (from 77 before the unit and the LDLᵀ retry, Known limits), 75 on the readme's value, and since bug 15 its own status is `OPTIMAL` on every certified row -- it used to say `NUMERICAL` on five of them and hit the iteration limit on a sixth; the real failures: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, forplan at the iteration limit with no point, pilot4 `NUMERICAL`, fit2p over the limit (dfl001 solves at 116 s) |
 
 **The eight "accuracy shortfalls" were the readme's, not the engine's.** This
@@ -2016,8 +2056,9 @@ readme disagreements with the kind of certificate that settles each, and
 `cycle` -- which the simplex cannot prove optimal in 60 s -- is certified
 by the verifier from the point it returns.
 
-The two that remain are `dfl001` and `maros-r7`, over the limit with no
-point; the interior point solves `dfl001` in 107 s.
+The one that remains is `dfl001`, over the limit with no point; the
+interior point solves it in 107 s. `maros-r7`, the other, solves since bug
+21.
 
 **It paid on the first run.** `bore3d` came back `INFEASIBLE`, with a published
 optimum of 1373.080394. The model was fine: the simplex returned exactly that
@@ -2176,6 +2217,6 @@ examples/     blending/ a six-component, three-product gasoline blend;
               page take
 bench/        fetch, harness, verifier (points and infeasibility rays), GPU
               benchmark, Netlib, QPLIB, OR-Library, Williams, scale
-tests/        797 tests including regressions for every bug above
+tests/        799 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

@@ -14,7 +14,8 @@ import pytest
 
 from sovopt.core.problem import ObjSense, Problem, Status, VarKind
 from sovopt.core.sparse import SparseMatrix
-from sovopt.core.tolerances import INF
+from bench.verify import verify
+from sovopt.core.tolerances import DEFAULT, INF
 from sovopt.io.mps import read_mps
 from sovopt.lp.basis import AT_LOWER, AT_UPPER, BASIC, FIXED, FREE
 from sovopt.lp.simplex import SimplexParams, solve_simplex
@@ -214,6 +215,34 @@ def test_survives_badly_scaled_models(spread):
     s = solve_simplex(p)
     assert s.status == Status.OPTIMAL
     assert max(p.violation(s.x)[:2]) < 1e-6
+
+
+def test_the_ratio_tests_use_the_declared_tolerances():
+    """A bare ``pivot_tol = 1e-9`` sat here while core/tolerances said 1e-7,
+    and that gap is how the dual loop came to pivot on 1.4e-9 and step 8.6e20
+    on an hourly blending plan."""
+    p = SimplexParams()
+    assert p.pivot_tol == DEFAULT.pivot
+    assert p.pivot_agree == DEFAULT.pivot_agree
+    assert p.harris_relax == DEFAULT.harris_relax
+
+
+def test_the_hourly_blending_plan_that_stalled_the_dual_simplex_solves():
+    """Six hours of an hourly gasoline blending plan with storage (654 rows,
+    1,104 columns; Test_Data's first six hours). The dual loop lost dual
+    feasibility to rounding -- a negative Harris step, then an eta file that
+    hid the loss until the next refactorisation -- never noticed, and ran
+    out a 40 s limit after 26,624 pivots. It now keeps its steps
+    non-negative by shifting costs, refuses pivots the row and the column
+    disagree on, and when fresh factors show the duals infeasible it says so
+    and the primal finishes. The answer is the interior point's, certified
+    from the duals."""
+    p = read_mps(os.path.join(FIX, "blend_plan_6h.mps.gz"))
+    s = solve_simplex(p, SimplexParams(time_limit=120))
+    assert s.status == Status.OPTIMAL
+    assert abs(s.objective - 6421.520443) <= 1e-6 * 6421.520443
+    assert s.iterations < 10_000
+    assert verify(p, s.x, s.objective, feas_tol=1e-6, y=s.y).ok
 
 
 def test_warm_start_from_a_previous_basis():
