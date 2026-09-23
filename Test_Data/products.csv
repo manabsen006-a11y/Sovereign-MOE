@@ -1,0 +1,5 @@
+name,price,demand_min,demand_max,ron_min,mon_min,density_min,density_max,rvp_index_min,rvp_index_max,sulfur_max,benzene_max,aromatics_max,olefins_max,oxygen_max,e70_min,e70_max,e100_min,e100_max,e150_min,paraffins_min
+MS91_BSVI,42.99,,280,91,81,720,775,,167,10,1,35,21,2.7,10,45,40,70,75,
+MS95_BSVI,45.79,,120,95,85,720,775,,167,10,1,35,18,2.7,10,45,40,70,75,
+EXP_EUR95,43.61,,300,95,85,720,775,116.6,167,10,1,35,18,2.7,20,48,46,71,75,
+NAPHTHA_EXP,35.57,,190,,,665,740,,250.5,650,,,1,,,,,,,65
