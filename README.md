@@ -265,6 +265,8 @@ python -m sovopt.cli solve  model.mps --device gpu --out sol.json
 python -m sovopt.cli solve  model.mps --sensitivity     # shadow prices + ranging
 python -m sovopt.cli verify model.mps sol.json    # independent check: feasibility, and optimality from the duals
 python -m sovopt.cli blend  components.csv products.csv --plan plan.csv   # a blending plan from a planner's tables
+python -m sovopt.cli blend  components.csv products.csv --prices prices.csv --capacity capacity.csv  # over a horizon
+python -m sovopt.cli blend  components.csv products.csv --pools pools.csv   # pooled qualities, proved globally
 python -m ui.server                              # http://127.0.0.1:8000
 ```
 
@@ -295,10 +297,33 @@ positive semi-definite, solved as a convex QP.
   six-component, three-product gasoline blend; the schema and the model
   are in [`models/tabular.py`](src/sovopt/models/tabular.py). Qualities
   blend linearly (sulfur, density, aromatics, or the blending indices
-  refinery LPs use for octane and vapour pressure); a quality that has to
-  pass through a shared pool is the pooling model's business, not this
-  table's.
-- **From Python.** `read_model(path)` or `parse_blending_csv(...)`, then
+  refinery LPs use for octane and vapour pressure).
+- **A horizon, from a third table.** Add `prices.csv` -- one row per
+  period, a column per component -- and the same two tables become a
+  multi-period plan: purchase at each period's price, store at a cost
+  between periods, and blend to specification in each one. The components
+  gain `line`, `storage_max`, `storage_cost`, `opening_stock` and
+  `closing_stock`; optional `demand.csv` and `capacity.csv` override the
+  price and demand per period and cap each processing line. `sovopt blend
+  components.csv products.csv --prices prices.csv --capacity capacity.csv`
+  reports what to buy, use, store and make in every period, and what each
+  binding line capacity is worth.
+  [`examples/planning`](examples/planning) is Williams' food-manufacture
+  model written as tables; it reaches the book's 107,842.59.
+  Schema and model: [`models/tabular_planning.py`](src/sovopt/models/tabular_planning.py).
+- **Pooled qualities, from a third table.** A quality that has to pass
+  through a shared tank does not blend linearly, and no linear table can
+  express it. Add `pools.csv` -- name, capacity, and the components feeding
+  each pool -- and a `direct` column naming the products a component may
+  ship to without a pool, and `sovopt blend components.csv products.csv
+  --pools pools.csv` builds the bilinear pooling model and solves it to
+  *proven* global optimality on the spatial branch-and-bound, reporting each
+  pool's throughput, composition and qualities alongside the flows.
+  [`examples/pooling`](examples/pooling) is Haverly's problem as tables: 400,
+  proved, in three nodes.
+  Schema and model: [`models/tabular_pooling.py`](src/sovopt/models/tabular_pooling.py).
+- **From Python.** `read_model(path)`, `parse_blending_csv(...)`,
+  `parse_planning_csv(...)` or `parse_pooling_csv(...)`, then
   `sovopt.cli.solve(prob, ...)`; the model builders in `sovopt.models` are
   worked examples of building a `Problem` from data.
 
@@ -330,7 +355,7 @@ python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
 python -m bench.orlib --set cap       # Beasley's warehouse-location MILPs against capopt.txt
 python -m bench.williams              # seven of Williams' textbook models against the book, every engine
-python -m pytest tests/               # 781 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 797 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -2141,12 +2166,16 @@ src/sovopt/
   globalopt/  McCormick, spatial B&B, non-convex QP (reformulation + αBB)
   models/     refinery templates, Williams' refinery LP, six more of his models
               (food manufacture, factory planning, distribution, tariff rates,
-              mining), Haverly pooling, blending from a planner's CSV tables
-              (tabular.py: components + products in, a named plan out)
-examples/     blending/: a six-component, three-product gasoline blend as the
-              two CSV tables `sovopt blend` and the page take
+              mining), Haverly pooling, and a planner's CSV tables in,
+              a named plan out: blending (tabular.py), a purchase-and-store
+              horizon (tabular_planning.py), pooled qualities solved to
+              proven global optimality (tabular_pooling.py)
+examples/     blending/ a six-component, three-product gasoline blend;
+              planning/ Williams' food manufacture over six months;
+              pooling/ Haverly -- as the CSV tables `sovopt blend` and the
+              page take
 bench/        fetch, harness, verifier (points and infeasibility rays), GPU
               benchmark, Netlib, QPLIB, OR-Library, Williams, scale
-tests/        781 tests including regressions for every bug above
+tests/        797 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

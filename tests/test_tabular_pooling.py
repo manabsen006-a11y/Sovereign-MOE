@@ -14,7 +14,6 @@ import pytest
 from bench.verify import verify
 from sovopt.core.problem import Status
 from sovopt.globalopt.spatial import SpatialParams, solve_global
-from sovopt.models.pooling import HAVERLY_VARIANTS
 from sovopt.models.tabular import TableError
 from sovopt.models.tabular_pooling import (parse_pooling_csv, pooling_plan, pooling_text,
                                            pooling_to_csv, read_pooling_csv)
@@ -53,11 +52,12 @@ def test_haverly_from_the_tables_is_proved_to_its_published_optimum():
     assert pooling_to_csv(plan).splitlines()[0] == "from,to,quantity"
 
 
-@pytest.mark.parametrize("variant,b_cost,x_demand", [(2, 16, 600), (3, 13, 100)])
-def test_the_published_variants_follow_from_the_tables(variant, b_cost, x_demand):
+# Haverly (1978): the base case and the two variants, each one edit away
+@pytest.mark.parametrize("b_cost,x_demand,published", [(16, 600, 600.0), (13, 100, 750.0)])
+def test_the_published_variants_follow_from_the_tables(b_cost, x_demand, published):
     t = parse_pooling_csv(COMPS.format(b=b_cost), PRODS.format(x=x_demand), POOLS)
     s = _solve(t)
-    assert abs(s.objective - HAVERLY_VARIANTS[variant]) < 1e-6
+    assert abs(s.objective - published) < 1e-6
 
 
 def test_a_minimum_specification_is_the_maximum_on_the_negated_quality():

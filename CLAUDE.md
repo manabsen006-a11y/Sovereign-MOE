@@ -69,11 +69,15 @@ src/sovopt/
               non-convex QP (McCormick reformulation, aBB opt-in)
   models/     refinery templates, Williams' refinery LP and six more of his
               models (blending, planning, distribution, unit commitment,
-              mining), Haverly pooling (p and pq), blending from CSV tables
-              (tabular.py) with the shared named-model builder (_builder.py)
+              mining), Haverly pooling (p and pq), and CSV tables in, a
+              named plan out -- blending (tabular.py), a multi-period
+              purchase-and-store horizon (tabular_planning.py), pooled
+              qualities on the spatial B&B (tabular_pooling.py) -- with the
+              shared named-model builder (_builder.py)
   presolve.py fixed/singleton/redundant reductions and postsolve (opt-in)
   cli.py      routing by model class; `blend` builds and solves from two CSV
-              tables; demo.py
+              tables, `--prices` over a horizon, `--pools` through pools;
+              demo.py
 bench/        harness, independent verifier (points, and infeasibility rays),
               comparator (HiGHS, quarantined), fetch (MIPLIB 3/2017 incl. the
               easy listing, Mittelmann LP + fctp + MILP benchmark, Netlib's
@@ -84,8 +88,9 @@ bench/        harness, independent verifier (points, and infeasibility rays),
 tests/        unit + regression, one file per module, plus fixtures/
 tools/        check_provenance.py
 ui/           minimal local interface (server.py): templates, a pasted model,
-              an uploaded model file, or two CSV tables to a named plan
-examples/     blending/: the two CSV tables a planner would save from a sheet
+              an uploaded model file, or CSV tables to a named plan
+examples/     blending/, planning/, pooling/: the CSV tables a planner would
+              save from a sheet
 ```
 
 ## Conventions
@@ -111,6 +116,8 @@ python -m bench.netlib --fetch && python -m bench.netlib    # Netlib
 python -m bench.qplib --fetch --run          # QPLIB
 python -m bench.verify model.mps sol.json    # independent feasibility + optimality check
 python -m sovopt.cli blend components.csv products.csv   # a blending plan from a planner's tables
+python -m sovopt.cli blend components.csv products.csv --prices prices.csv  # over a horizon
+python -m sovopt.cli blend components.csv products.csv --pools pools.csv    # pooled qualities
 python -m pytest tests/                      # unit tests
 python tools/check_provenance.py             # citation-header lint
 ```

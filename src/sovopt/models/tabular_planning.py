@@ -326,7 +326,10 @@ def planning_plan(tables: PlanTables, sol) -> dict:
                                       "use": used, "store": stored,
                                       "storage_cost": co.get("storage_cost", 0.0)})
         out["periods"].append(per)
-    for (line, t), cap in sorted(tables.capacity.items()):
+    # by line, then along the horizon -- not the period names' lexical order
+    order = {t: i for i, t in enumerate(tables.periods)}
+    for (line, t), cap in sorted(tables.capacity.items(),
+                                 key=lambda kv: (kv[0][0], order.get(kv[0][1], 0))):
         used = sum(x[tables.use[co["name"], pr["name"], t]]
                    for co in tables.components if co.get("line") == line for pr in tables.products)
         out["capacity"].append({"line": line, "period": t, "capacity": cap, "used": used,
