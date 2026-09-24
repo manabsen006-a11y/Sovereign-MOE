@@ -562,7 +562,9 @@ def solve_alphabb(prob: Problem,
                          "eps_abs": params.qp.eps_abs / f,
                          "eps_rel": params.qp.eps_rel / f,
                          "max_iter": params.qp.max_iter * 4 ** tighten,
-                         "time_limit": max(0.0, deadline - time.perf_counter())})
+                         "time_limit": max(0.0, deadline - time.perf_counter()),
+                         # the bound is certified below, from the point
+                         "certify": False})
         r = solve_qp(red.prob, qp)
         if r.x is None:
             return red, None, -np.inf, alpha      # no point: nothing is known

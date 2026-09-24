@@ -71,7 +71,7 @@ SUMMARY TABLE; "certified" is the verifier's line from the returned duals.
 | engine | parse | match the readme to 1e-6 | **certified optimal** | at the limit | wrong or no answer | total |
 |---|---|---|---|---|---|---|
 | revised simplex | 89/89 | 79/89 | **88/89** | 2: cycle (its point certifies anyway), dfl001 | 0 | 554 s |
-| interior point | 89/89 | 75/89 | **82/89** | 1: fit2p | 6: agg, finnis, perold (`INFEASIBLE_OR_UNBOUNDED`, wrong), pilot4 (`NUMERICAL`, a bad point), forplan (iteration limit, no point), etamacro (optimal to 2e-8, not certified) | 316 s |
+| interior point | 89/89 | 75/89 | **82/89** | 1: fit2p | 6: agg, finnis, perold (`INFEASIBLE_OR_UNBOUNDED`, wrong), pilot4 (`NUMERICAL`, a bad point), forplan (iteration limit, no point), etamacro (optimal to 2e-8, not certified; reported `GAP_LIMIT` since bug 22) | 316 s |
 
 The simplex reproduces the committed record to the instance: the ten
 readme mismatches are the eight the verifier certifies as *better than the

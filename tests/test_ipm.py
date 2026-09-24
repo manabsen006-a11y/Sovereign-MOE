@@ -342,8 +342,16 @@ def test_variables_at_1e10_are_solved_in_their_own_unit():
     ps = Problem(A=A, c=np.zeros(n), row_lb=np.zeros(m), row_ub=np.zeros(m),
                  col_lb=p.col_lb / U, col_ub=p.col_ub / U, Q=Qs)
     ss = solve_ipm(ps, IPMParams(eps_p=1e-8, eps_d=1e-8, eps_gap=1e-8))
-    assert ss.status == Status.OPTIMAL
-    assert s.status == Status.OPTIMAL
+    for sol in (s, ss):
+        # The certificate charges every reduced cost against its far bound,
+        # and at boxes of 1e10 it cannot confirm 1e-9 in double precision
+        # (8e-4 here, on an answer that agrees with the hand-scaled copy's
+        # below). The status says so -- GAP_LIMIT, with the gap -- rather
+        # than claim what the verifier would refuse.
+        assert sol.status in (Status.OPTIMAL, Status.GAP_LIMIT)
+        if sol.status == Status.GAP_LIMIT:
+            assert np.isfinite(sol.info["certified_gap"])
+            assert sol.x is not None
     assert abs(s.objective - ss.objective) <= 1e-6 * max(1.0, abs(ss.objective))
     assert np.abs(s.x / U - ss.x).max() <= 1e-6
     assert s.info["scaling_unit"] == 2.0 ** 33
@@ -468,8 +476,12 @@ def test_the_feasibility_cap_is_the_verifiers_line_and_not_the_cli_tol():
     from bench.verify import verify
     from sovopt.cli import solve
     p = _equality_lp_at_scale(seed=2, scale=1e5)
-    old = solve_ipm(p, IPMParams(feas_cap=1e-8))
+    old = solve_ipm(p, IPMParams(feas_cap=1e-8, cert_extra_iters=0))
     assert old.status == Status.NUMERICAL          # what the CLI used to ask
+    # Allowed to iterate past its own test until the point passes the cap
+    # it was given, the loop now meets even that one.
+    more = solve_ipm(p, IPMParams(feas_cap=1e-8))
+    assert more.status == Status.OPTIMAL and more.info["worst_violation"] <= 1e-8
     s = solve(p, method="ipm", tol=1e-8)
     assert s.status == Status.OPTIMAL
     assert 1e-8 < s.info["worst_violation"] < 1e-6
@@ -484,11 +496,17 @@ def test_a_point_outside_the_verifiers_line_is_still_numerical():
     """The cap itself has not moved: a point at 4e-5 absolute -- 9002's case
     in the README -- is reported NUMERICAL and not certified, because the
     certificate is gated on feasibility to the cap."""
+    from bench.verify import verify
     p = _equality_lp_at_scale(seed=2, scale=1e6)
-    s = solve_ipm(p)
+    s = solve_ipm(p, IPMParams(cert_extra_iters=0))
     assert s.info["worst_violation"] > 1e-6
     assert s.status == Status.NUMERICAL
     assert "certified_bound" not in s.info
+    # The loop stopped on its relative test with the absolute residual still
+    # 4e-5; one more iteration takes it to 1e-9, and the point is certified.
+    c = solve_ipm(p)
+    assert c.status == Status.OPTIMAL and c.info["worst_violation"] <= 1e-6
+    assert verify(p, c.x, c.objective, y=c.y).ok
 
 
 @pytest.mark.parametrize("sense", [ObjSense.MINIMISE, ObjSense.MAXIMISE])
@@ -539,6 +557,39 @@ def test_the_certificate_never_promotes_an_infeasible_point():
     s = solve_ipm(p)
     assert s.status == Status.INFEASIBLE_OR_UNBOUNDED
     assert "certified_from" not in s.info
+
+
+@pytest.mark.parametrize("eps_gap", [1e-5, 1e-6])
+def test_an_optimal_the_verifier_would_refuse_is_not_reported_as_one(eps_gap):
+    """The loop's OPTIMAL is a claim about the scaled iteration; the verifier
+    certifies at 1e-9. Loosening the loop's gap test stands in for the stall
+    exit that took a 744-hour blending plan out at a gap of 5.4e-9 and
+    reported it OPTIMAL -- the verifier refused it at 7.3e-9. The point is
+    feasible and kept, the status says it is not certified, the gap it did
+    reach is reported, and the verifier agrees on every count."""
+    from bench.verify import verify
+    p = read_mps(os.path.join(os.path.dirname(__file__), "fixtures", "testprob.mps"))
+    s = solve_ipm(p, IPMParams(eps_gap=eps_gap, cert_extra_iters=0))
+    assert s.status == Status.GAP_LIMIT
+    assert s.x is not None and np.isfinite(s.objective)
+    assert s.info["certified_gap"] > 1e-9 and s.info["uncertified_from"] == "OPTIMAL"
+    assert verify(p, s.x, s.objective).ok                    # feasible
+    assert not verify(p, s.x, s.objective, y=s.y).ok         # and not certified
+    full = solve_ipm(p)
+    assert full.status == Status.OPTIMAL
+    assert verify(p, full.x, full.objective, y=full.y).ok
+
+
+@pytest.mark.parametrize("eps_gap", [1e-5, 1e-6])
+def test_the_loop_iterates_past_its_own_test_to_a_certified_point(eps_gap):
+    """The same loose exit, allowed a few steps past convergence: the
+    barrier still moves, the point it reaches is one the verifier certifies,
+    and that is what is returned, as OPTIMAL."""
+    from bench.verify import verify
+    p = read_mps(os.path.join(os.path.dirname(__file__), "fixtures", "testprob.mps"))
+    s = solve_ipm(p, IPMParams(eps_gap=eps_gap))
+    assert s.status == Status.OPTIMAL
+    assert verify(p, s.x, s.objective, y=s.y).ok
 
 
 def test_the_verifier_and_the_engine_share_one_certificate():

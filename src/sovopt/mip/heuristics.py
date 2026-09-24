@@ -444,6 +444,14 @@ def dive(prob, int_mask, lo, hi, node_solve, x_lp, basis=None,
 
     from ..core.problem import Status
 
+    # A node whose relaxation gave a usable point: optimal, or feasible with
+    # a measured gap -- the interior point's GAP_LIMIT, which the MIQP
+    # tree's QP dive meets on nodes that stall short of 1e-9. Refusing those
+    # threw the dive into backtracking and cost QPLIB_3871 its incumbent
+    # (250.9 against 1,190.7). Every candidate is checked against the model
+    # before it is kept, so the point only has to steer.
+    _HAS_POINT = (Status.OPTIMAL, Status.GAP_LIMIT)
+
     A = prob.A
     idx = np.flatnonzero(int_mask)
     if idx.size == 0 or x_lp is None:
@@ -485,7 +493,7 @@ def dive(prob, int_mask, lo, hi, node_solve, x_lp, basis=None,
         l2, h2 = l.copy(), h.copy()
         l2[idx] = h2[idx] = np.clip(xx[idx], l[idx], h[idx])
         r = node_solve(l2, h2, basis)
-        if r.status == Status.OPTIMAL and r.x is not None:
+        if r.status in _HAS_POINT and r.x is not None:
             xx = r.x.copy()
             xx[idx] = np.round(xx[idx])
         rv, bv, iv = prob.violation(xx)
@@ -528,7 +536,7 @@ def dive(prob, int_mask, lo, hi, node_solve, x_lp, basis=None,
                     return None
                 r = node_solve(l, h, b0)
                 n_lp += 1
-                if r.status == Status.OPTIMAL and r.x is not None:
+                if r.status in _HAS_POINT and r.x is not None:
                     x, basis = r.x, r.basis
                     ok = True
             if ok:

@@ -262,7 +262,10 @@ def _relaxation(prob: Problem, lo, hi, params: MIQPParams, deadline: float,
                      "eps_rel": params.qp.eps_rel / f,
                      "max_iter": params.qp.max_iter * 4 ** tighten,
                      "time_limit": max(0.0, deadline - time.perf_counter()),
-                     "check_convex": params.qp.check_convex and not certified})
+                     "check_convex": params.qp.check_convex and not certified,
+                     # the node's bound is certified here, from the point and
+                     # its duals; the engine's own certificate is not needed
+                     "certify": False})
     try:
         return solve_qp(node, qp, workspace=workspace)
     except NotConvexError:

@@ -49,9 +49,12 @@ def ipm_params(params: QPParams):
     """The interior-point settings the dispatcher derives from QP settings."""
     from ..lp.ipm import IPMParams
     tol = max(params.eps_abs, params.eps_rel)
-    return IPMParams(time_limit=params.time_limit,
-                     eps_p=min(tol, 1e-9), eps_d=min(tol, 1e-9),
-                     eps_gap=min(tol, 1e-10), verbose=params.verbose)
+    ip = IPMParams(time_limit=params.time_limit,
+                   eps_p=min(tol, 1e-9), eps_d=min(tol, 1e-9),
+                   eps_gap=min(tol, 1e-10), verbose=params.verbose)
+    if not params.certify:
+        ip.cert_extra_iters = 0
+    return ip
 
 
 def qp_workspace(prob, params: QPParams | None = None):

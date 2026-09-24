@@ -175,7 +175,28 @@ class IPMParams:
     ``info["certified_from"]``. Reduced costs at infinite column bounds are
     absorbed up to ``eps_d`` of the cost scale, the same allowance the loop's
     own dual test makes; larger ones leave the bound vacuous and the status
-    as the loop left it. ``0`` disables the test."""
+    as the loop left it. ``0`` disables the test.
+
+    It works the other way too. An ``OPTIMAL`` from the loop that the
+    certificate does not confirm -- under the verifier's own allowance, so
+    exactly the points the verifier would refuse -- is reported as
+    ``GAP_LIMIT`` with the point, ``info["certified_bound"]`` and
+    ``info["certified_gap"]`` (signed: negative when the objective sits a
+    rounding below the bound). The stall exit is what produces most of
+    them: it accepts a gap up to
+    ``gap_stall_accept``, and the engine does not claim what its checker
+    would refuse."""
+
+    cert_extra_iters: int = 10
+    """Iterations the loop may take past its own convergence test while the
+    point it has does not yet pass the certificate. An interior point's
+    reduced costs sit at its dual tolerance, never at zero, and the
+    certificate charges each against the distance to its far bound: a
+    two-variable QP boxed at +-100, solved exactly, certified at 6e-10 and
+    one iteration later at 3e-15. If the extra steps find no certified exit,
+    the first converged point is what is returned -- so the answer is never
+    worse than the loop's own test would have given -- and its status is
+    whatever its certificate supports (see ``cert_tol``). ``0`` disables."""
 
     max_iter: int = 200
     time_limit: float = 600.0
@@ -996,6 +1017,8 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
     stall = 0
     mu_stall = 0
     mu_best = np.inf
+    saved = None                     # the first converged, uncertified iterate
+    cert_extra = 0
 
     for it in range(1, params.max_iter + 1):
         if time.perf_counter() - t0 > params.time_limit:
@@ -1046,8 +1069,23 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
         history.append((it, mu, pres, dres, gap))
 
         if pres <= params.eps_p and dres <= params.eps_d and gap <= params.eps_gap:
-            status = Status.OPTIMAL
-            break
+            if (params.cert_tol <= 0.0 or params.cert_extra_iters <= 0
+                    or _certifies(prob, sc, flip, z[:n], y, params)):
+                status = Status.OPTIMAL
+                break
+            # Converged by the loop's test and not by the verifier's. The
+            # barrier usually has a step or two left in it; keep the point
+            # in case it has not.
+            if saved is None:
+                saved = (z.copy(), y.copy(), zl.copy(), zu.copy(), gap)
+        if saved is not None:
+            # Counted per iteration, not per converged exit: the loop's own
+            # test need not fire again, and without a count here nothing
+            # but max_iter would end the extra steps.
+            if cert_extra >= params.cert_extra_iters:
+                status = Status.OPTIMAL
+                break
+            cert_extra += 1
         # The complementarity gaps are floored at 1e-12 so a division never
         # blows up, and on a model whose duals reach 1e4 that floor pins mu
         # near 1e-8 for good. Both residuals are then at machine precision,
@@ -1195,16 +1233,48 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
         zl = zl + ad * d_zl
         zu = zu + ad * d_zu
 
+    final_gap = history[-1][4] if history else None
+    if saved is not None and not (status == Status.OPTIMAL
+                                  and _certifies(prob, sc, flip, z[:n], y, params)):
+        # The steps past convergence found no point the verifier certifies.
+        # Return the one the loop's own test accepted, and let _finish say
+        # what its certificate supports.
+        z, y, zl, zu, final_gap = saved
+        status = Status.OPTIMAL
+
     x_s = z[:n]
     d_s = (zl - zu)[:n]
     sol = _finish(prob, work, scaled, sc, flip, x_s, y, d_s,
                   status, it, t0, params, "ipm", ordering=kkt.chosen,
-                  gap=history[-1][4] if history else None,
+                  gap=final_gap,
                   kkt_failures=(kkt.ldl_failures, kkt.ldl_corrected,
                                 kkt.ldl_used, kkt.ldl_boosted)
                   if (kkt.ldl_failures or kkt.ldl_corrected) else 0)
     sol.log = history
     return sol
+
+
+def _certifies(prob, sc, flip, x_scaled, y_scaled, params) -> bool:
+    """Whether the verifier would certify this iterate: feasible to the cap
+    on the unscaled model, and within ``cert_tol`` of the bound its duals
+    give under the verifier's own allowance -- the test :func:`_finish`
+    applies before it lets an ``OPTIMAL`` stand."""
+    x = sc.unscale_primal(x_scaled)
+    np.clip(x, prob.col_lb, prob.col_ub, out=x)
+    y = sc.unscale_dual(y_scaled)
+    if flip:
+        y = -y
+    if not np.isfinite(y).all():
+        return False
+    row_v, col_v, _ = prob.violation(x)
+    if max(row_v, col_v) > params.feas_cap:
+        return False
+    obj = prob.objective(x)
+    bnd, _ = certified_bound(prob, x, y)
+    if not np.isfinite(bnd):
+        return False
+    cgap = (obj - bnd) if prob.sense == ObjSense.MINIMISE else (bnd - obj)
+    return abs(cgap / max(1.0, abs(obj))) <= params.cert_tol
 
 
 def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
@@ -1259,6 +1329,39 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
                 certified = (bnd, rel, pert, Status(status).name)
                 status = Status.OPTIMAL
 
+    # And the other direction. The loop's own OPTIMAL is a claim about the
+    # scaled iteration -- the stall exit accepts a gap up to
+    # gap_stall_accept, 1e-7 -- and the verifier certifies at cert_tol,
+    # 1e-9. A 744-hour blending plan stalled at a gap of 5.4e-9 with its
+    # factorisation failing, came back OPTIMAL, and the verifier refused it
+    # at 7.3e-9. So an OPTIMAL the certificate does not confirm is not
+    # reported as one: it is GAP_LIMIT, with the point, the bound and the
+    # signed gap it did reach. That holds on both sides of the bound. An
+    # objective a hair *below* a valid bound is a point that is feasible to
+    # the cap and off by rounding at the bound's resolution -- hues-mod,
+    # liswet6 and stadat3 of Maros-Meszaros sit 2e-9 to 4e-8 below it with
+    # rows met to 1e-8 and better -- and calling that NUMERICAL threw away
+    # points the verifier accepts as feasible. The sign is in the gap.
+    # This test takes the verifier's allowance for reduced costs at infinite
+    # bounds (certified_bound's default) rather than the upgrade's stricter
+    # eps_d, so a status is taken away exactly when the verifier would
+    # refuse the point, and never when it would accept it.
+    uncertified = None
+    if status == Status.OPTIMAL and certified is None and params.cert_tol > 0.0:
+        if np.isfinite(y).all():
+            bnd, pert = certified_bound(prob, x, y)
+        else:
+            bnd, pert = float("nan"), float("inf")
+        rel = float("inf")
+        if np.isfinite(bnd):
+            cgap = (obj - bnd) if prob.sense == ObjSense.MINIMISE else (bnd - obj)
+            rel = cgap / max(1.0, abs(obj))
+        if abs(rel) <= params.cert_tol:
+            certified = (bnd, rel, pert, Status.OPTIMAL.name)
+        else:
+            uncertified = (bnd, rel, pert)
+            status = Status.GAP_LIMIT
+
     if worst > params.feas_cap and Status(status).has_solution:
         # An unconverged iterate is not a solution, and ``has_solution`` is
         # true for TIME_LIMIT and ITERATION_LIMIT -- so handing the point back
@@ -1287,6 +1390,15 @@ def _finish(prob, work, scaled, sc, flip, x_scaled, y_scaled, d_scaled,
             sol.info["cost_perturbation"] = pert
         if came_from != Status.OPTIMAL.name:
             sol.info["certified_from"] = came_from
+    if uncertified is not None:
+        bnd, rel, pert = uncertified
+        if np.isfinite(bnd):
+            sol.dual_bound = bnd
+        sol.info["certified_bound"] = bnd
+        sol.info["certified_gap"] = rel
+        sol.info["uncertified_from"] = Status.OPTIMAL.name
+        if pert:
+            sol.info["cost_perturbation"] = pert
     if kkt_failures:
         sol.info["ldl_failures"] = kkt_failures[0]
         sol.info["ldl_corrected"] = kkt_failures[1]

@@ -355,7 +355,7 @@ python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
 python -m bench.orlib --set cap       # Beasley's warehouse-location MILPs against capopt.txt
 python -m bench.williams              # seven of Williams' textbook models against the book, every engine
-python -m pytest tests/               # 799 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 803 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -497,7 +497,7 @@ checks below all reach for something external.
 | OR-Library warehouse location (Beasley), `capopt.txt` / `uncapopt.txt` | **49/49** of the 16-50 warehouse problems proved on the published value; the 100 × 1,000 ones do not start (Known limits) |
 | MIPLIB 2017 published infeasible / unbounded (31) | 11/26 proved infeasible, 4/5 unbounded recognised at the root; the other two "feasible points" were bug 16 |
 | MIPLIB 2017 easy, ≤ 10k nnz, not run before (114) | 20 proved, 32 on the value, 98 verifier-accepted in 120 s |
-| Maros and Meszaros' 138 convex QPs | **121 optimal, 97 certified** (no machine-readable optima exist; the certificate is the check) |
+| Maros and Meszaros' 138 convex QPs | **101 certified optimal**, and 20 more feasible at a measured gap (`GAP_LIMIT`); 121 were reported `OPTIMAL` and 97 certified before bug 22 (no machine-readable optima exist; the certificate is the check) |
 
 The last two are recent, and they are there because everything above them
 passed while `node_solver="bnr"` was returning wrong answers. Enumerating every
@@ -1393,6 +1393,52 @@ six now have regression tests.
     status and objective (17 optimal, 30 accepted by the verifier). The
     six-hour model is a test fixture (`tests/fixtures/blend_plan_6h.mps.gz`).
 
+22. **The interior point said `OPTIMAL` about points the verifier refused.**
+    Found by `Test_Data/`: the first month of the hourly plan (77,406 rows)
+    came back `OPTIMAL` and the verifier rejected it. The point was
+    feasible (rows to 5.4e-10) and its objective within 7.3e-9 of the
+    bound its duals certify -- optimal to seven parts in a billion -- but
+    the verifier certifies at 1e-9. The loop had stopped on its stall
+    rule, which accepts a gap up to `gap_stall_accept` = 1e-7 once the
+    barrier stops moving (here, with its factorisation failing twice in
+    the last iterations), and the check `_finish` runs afterwards could
+    only *upgrade* a status to `OPTIMAL`, never take one away. Netlib's
+    `etamacro` (2e-8) had been listed as "optimal, not certified" in
+    `docs/BENCHMARKS.md` for the same reason. Two changes:
+    - an `OPTIMAL` the certificate does not confirm -- under the
+      verifier's own allowance, so exactly when the verifier would refuse
+      it -- is now `GAP_LIMIT`, with the point, `info["certified_bound"]`
+      and the signed `info["certified_gap"]`. A point a rounding *below*
+      the bound (hues-mod, liswet6, stadat3: 2e-9 to 4e-8) is the same
+      case, not an infeasible one; a first version that called it
+      `NUMERICAL` threw away points the verifier accepts as feasible, and
+      the regression run caught it;
+    - when the loop's own test passes and the certificate does not, it
+      takes up to `cert_extra_iters` = 10 more iterations while the
+      barrier still moves, and returns the first converged point if none
+      certifies -- so no answer is worse than before. An interior point's
+      reduced costs sit at its tolerance, never at zero, and the
+      certificate charges each against its far bound: a QP boxed at ±100
+      certified at 6e-10, and at 3e-15 one iteration later. On a
+      1e6-scale equality LP the loop had stopped with rows 4e-5 off;
+      one more iteration reached 1.2e-9, where it used to be `NUMERICAL`.
+      Trees that certify their own node bounds (MIQP, αBB) switch this
+      off (`QPParams.certify`), and the shared dive now accepts a
+      `GAP_LIMIT` node's point -- refusing it cost QPLIB 3871 its
+      incumbent in the first regression run (250.9 against 1,190.7).
+
+    Against the unchanged engine, side by side: the IPM's `OPTIMAL` is
+    now its certified count on every set. Netlib: certified 81/89 both
+    (dfl001 at the limit under load in both), `etamacro` `GAP_LIMIT`.
+    MIPLIB LP relaxations: 42/45 certified both, `nw04` (stalled at
+    2.8e-8, certified gap 1.1e-8) `GAP_LIMIT`. Maros–Meszaros: certified
+    97 -> **101**/138 (cvxqp2_m, dual1, gouldqp3, qptest certify on the
+    extra steps), `OPTIMAL` 121 -> 101 with 20 at `GAP_LIMIT`, the same
+    130 feasible points accepted. Kennington 15/16 certified, identical.
+    QPLIB: 8938, 8792 and 8515 `GAP_LIMIT` on the published value,
+    incumbents on the MIQP and non-convex set identical or better with
+    more nodes explored. The month window: `GAP_LIMIT`, gap 7.3e-9.
+
 ---
 
 ## Known limits
@@ -1821,8 +1867,8 @@ six now have regression tests.
   with the point 0.2% below its own bound; boyd1 and boyd2 (93,000
   variables) fail on conditioning and size; cont-300's 90,000-row KKT
   does not factorise in 120 s; qfffff80 gets the stagnation verdict the
-  LP fffff800 does not. 121 of 138 optimal and 97 certified is the
-  rest.
+  LP fffff800 does not. 101 of 138 certified optimal, and 20 more
+  feasible at a measured gap (`GAP_LIMIT`), is the rest.
 - **The tree has no integer reasoning beyond the LP bound.** MIPLIB's
   p2m2p1m1p0n100 (one equality row, 100 integers, no integer solution),
   ej (three variables) and the enlight family are infeasible or hard by
@@ -2029,7 +2075,7 @@ python -m bench.netlib             # 89 problems, 377 s
 | match the readme's optimum to 1e-6 | **79/89** |
 | **certified optimal by the independent verifier** | **88/89** |
 | hit the limit | 2 (`dfl001`, and `cycle`, whose point is certified optimal anyway); `maros-r7` solves in 50 s since bug 21 |
-| the interior point alone, 120 s (`--method ipm`) | **82/89 certified optimal** in 316 s for the set (from 77 before the unit and the LDLᵀ retry, Known limits), 75 on the readme's value, and since bug 15 its own status is `OPTIMAL` on every certified row -- it used to say `NUMERICAL` on five of them and hit the iteration limit on a sixth; the real failures: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, forplan at the iteration limit with no point, pilot4 `NUMERICAL`, fit2p over the limit (dfl001 solves at 116 s) |
+| the interior point alone, 120 s (`--method ipm`) | **82/89 certified optimal** in 316 s for the set (from 77 before the unit and the LDLᵀ retry, Known limits), 75 on the readme's value, and since bug 15 its own status is `OPTIMAL` on every certified row -- it used to say `NUMERICAL` on five of them and hit the iteration limit on a sixth -- and since bug 22 on no other row (`etamacro`, optimal to 2e-8, is `GAP_LIMIT`); the real failures: agg, finnis, perold at a wrong `INFEASIBLE_OR_UNBOUNDED`, forplan at the iteration limit with no point, pilot4 `NUMERICAL`, fit2p over the limit (dfl001 solves at 116 s) |
 
 **The eight "accuracy shortfalls" were the readme's, not the engine's.** This
 table used to say the simplex fell short of the published optimum on eight
@@ -2121,7 +2167,7 @@ python -m bench.qplib --run --time-limit 60 --max-vars 6000
 | parsed | **29/29** (32/32 with the three box-only giants) |
 | published point verified | **28/29** (`9002` publishes none) -- and the published structure counts reproduced on **35/35** |
 | certified bound never above the published value | **24/24** |
-| convex, continuous: optimal to 1e-8 | **9/10** — `8845` 1.2 s, `8938` 1.4 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 4.6 s, `8790` (39,204) 1.9 s, `8515` (16,002) 6.1 s; `8559` (10,000 vars, 5,000 rows) 12 iterations, `8567` (10,000, 7,500 rows) 10 iterations, both about 100 s; `9002` solved to a 1e-9 gap and refused by the absolute yardstick, below |
+| convex, continuous: optimal to 1e-8 | **9/10** (since bug 22 `8938`, `8792` and `8515` report `GAP_LIMIT`: the published value, not the 1e-9 certificate) — `8845` 1.2 s, `8938` 1.4 s, `8906` 1.0 s; `8991` (14,400 vars) 0.5 s, `8792` (15,129) 4.6 s, `8790` (39,204) 1.9 s, `8515` (16,002) 6.1 s; `8559` (10,000 vars, 5,000 rows) 12 iterations, `8567` (10,000, 7,500 rows) 10 iterations, both about 100 s; `9002` solved to a 1e-9 gap and refused by the absolute yardstick, below |
 | convex, binary: published optimum reached | 3/7 — `10050`, `10056` to 1e-10, gap left at 1.9% / 0.28% in 60 s (was 3.6% / 1.6%); `10069` closed; `3980`, `3913`, `3871`, `4270` have incumbents 15%, 2.6%, 27% and 12% above the published values (Known limits) |
 | non-convex: published value reached | **4/18** -- `10040` proved optimal in 9 s, `10042`, `10073`, `10074` to 1e-5 (was 1/18 before αBB with the certified shift took the dense instances); `5881` within 0.5%, `0031`/`0032` within 3.5-6.4%; `10072`, `0067` have first incumbents; on the 50-variable simplex instances the bound moved from 20x below the published value to 13x and the incumbents from 70% off to 52-55% |
 
@@ -2145,7 +2191,8 @@ and never worse than `-inf`. And on `8938` the complementarity gaps' floor of
 1e-12 pinned `mu` at 4.87e-8 for 140 iterations with both residuals at
 machine precision and the objective eight digits into the published value:
 a gap that has stopped moving with the residuals converged is now accepted
-and reported in `info["gap"]`.
+and reported in `info["gap"]` -- and, since bug 22, reported as `OPTIMAL`
+only when the certificate confirms it, `GAP_LIMIT` otherwise.
 
 Where the engine is genuinely short: `9002` (bounds of 1e11, a diagonal `Q`
 spanning 1e-11 to 2) used to defeat the barrier outright -- iterates at
@@ -2217,6 +2264,6 @@ examples/     blending/ a six-component, three-product gasoline blend;
               page take
 bench/        fetch, harness, verifier (points and infeasibility rays), GPU
               benchmark, Netlib, QPLIB, OR-Library, Williams, scale
-tests/        799 tests including regressions for every bug above
+tests/        803 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

@@ -63,7 +63,7 @@ class Status(IntEnum):
     ITERATION_LIMIT = 4
     TIME_LIMIT = 5
     NODE_LIMIT = 6
-    GAP_LIMIT = 7
+    GAP_LIMIT = 7          # a feasible point whose certified gap is known but above target
     NUMERICAL = 8
     INTERRUPTED = 9
     NOT_SOLVED = 10

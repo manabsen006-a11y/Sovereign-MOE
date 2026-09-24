@@ -38,7 +38,7 @@ each section says which.
 | literature | Williams, six models + the refinery | 7 (15 solves) | **15/15 on the book** | 15/15 to the penny | 15 | blending, planning, distribution, unit commitment, mining |
 | supply chain | OR-Library warehouse location, 16-50 warehouses | 49 | **49 proved** | 49/49 | 49 | at the root or within 57 nodes; 22 s |
 | supply chain | the same, 100 × 1,000 | 15 | 0 | 0 | 0 | the tree's root simplex does not finish; the interior point does it in 35 s |
-| QP | Maros and Meszaros, all 138 | 138 | **121 optimal, 97 certified** | — (none published) | 130 | 3 defects fixed first (bugs 18, 19, a reader fix); liswet and boyd remain |
+| QP | Maros and Meszaros, all 138 | 138 | **121 optimal, 97 certified** (since bug 22: 101 certified and reported `OPTIMAL`, 20 `GAP_LIMIT`) | — (none published) | 130 | 3 defects fixed first (bugs 18, 19, a reader fix); liswet and boyd remain |
 | MILP, infeasible | MIPLIB 2017 published-infeasible, ≤ 100k nnz | 26 | **11 proved infeasible** | 11/26 | — | two "feasible points" were bug 16, a reader convention |
 | MILP, unbounded | MIPLIB 2017 published-unbounded | 5 | **4 recognised at the root** | 4/5 | — | were `NODE_LIMIT` before bug 17 |
 | MILP, a new draw | every easy MIPLIB 2017 instance ≤ 10k nnz not run before | 114 | **20 proved** | 32 (20 + 12 unproved) | 98 | 16 no incumbent; the cut families again; 3.3 h |
@@ -546,6 +546,7 @@ now. The table is the run after the three fixes.
 | `OPTIMAL` | **121/138** (113 before bug 18) |
 | verifier-accepted point | 130/138 |
 | **certified optimal** | **97/138** (83 before bugs 18 and 19 and the mask below) |
+| since bug 22 (README) | **101/138** certified, and `OPTIMAL` is now exactly those 101; the other 20 of the 121 report `GAP_LIMIT` with the same feasible points, and cvxqp2_m, dual1, gouldqp3, qptest certify on the extra iterations |
 | total time | 730 s; the 121 optima in 380 s, cvxqp3_l (10,000 × 15,000) the slowest at 114 s |
 
 The 24 accepted-but-uncertified optima are the interior point's normal

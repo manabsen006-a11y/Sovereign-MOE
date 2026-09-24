@@ -127,7 +127,7 @@ Measured on the development laptop (RTX 3050 4 GB, 16 GB RAM):
 | one hour, pooling | 144 × 1,198, 840 bilinear terms | time limit at 300 s: plan ₹1,494.66k against a proven bound of ₹1,495.24k (gap 0.04 %), ACCEPTED |
 | plan, first 24 h | 2,526 × 4,416, 46k nnz | default engine OPTIMAL, 27 s (13,165 pivots); IPM OPTIMAL, 3.5 s; both ACCEPTED |
 | plan, first week | 17,502 × 30,912, 321k nnz | IPM OPTIMAL, 110 s, 0.65 GB, ACCEPTED |
-| plan, first month | 77,406 × 136,896, 1.4 M nnz | IPM OPTIMAL, 789 s, 1.72 GB — **the independent check rejected the point**; not yet explained |
+| plan, first month | 77,406 × 136,896, 1.4 M nnz | IPM `GAP_LIMIT`, ~820 s, 1.72 GB: feasible (rows to 5.4e-10), margin within 7.3e-9 of the proven bound, not certified at 1e-9 |
 | plan, full two years | ~1.8 M × 3.2 M, ~34 M nnz | not run: extrapolates past this machine's memory and to days of IPM time |
 
 Three things to know:
@@ -137,9 +137,12 @@ Three things to know:
   noticed, so `--prices` runs never finished. It now detects the loss and
   the primal completes the solve; every window from 2 to 24 hours solves
   on the default engine to the interior point's value.
-- **The month window's point is unverified.** The interior point reports
-  it OPTIMAL and the independent check refuses it. Until that is
-  understood, treat month-sized plans from these tables as unconfirmed.
+- **The month window is optimal to 7 parts in a billion, and says so.**
+  The interior point stalls there at a gap of 5.4e-9, short of the 1e-9 the
+  independent check certifies at; it used to report that as `OPTIMAL`
+  and the check refused it (README, bug 22). It now reports `GAP_LIMIT`
+  with the certified bound and gap: the plan is feasible, and the margin
+  is pinned between ₹1,453,199.281k and ₹1,453,199.292k.
 - **The whole horizon is a stress case, not a planning run.** No refinery
   solves two years hourly as one LP; schedulers run days to weeks hourly,
   planners run months. The plan's size is streams × grades × hours, and at

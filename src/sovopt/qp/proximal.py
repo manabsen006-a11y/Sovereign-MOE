@@ -97,6 +97,12 @@ class QPParams:
     """Estimate the smallest eigenvalue before solving. A caller that has
     certified convexity itself -- the MIQP tree factorises ``Q − εI`` --
     turns this off, and saves the power iteration at every node."""
+    certify: bool = True
+    """Let the interior point iterate past its own convergence test until
+    its point passes the verifier's certificate (``IPMParams.cert_extra_iters``).
+    A tree that certifies each node's bound itself from the point and its
+    duals -- the MIQP tree, alpha-BB -- turns this off: the extra iterations
+    buy it nothing, and on QPLIB's non-convex set they cost it nodes."""
     scaling: str = "pdlp"
     verbose: bool = False
 
