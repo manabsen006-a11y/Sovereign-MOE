@@ -138,3 +138,43 @@ def test_the_simplex_does_not_call_a_point_optimal_that_the_verifier_rejects():
     assert s.status != Status.OPTIMAL
     if s.x is not None:
         assert not verify(p, s.x, feas_tol=1e-6).ok or s.status == Status.NUMERICAL
+
+
+# --------------------------------------------------------------------------- #
+# the verdict in words                                                         #
+# --------------------------------------------------------------------------- #
+
+
+def test_the_headline_separates_feasible_from_certified_from_wrong():
+    """ACCEPTED, FEASIBLE and REJECTED from one model: the simplex's
+    optimum, an interior point stopped short of the certificate, and that
+    point pushed off a row. A bare REJECTED used to cover the middle case,
+    and read as "the plan is wrong" for a plan optimal to 7.3e-9."""
+    import os
+    from sovopt.io.mps import read_mps
+    p = read_mps(os.path.join(os.path.dirname(__file__), "fixtures", "testprob.mps"))
+    s = solve_simplex(p)
+    word, detail = verify(p, s.x, s.objective, y=s.y).headline()
+    assert word == "ACCEPTED" and "certified optimal" in detail
+
+    short = solve_ipm(p, IPMParams(eps_gap=1e-5, cert_extra_iters=0))
+    assert short.status == Status.GAP_LIMIT
+    v = verify(p, short.x, short.objective, y=short.y)
+    word, detail = v.headline()
+    assert word == "FEASIBLE" and f"{v.gap_rel:.1e}" in detail
+    assert verify(p, short.x, short.objective).headline()[0] == "ACCEPTED"   # no duals
+
+    off = short.x - 1e3                        # off the rows and the bounds
+    word, detail = verify(p, off, y=short.y).headline()
+    assert word == "REJECTED"
+    assert "row constraints" in detail or "column bounds" in detail
+
+
+def test_a_failed_extra_check_rejects_the_point():
+    """The pooling plan's bilinear identities ride along as an extra check."""
+    p = random_lp(seed=0)
+    s = solve_simplex(p)
+    v = verify(p, s.x, s.objective, y=s.y)
+    assert v.headline(("bilinear identities", True, "max violation 0"))[0] == "ACCEPTED"
+    word, detail = v.headline(("bilinear identities", False, "max violation 1.0e-03"))
+    assert word == "REJECTED" and "bilinear identities" in detail

@@ -35,6 +35,16 @@ from sovopt.numerics.scaling import compute_scaling               # noqa: E402
 
 app = FastAPI(title="SOVOPT")
 
+
+def _finite(v):
+    """A float for the JSON, or None where there is none to give. A solve
+    that ends without a point -- the interior point at its time limit on a
+    month of hourly blending -- left NaN here, which JSON cannot carry, and
+    the page showed a traceback instead of the status."""
+    v = float(v)
+    return v if np.isfinite(v) else None
+
+
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>SOVOPT</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -185,7 +195,7 @@ function planCards(pl){
   if(pl.pools) return poolingCards(pl);
   let h='<div class="card"><h2>plan &mdash; margin '+fmt(pl.objective,2)+'</h2>'
    +'<div class="muted">revenue '+fmt(pl.revenue,2)+' &minus; component cost '+fmt(pl.cost,2)
-   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>':'')+'</div>';
+   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>'+(pl.verifier_detail?' ('+esc(pl.verifier_detail)+')':''):'')+'</div>';
   h+='<h2 style="margin-top:12px">products</h2><table><tr><th>product</th><th>volume</th><th>revenue</th><th>qualities (value, spec)</th></tr>';
   for(const p of pl.products){
     const qs=Object.entries(p.qualities).map(([q,v])=>q+' '+fmt(v.value)+(v.min!=null||v.max!=null?' ['+fmt(v.min)+' .. '+fmt(v.max)+']':'')+(v.binding?' <b>*'+v.binding+'</b>':'')).join('<br>');
@@ -211,7 +221,7 @@ function planningCards(pl){
   const t=pl.totals;
   let h='<div class="card"><h2>plan over the horizon &mdash; margin '+fmt(pl.objective,2)+'</h2>'
    +'<div class="muted">revenue '+fmt(t.revenue,2)+' &minus; purchases '+fmt(t.purchases,2)+' &minus; storage '+fmt(t.storage,2)
-   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>':'')+'</div>';
+   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>'+(pl.verifier_detail?' ('+esc(pl.verifier_detail)+')':''):'')+'</div>';
   for(const per of pl.periods){
     h+='<h2 style="margin-top:12px">'+esc(per.period)+'</h2><table><tr><th>component</th><th>buy</th><th>@ price</th><th>use</th><th>store</th></tr>';
     for(const c of per.components) h+='<tr><td>'+esc(c.name)+'</td><td>'+fmt(c.buy)+'</td><td>'+fmt(c.price)+'</td><td>'+fmt(c.use)+'</td><td>'+fmt(c.store)+'</td></tr>';
@@ -228,7 +238,7 @@ function poolingCards(pl){
   let h='<div class="card"><h2>pooling plan &mdash; margin '+fmt(pl.objective,2)+(pl.proved_global?' (proved globally optimal)':'')+'</h2>'
    +'<div class="muted">revenue '+fmt(pl.revenue,2)+' &minus; component cost '+fmt(pl.cost,2)
    +(pl.dual_bound!=null?' &middot; bound '+fmt(pl.dual_bound,2)+', '+pl.nodes+' nodes':'')
-   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>':'')+'</div>';
+   +(pl.verifier_verdict?' &middot; independent check: <b>'+esc(pl.verifier_verdict)+'</b>'+(pl.verifier_detail?' ('+esc(pl.verifier_detail)+')':''):'')+'</div>';
   h+='<h2 style="margin-top:12px">pools</h2><table><tr><th>pool</th><th>throughput / capacity</th><th>composition</th><th>qualities</th></tr>';
   for(const p of pl.pools){
     const comp=Object.entries(p.composition).map(([c,s])=>c+' '+(100*s).toFixed(1)+'%').join(', ')||'idle';
@@ -264,7 +274,10 @@ function chart(hist){
 
 function resultCard(r){
   const s=r.status==='OPTIMAL'?'ok':'bad';
-  const feas=(r.viol_row<1e-6&&r.viol_bound<1e-6&&r.viol_int<1e-6);
+  // null when the solve returned no point -- and null < 1e-6 is true in
+  // JavaScript, so it has to be caught before it reads as "feasible"
+  const nopt=(r.viol_row==null);
+  const feas=!nopt&&(r.viol_row<1e-6&&r.viol_bound<1e-6&&r.viol_int<1e-6);
   return '<div class="card"><h2>'+esc(r.device)+' result</h2><table>'
    +'<tr><td>status</td><td class="'+s+'">'+esc(r.status)+'</td></tr>'
    +'<tr><td>objective</td><td class="big">'+ (r.objective==null?'-':r.objective.toPrecision(12)) +'</td></tr>'
@@ -274,9 +287,9 @@ function resultCard(r){
    +'<tr><td>time</td><td>'+r.time.toFixed(3)+' s</td></tr>'
    +'<tr><td>method</td><td>'+esc(r.method)+'</td></tr>'
    +'<tr><td>independent check</td><td class="'+(feas?'ok':'bad')+'">'
-     +(feas?'feasible':'VIOLATION')+' — row '+r.viol_row.toExponential(1)
+     +(nopt?'no point returned':(feas?'feasible':'VIOLATION')+' — row '+r.viol_row.toExponential(1)
      +', bound '+r.viol_bound.toExponential(1)
-     +', integrality '+r.viol_int.toExponential(1)+'</td></tr>'
+     +', integrality '+r.viol_int.toExponential(1))+'</td></tr>'
    +'</table></div>';
 }
 
@@ -464,8 +477,8 @@ async def api_solve(request: Request):
                 "dual_bound": float(sol.dual_bound) if np.isfinite(sol.dual_bound) else None,
                 "nodes": int(sol.nodes), "iterations": int(sol.iterations), "time": dt,
                 "method": "spatial branch-and-bound (pq-formulation)",
-                "viol_row": float(max(rv, bil) if np.isfinite(bil) else rv),
-                "viol_bound": float(bv), "viol_int": float(iv), "history": [],
+                "viol_row": _finite(max(rv, bil) if np.isfinite(bil) else rv),
+                "viol_bound": _finite(bv), "viol_int": _finite(iv), "history": [],
             })
             devices, last_sol = [], sol
         for dev in devices:
@@ -485,7 +498,8 @@ async def api_solve(request: Request):
             rv, bv, iv = (prob.violation(sol.x) if sol.x is not None
                           else (float("nan"),) * 3)
             hist = [[int(h[0]), float(h[1]), float(h[2]), float(h[3])]
-                    for h in (sol.log or []) if len(h) >= 4]
+                    for h in (sol.log or [])
+                    if len(h) >= 4 and np.isfinite(h[1:4]).all()]
             results.append({
                 "device": dev,
                 "status": sol.status.name,
@@ -497,7 +511,7 @@ async def api_solve(request: Request):
                 "iterations": int(sol.iterations),
                 "time": dt,
                 "method": sol.method,
-                "viol_row": float(rv), "viol_bound": float(bv), "viol_int": float(iv),
+                "viol_row": _finite(rv), "viol_bound": _finite(bv), "viol_int": _finite(iv),
                 "history": hist[-400:],
             })
 
@@ -523,10 +537,12 @@ async def api_solve(request: Request):
                     from bench.verify import verify as _verify
                     v = _verify(prob, last_sol.x, last_sol.objective, feas_tol=1e-6,
                                 y=(None if hasattr(tables, "pools") else last_sol.y))
-                    ok = v.ok
+                    extra = None
                     if hasattr(tables, "pools"):
-                        ok = ok and tables.problem.max_violation(last_sol.x) <= 1e-6
-                    plan["verifier_verdict"] = "ACCEPTED" if ok else "REJECTED"
+                        bil = tables.problem.max_violation(last_sol.x)
+                        extra = ("bilinear identities", bil <= 1e-6,
+                                 f"max violation {bil:.3e}")
+                    plan["verifier_verdict"], plan["verifier_detail"] = v.headline(extra)
                 except ImportError:
                     pass
 

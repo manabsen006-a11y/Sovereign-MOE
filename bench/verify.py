@@ -56,6 +56,9 @@ class Verdict:
     def __init__(self):
         self.checks: list[tuple[str, bool, str]] = []
         self.certified_bound = None
+        self.gap_rel = None          # the optimality gap, when duals were checked
+        self.feas_tol = None
+        self.opt_tol = None
 
     def add(self, name, ok, detail=""):
         self.checks.append((name, bool(ok), detail))
@@ -63,6 +66,41 @@ class Verdict:
     @property
     def ok(self) -> bool:
         return all(c[1] for c in self.checks)
+
+    def headline(self, extra=None):
+        """``(verdict, detail)`` for a plan's footer, in words.
+
+        ``ACCEPTED``  every check passed -- certified optimal when duals were
+                      given, feasible when they were not;
+        ``FEASIBLE``  every check but optimality: the point meets the model,
+                      and its duals bound it only to a gap above ``opt_tol``;
+        ``REJECTED``  the point fails the model itself.
+
+        A bare REJECTED used to cover the middle case too, and read as "the
+        plan is wrong" for a month of hourly blending that met every row to
+        5.4e-10 and was optimal to 7.3e-9. ``extra`` is one more ``(name,
+        ok, detail)`` check of the caller's -- a pooling plan's bilinear
+        identities.
+        """
+        checks = list(self.checks) + ([extra] if extra is not None else [])
+        failed = [c for c in checks if not c[1]]
+        hard = [c for c in failed if c[0] != "optimality"]
+        if hard:
+            return "REJECTED", "; ".join(f"{name}: {detail}" for name, _ok, detail in hard)
+        feas = f"feasible to {self.feas_tol:.0e}" if self.feas_tol else "feasible"
+        opt = f"{self.opt_tol:.0e}" if self.opt_tol else "the certificate's tolerance"
+        if not failed:
+            if any(c[0] == "optimality" for c in checks):
+                return "ACCEPTED", f"{feas}, and certified optimal to {opt}"
+            return "ACCEPTED", f"{feas}; optimality not checked"
+        gap = self.gap_rel
+        if gap is None or not np.isfinite(gap):
+            return "FEASIBLE", f"{feas}; its duals certify no bound"
+        if gap < 0:
+            return "FEASIBLE", (f"{feas}; the objective sits {-gap:.1e} past the certified "
+                                f"bound -- rounding at the bound's resolution -- so it is "
+                                f"not certified at {opt}")
+        return "FEASIBLE", f"{feas}, and optimal to {gap:.1e} -- short of the {opt} certificate"
 
     def report(self) -> str:
         w = max(len(c[0]) for c in self.checks) if self.checks else 10
@@ -156,6 +194,7 @@ def verify_infeasible(prob, ray, rel_tol=1e-9, dual_tol=1e-9) -> Verdict:
 def verify(prob, x, claimed_obj=None, feas_tol=1e-6, int_tol=1e-6,
            y=None, opt_tol=1e-9) -> Verdict:
     v = Verdict()
+    v.feas_tol, v.opt_tol = feas_tol, opt_tol
     x = np.asarray(x, dtype=np.float64)
 
     if x.shape[0] != prob.n:
@@ -211,12 +250,14 @@ def verify(prob, x, claimed_obj=None, feas_tol=1e-6, int_tol=1e-6,
             bnd, pert = certified_bound(prob, x, y)
             v.certified_bound = bnd
             if not np.isfinite(bnd):
+                v.gap_rel = float("inf")
                 v.add("optimality", False,
                       f"the duals certify nothing: a reduced cost of {pert:.2e} "
                       f"points at an infinite column bound")
             else:
                 gap = (obj - bnd) if prob.sense == ObjSense.MINIMISE else (bnd - obj)
                 rel = gap / max(1.0, abs(obj))
+                v.gap_rel = rel
                 # A gap below -opt_tol is a point that beats a valid bound
                 # on every feasible point -- which is to say a point that
                 # is not feasible at the bound's resolution, whatever the

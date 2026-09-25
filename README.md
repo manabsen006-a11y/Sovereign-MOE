@@ -77,9 +77,16 @@ having three. They fail differently: the simplex is exact but walks vertices and
 stalls on degeneracy, the interior-point method takes a fixed handful of
 iterations but needs a factorisation in each one and returns no basis of its
 own, and PDLP needs neither but converges slowly in the tail. `--method` picks
-one; `--method auto` still chooses between the simplex and PDLP by size,
-because the rule for when the interior-point method should be preferred has not
-been measured on anything larger than this set.
+one; `--method auto` takes the simplex up to 500k nonzeros and, past that,
+the interior point on the CPU -- PDLP when a GPU is asked for, or when the
+interior point declines a model it cannot factorise within the time limit.
+It used to take PDLP past 500k, and PDLP answers to first-order accuracy: on
+Kennington's sixteen the interior point certified 15 in 482 s against PDLP's
+9 in 657 s, and on a month of hourly blending (`Test_Data/One_Month_2026-10`)
+PDLP did not converge on either device while the interior point returned a
+feasible plan within 7.3e-9 of optimal. `auto` now prefers the answer the
+verifier can certify; `--device gpu` or `--method pdlp` still asks for the
+fast first-order one.
 
 **`--crossover` composes them instead of choosing.** An interior point is not a
 vertex, so neither PDLP nor the interior-point method produced a basis -- and
@@ -355,7 +362,7 @@ python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
 python -m bench.orlib --set cap       # Beasley's warehouse-location MILPs against capopt.txt
 python -m bench.williams              # seven of Williams' textbook models against the book, every engine
-python -m pytest tests/               # 803 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 808 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -1969,10 +1976,13 @@ Four things the table says that an aggregate would hide:
   The interior point wins the degenerate `plan` model by 9x at k=2 and 3.6x at
   k=4 -- the degeneracy advantage the theory predicts, showing up on the model
   built to be degenerate -- and loses `blend` badly at every size above 1,600
-  columns. PDLP wins everything past about 25k columns. This is why `--method
-  auto` still chooses between the simplex and PDLP by size only: the rule that
-  would pick the interior point needs a degeneracy estimate, and there isn't
-  one.
+  columns. PDLP wins everything past about 25k columns -- to its own,
+  first-order tolerance. That is why `--method auto` chose between the
+  simplex and PDLP by size for so long; it now takes the interior point past
+  500k nonzeros on the CPU, because what the verifier certifies is the other
+  half of the comparison, and there the interior point wins (Kennington: 15
+  certified against 9). This table times each engine to its own tolerance
+  and does not say which answers certify.
 * **The ordering race is what moved the interior point's ceiling, twice.**
   The KKT pattern is identical at every iteration, so an ordering is chosen
   once per solve and reused. Reverse Cuthill-McKee on the `plan` KKT cuts
@@ -2264,6 +2274,6 @@ examples/     blending/ a six-component, three-product gasoline blend;
               page take
 bench/        fetch, harness, verifier (points and infeasibility rays), GPU
               benchmark, Netlib, QPLIB, OR-Library, Williams, scale
-tests/        803 tests including regressions for every bug above
+tests/        808 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

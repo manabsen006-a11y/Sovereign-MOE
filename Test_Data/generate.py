@@ -1,5 +1,11 @@
 """Generate Test_Data: two years of hourly gasoline-blending data for a
-15 MMTPA refinery, written as the six tables `sovopt blend` reads.
+15 MMTPA refinery, written as the six tables `sovopt blend` reads -- the
+whole horizon in Test_Data/, and two windows cut from it:
+
+    One_Day_2026-10-13/   24 hours: an MS95 campaign starts, the alkylate
+                          header is down for planned work
+    One_Month_2026-10/    744 hours: two export cargoes, nine MS95
+                          campaigns, seven header outages, the festive peak
 
     python Test_Data/generate.py
 
@@ -212,8 +218,8 @@ SEASON = {10: 1.07, 11: 1.08, 12: 1.00, 1: 0.97, 2: 0.96, 3: 1.02,
 wobble = ou(HOURS, 0, 0.02, 0.05)
 
 
-def demand_rows():
-    for h in range(HOURS):
+def demand_rows(h0=0, h1=HOURS):
+    for h in range(h0, h1):
         dt = START + timedelta(hours=h)
         d = h // 24
         season = SEASON[dt.month]
@@ -250,8 +256,8 @@ for line in HEADERS:
         cap_factor[line][s:s + int(rng.integers(1, 4))] *= 0.5
 
 
-def capacity_rows():
-    for h in range(HOURS):
+def capacity_rows(h0=0, h1=HOURS):
+    for h in range(h0, h1):
         for line, nominal in HEADERS.items():
             yield [line, f"{nominal * cap_factor[line][h]:.1f}", LABEL[h]]
 
@@ -259,8 +265,8 @@ def capacity_rows():
 # --------------------------------------------------------------------------- #
 # write                                                                       #
 # --------------------------------------------------------------------------- #
-def write(name, header, rows):
-    path = os.path.join(HERE, name)
+def write(folder, name, header, rows):
+    path = os.path.join(folder, name)
     cells = numeric = n = 0
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f, lineterminator="\n")
@@ -283,8 +289,15 @@ def _is_num(c):
         return False
 
 
-def main():
-    print(f"{HOURS:,} hours, {START:%d-%b-%Y} to {END - timedelta(hours=1):%d-%b-%Y %H:%M}")
+def write_set(folder, h0, h1):
+    """The six tables for hours ``[h0, h1)``. Every random draw was made
+    above, so a window is an exact slice of the full set; its ``cost`` and
+    product ``price`` are its first day's, which is what the one-period and
+    pooling runs of that window price."""
+    os.makedirs(folder, exist_ok=True)
+    d0 = h0 // 24
+    print(f"{os.path.relpath(folder, os.path.dirname(HERE))}: {h1 - h0:,} hours, "
+          f"{LABEL[h0]} to {LABEL[h1 - 1]}")
     totals = []
     comp_header = ["name", "cost", "available", "line", "storage_max", "storage_cost",
                    "opening_stock", "closing_stock", "direct"] + QUALITIES
@@ -294,30 +307,39 @@ def main():
          ron, mon, dens, rvp, sul, benz, aro, ole, oxy, e70, e100, e150, par) = s
         opening = round(0.45 * tank, -2)
         hold = "0.00016" if line == "HDR_C4" else "0.00007"   # Rs/L per hour held
-        comp_rows.append([name, f"{comp_daily[name][0]:.2f}", avail, line, tank, hold,
+        comp_rows.append([name, f"{comp_daily[name][d0]:.2f}", avail, line, tank, hold,
                           f"{opening:g}", f"{opening:g}", direct,
                           ron, mon, dens, rvp_index(rvp), sul, benz, aro, ole, oxy,
                           e70, e100, e150, par])
-    totals.append(write("components.csv", comp_header, comp_rows))
+    totals.append(write(folder, "components.csv", comp_header, comp_rows))
 
     prod_rows = []
     for name, rate, spec in PRODUCTS:
-        prod_rows.append([name, f"{PROD_DAILY[name][0]:.2f}", "", rate]
+        prod_rows.append([name, f"{PROD_DAILY[name][d0]:.2f}", "", rate]
                          + ["" if spec.get(c) is None else f"{spec[c]:g}" for c in SPEC_COLS])
-    totals.append(write("products.csv", ["name", "price", "demand_min", "demand_max"] + SPEC_COLS,
-                        prod_rows))
+    totals.append(write(folder, "products.csv",
+                        ["name", "price", "demand_min", "demand_max"] + SPEC_COLS, prod_rows))
 
     names = [s[0] for s in STREAMS]
-    totals.append(write("price.csv", ["period"] + names,
+    totals.append(write(folder, "price.csv", ["period"] + names,
                         ([LABEL[h]] + [f"{comp_daily[n][h // 24]:.2f}" for n in names]
-                         for h in range(HOURS))))
-    totals.append(write("demand.csv", ["period", "product", "price", "demand_min", "demand_max"],
-                        demand_rows()))
-    totals.append(write("capacity.csv", ["line", "capacity", "period"], capacity_rows()))
-    totals.append(write("pools.csv", ["name", "capacity", "inputs"],
+                         for h in range(h0, h1))))
+    totals.append(write(folder, "demand.csv",
+                        ["period", "product", "price", "demand_min", "demand_max"],
+                        demand_rows(h0, h1)))
+    totals.append(write(folder, "capacity.csv", ["line", "capacity", "period"],
+                        capacity_rows(h0, h1)))
+    totals.append(write(folder, "pools.csv", ["name", "capacity", "inputs"],
                         ([n, c, ";".join(i)] for n, c, i in POOLS)))
     print(f"  {'total':15s} {'':>14} {sum(c for c, _ in totals):>11,} cells "
           f"{sum(n for _, n in totals):>11,} numbers")
+
+
+def main():
+    write_set(HERE, 0, HOURS)
+    day = hour_of(datetime(2026, 10, 13))
+    write_set(os.path.join(HERE, "One_Day_2026-10-13"), day, day + 24)
+    write_set(os.path.join(HERE, "One_Month_2026-10"), 0, hour_of(datetime(2026, 11, 1)))
 
 
 if __name__ == "__main__":

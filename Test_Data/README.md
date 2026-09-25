@@ -87,6 +87,53 @@ campaign) and random pump trips that halve a header for one to three hours.
 light naphtha, their heavy naphtha, the two hydrocrackers' light naphtha,
 the two CCRs' heavy reformate, and the two FCCs' LCN, MCN and HCN each.
 
+## A day and a month
+
+Two windows cut from the full set by `generate.py`, each with the same six
+files, sized for the page:
+
+| Folder | Hours | What happens in it |
+|---|---:|---|
+| `One_Day_2026-10-13/` | 24 (Tuesday 13-Oct-2026) | MS91 all day; the MS95 campaign starts at 06:00; the alkylate header is down 8 h for planned work and the FCC mid-cut header derated 3 h; naphtha export all day |
+| `One_Month_2026-10/` | 744 (October 2026) | two export cargo campaigns (4–9 and 18–22 Oct), nine MS95 campaigns, seven header outages, the festive-season demand peak |
+
+Each is an exact slice of the full set; `cost` and product `price` in its
+`components.csv` and `products.csv` are its first day's, which is what its
+one-period and pooling runs price. On the page (`python -m ui.server`,
+*blend from CSV tables*, the files in their slots), measured on the
+development laptop:
+
+| Folder | Files | Result |
+|---|---|---|
+| day | components + products | OPTIMAL, margin ₹1,628.03k, 0.3 s, ACCEPTED |
+| day | + price, demand, capacity | OPTIMAL, ₹38,925.42k over the day, 14 s on the CPU, ACCEPTED -- inside the page's default 30 s. The GPU column runs PDLP, a first-order method, and stops about 0.04% short (time or iteration limit); the plan and its check are the CPU's |
+| day | + pools | time limit at 300 s with ₹1,627.79k, within 0.015% of the proven bound, ACCEPTED -- set the page's time limit to 300 |
+| month | components + products | OPTIMAL, ₹1,495.24k, ACCEPTED |
+| month | + pools | the full set's one-hour model (same first-day prices): 300 s, within 0.04% of the bound, ACCEPTED |
+| month | + price, demand, capacity | `GAP_LIMIT`, ₹1,453,199.28k, 14 min on the CPU, independent check **FEASIBLE** (feasible to 1e-06, optimal to 7.3e-09). Set the device to **cpu** and the time limit to **1800**: at the default 30 s it stops at the limit and the page says "no plan returned (TIME_LIMIT)", and "compare cpu & gpu" runs PDLP on the GPU after it, which does not converge here |
+
+The month's plan on the command line:
+
+```bash
+python -m sovopt.cli blend Test_Data/One_Month_2026-10/components.csv \
+    Test_Data/One_Month_2026-10/products.csv \
+    --prices Test_Data/One_Month_2026-10/price.csv \
+    --demand Test_Data/One_Month_2026-10/demand.csv \
+    --capacity Test_Data/One_Month_2026-10/capacity.csv \
+    --time-limit 1800 --plan month_plan.csv --out month_plan.json
+```
+
+At 1.4M nonzeros `auto` takes the interior point (it took PDLP until this
+was measured; README, "--method auto"). It returns `GAP_LIMIT` in about 13
+minutes: margin ₹1,453,199.28k, every row met to 5.4e-10, within 7.3e-9 of
+the proven bound (README, bug 22), and says so:
+
+    independent check: FEASIBLE (feasible to 1e-06, and optimal to 7.3e-09 -- short of the 1e-09 certificate)
+
+`ACCEPTED` means certified optimal, `FEASIBLE` a plan that meets every
+constraint with its optimality gap stated, `REJECTED` one that breaks the
+model, with the check it failed.
+
 ## Units
 
 | Quantity | Unit |

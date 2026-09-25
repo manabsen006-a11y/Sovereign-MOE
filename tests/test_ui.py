@@ -209,3 +209,24 @@ def test_a_table_the_model_cannot_be_built_from_says_why(client):
                                         "device": "cpu"})
     body = r.json()
     assert "error" in body and "no component has a 'octane' column" in body["error"]
+
+
+def test_a_solve_that_ends_without_a_point_is_reported_not_crashed(client, monkeypatch):
+    """The interior point withholds a point that fails its feasibility cap
+    at a time limit -- a month of hourly blending at the page's default 30 s
+    does exactly that. The page used to put NaN into its JSON for the
+    missing point, which JSON cannot carry, and showed a traceback where
+    the status belonged."""
+    import sovopt.cli as cli
+    from sovopt.core.problem import Solution, Status
+    monkeypatch.setattr(cli, "solve", lambda prob, **kw: Solution(
+        status=Status.TIME_LIMIT, iterations=3, time=0.1, method="ipm"))
+    comps = open(os.path.join(EXAMPLES, "components.csv"), encoding="utf-8").read()
+    prods = open(os.path.join(EXAMPLES, "products.csv"), encoding="utf-8").read()
+    body = client.post("/api/solve", json={"source": "blend", "components_csv": comps,
+                                           "products_csv": prods, "device": "cpu",
+                                           "time_limit": 5}).json()
+    assert "error" not in body, body.get("error")
+    res = body["results"][0]
+    assert res["status"] == "TIME_LIMIT"
+    assert res["objective"] is None and res["viol_row"] is None

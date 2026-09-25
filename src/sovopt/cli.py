@@ -39,12 +39,40 @@ except Exception:
 # --------------------------------------------------------------------------- #
 
 
-#: Above this many nonzeros the first-order method is preferred over the
-#: simplex: it is the regime where the GPU pays and where the simplex's
-#: sequential factorisation updates stop keeping up. Below it the simplex wins
+#: Above this many nonzeros the simplex's sequential factorisation updates
+#: stop keeping up, and ``auto`` takes the interior point on the CPU -- PDLP
+#: when a GPU is asked for, or when the interior point declines a model it
+#: cannot factorise in time (see ``_solve_large_lp``). Below it the simplex wins
 #: decisively -- measured at 10x to 800x on the MIPLIB LP relaxations -- and it
 #: returns a basis, which the first-order method cannot.
 SIMPLEX_NNZ_LIMIT = 500_000
+
+
+def _solve_large_lp(prob, device, time_limit, tol, verbose):
+    """An LP past the simplex's size: the interior point, and PDLP only
+    when the interior point declines.
+
+    This used to be PDLP, and PDLP is a first-order method: it reaches the
+    optimum to 1e-4 or so and rarely to the verifier's 1e-9. Measured on
+    Kennington's sixteen (8k to 1.4M nonzeros) the interior point certified
+    15 in 482 s against PDLP-on-the-GPU's 9 in 657 s; on a month of hourly
+    blending (Test_Data/One_Month_2026-10, 1.4M nonzeros) PDLP ran out its
+    600 s on the CPU and its iteration limit on the GPU with points the
+    verifier rejected, and the interior point returned a feasible plan
+    within 7.3e-9 of optimal in 814 s. PDLP needs no factorisation, which is
+    what it is kept for: when one factorisation of the KKT system is
+    predicted to take longer than the limit, the interior point refuses at
+    once, and PDLP gets the time that is left.
+    """
+    from .lp.ipm import IPMParams, solve_ipm
+    from .lp.pdlp import PDLPParams, solve_pdlp
+    t0 = time.perf_counter()
+    sol = solve_ipm(prob, IPMParams(time_limit=time_limit, verbose=verbose))
+    if not (sol.info or {}).get("refused"):
+        return sol
+    left = max(0.0, time_limit - (time.perf_counter() - t0))
+    return solve_pdlp(prob, PDLPParams(device=device, eps_abs=tol, eps_rel=tol,
+                                       time_limit=left, verbose=verbose))
 
 
 def solve(prob: Problem, method: str = "auto", device: str = "auto",
@@ -115,8 +143,12 @@ def solve(prob: Problem, method: str = "auto", device: str = "auto",
             method = "bnb"
         elif sensitivity:
             method = "simplex"      # only a basis can answer ranging questions
+        elif prob.nnz <= SIMPLEX_NNZ_LIMIT:
+            method = "simplex"
+        elif device == "gpu":
+            method = "pdlp"         # a GPU was asked for, and PDLP is what runs there
         else:
-            method = "simplex" if prob.nnz <= SIMPLEX_NNZ_LIMIT else "pdlp"
+            return _solve_large_lp(prob, device, time_limit, tol, verbose)
 
     if method == "simplex":
         return solve_simplex(prob, SimplexParams(time_limit=time_limit,
@@ -343,17 +375,22 @@ def cmd_blend(a):
             from bench.verify import verify as _verify
             v = _verify(prob, sol.x, sol.objective, feas_tol=1e-6,
                         y=(sol.y if kind != "pooling" else None))
-            ok = v.ok
+            extra = None
             if kind == "pooling":
-                ok = ok and tables.problem.max_violation(sol.x) <= 1e-6
+                bil = tables.problem.max_violation(sol.x)
+                extra = ("bilinear identities", bil <= 1e-6, f"max violation {bil:.3e}")
             plan["verified"] = {c[0]: [bool(c[1]), c[2]] for c in v.checks}
-            plan["verifier_verdict"] = "ACCEPTED" if ok else "REJECTED"
+            plan["verifier_verdict"], plan["verifier_detail"] = v.headline(extra)
         except ImportError:
             plan["verifier_verdict"] = "not run (bench package not importable)"
     print(text_fn(plan))
     print()
-    print(f"engine {sol.method}, {dt:.3f} s" + (f"; independent check: {plan['verifier_verdict']}"
-                                                if "verifier_verdict" in plan else ""))
+    verdict = ""
+    if "verifier_verdict" in plan:
+        verdict = f"; independent check: {plan['verifier_verdict']}"
+        if plan.get("verifier_detail"):
+            verdict += f" ({plan['verifier_detail']})"
+    print(f"engine {sol.method}, {dt:.3f} s{verdict}")
     if a.out:
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(plan, fh, indent=2)

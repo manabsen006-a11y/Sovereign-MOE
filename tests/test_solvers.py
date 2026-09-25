@@ -365,3 +365,34 @@ def test_an_unbounded_relaxation_is_reported_as_such_not_as_a_node_limit():
     assert s.status == Status.INFEASIBLE_OR_UNBOUNDED
     assert s.info.get("root") == "unbounded relaxation"
     assert s.nodes == 0
+
+
+def test_auto_takes_the_interior_point_past_the_simplex_size(monkeypatch):
+    """Past SIMPLEX_NNZ_LIMIT, auto on the CPU is the interior point, not
+    PDLP: on Kennington it certified 15 of 16 against PDLP's 9, and on a
+    month of hourly blending PDLP did not converge at all. A GPU request
+    still gets PDLP, which is what runs there. The limit is lowered here so
+    a small model stands in for a large one."""
+    import sovopt.cli as cli
+    monkeypatch.setattr(cli, "SIMPLEX_NNZ_LIMIT", 0)
+    s = cli.solve(toy_lp(), device="cpu")
+    assert s.status == Status.OPTIMAL and s.method.startswith("ipm")
+    assert abs(s.objective - 11.0) < 1e-6
+
+
+def test_auto_falls_back_to_pdlp_when_the_interior_point_declines(monkeypatch):
+    """The interior point refuses at once when one factorisation is
+    predicted past the limit; PDLP needs none, and gets the time left."""
+    import sovopt.cli as cli
+    import sovopt.lp.ipm as ipm
+    from sovopt.core.problem import Solution
+    monkeypatch.setattr(cli, "SIMPLEX_NNZ_LIMIT", 0)
+
+    def refuse(prob, params=None, workspace=None):
+        sol = Solution(status=Status.TIME_LIMIT, iterations=0, time=0.0, method="ipm")
+        sol.info = {"iterations": 0, "refused": "predicted past the limit"}
+        return sol
+    monkeypatch.setattr(ipm, "solve_ipm", refuse)
+    s = cli.solve(toy_lp(), device="cpu", time_limit=60)
+    assert s.method.startswith("pdlp")
+    assert abs(s.objective - 11.0) < 1e-4
