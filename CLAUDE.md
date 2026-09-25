@@ -53,7 +53,8 @@ solver's source. You cannot un-read it, and the claim is then gone.
 src/sovopt/
   core/       sparse structures (CSR+CSC), JIT shim, CPU/GPU backend, problem
               and solution types, named tolerances
-  io/         MPS (read/write, QUADOBJ), CPLEX-LP, Netlib expander, QPLIB
+  io/         MPS (read/write, QUADOBJ), CPLEX-LP, Netlib expander, QPLIB,
+              Aspen PIMS blending tables to the CSV tables (pims.py)
   numerics/   scaling (objective scale sees Q), Markowitz LU, symmetric LDLᵀ
               for quasi-definite KKT, Forrest-Tomlin update (opt-in), AMD and
               RCM ordering with symbolic fill, hypersparse FTRAN/BTRAN,
@@ -90,7 +91,8 @@ tools/        check_provenance.py
 ui/           minimal local interface (server.py): templates, a pasted model,
               an uploaded model file, or CSV tables to a named plan
 examples/     blending/, planning/, pooling/: the CSV tables a planner would
-              save from a sheet
+              save from a sheet; pims/: a gasoline blend as Aspen PIMS
+              tables (BUY, SELL, BLNMIX, BLNSPEC, BLNPROP) for `sovopt pims`
 ```
 
 ## Conventions
@@ -118,6 +120,7 @@ python -m bench.verify model.mps sol.json    # independent feasibility + optimal
 python -m sovopt.cli blend components.csv products.csv   # a blending plan from a planner's tables
 python -m sovopt.cli blend components.csv products.csv --prices prices.csv  # over a horizon
 python -m sovopt.cli blend components.csv products.csv --pools pools.csv    # pooled qualities
+python -m sovopt.cli pims model.xlsx out/ --values values.csv  # Aspen PIMS blending tables to the CSVs
 python -m pytest tests/                      # unit tests
 python tools/check_provenance.py             # citation-header lint
 ```

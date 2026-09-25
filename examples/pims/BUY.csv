@@ -1,0 +1,5 @@
+*TABLE BUY,"Purchases -- $/bbl, kbbl/d"
+,TEXT,COST,MIN,MAX
+ALK,Alkylate (purchased),88.0,,12
+MTB,MTBE (imported),101.0,,8
+NC4,"Normal butane, at LPG value",55.0,,10

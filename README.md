@@ -274,6 +274,7 @@ python -m sovopt.cli verify model.mps sol.json    # independent check: feasibili
 python -m sovopt.cli blend  components.csv products.csv --plan plan.csv   # a blending plan from a planner's tables
 python -m sovopt.cli blend  components.csv products.csv --prices prices.csv --capacity capacity.csv  # over a horizon
 python -m sovopt.cli blend  components.csv products.csv --pools pools.csv   # pooled qualities, proved globally
+python -m sovopt.cli pims   model.xlsx out/ --values values.csv --index RVP=1.25  # an Aspen PIMS model's blending tables
 python -m ui.server                              # http://127.0.0.1:8000
 ```
 
@@ -329,6 +330,24 @@ positive semi-definite, solved as a convex QP.
   [`examples/pooling`](examples/pooling) is Haverly's problem as tables: 400,
   proved, in three nodes.
   Schema and model: [`models/tabular_pooling.py`](src/sovopt/models/tabular_pooling.py).
+- **From an Aspen PIMS model.** `sovopt pims model.xlsx out/` reads the
+  model's blending tables -- `BUY`, `SELL`, `BLNMIX`, `BLNSPEC` (rows
+  `N<prop>` / `X<prop>` for minimum and maximum) and `BLNPROP` -- from the
+  workbook or from a folder of those tables saved as CSV, and writes the
+  `components.csv` and `products.csv` above, reading them back as `sovopt
+  blend` will. `BLNMIX` becomes each component's `allowed` products, a
+  column the blending and planning models honour. What the five tables do
+  not hold is asked for rather than guessed: a stream the refinery makes
+  has no `BUY` row, so its value and rate come from `--values` (a PIMS
+  solution's marginal values), and a component without one is refused by
+  name, never priced at zero; `--index RVP=1.25` blends vapour pressure
+  through its index. [`examples/pims`](examples/pims) is a gasoline blend
+  in that layout. **It was written without AspenTech's documentation or a
+  PIMS file**: the layout is the general PIMS convention, the orientation
+  of `BLNMIX` and `BLNPROP` is detected from the tags rather than assumed,
+  and a real model's export is the test still to be run. Multi-period
+  tables, pooling recursion and weight-basis blending are not converted.
+  Module: [`io/pims.py`](src/sovopt/io/pims.py).
 - **From Python.** `read_model(path)`, `parse_blending_csv(...)`,
   `parse_planning_csv(...)` or `parse_pooling_csv(...)`, then
   `sovopt.cli.solve(prob, ...)`; the model builders in `sovopt.models` are
@@ -362,7 +381,7 @@ python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
 python -m bench.orlib --set cap       # Beasley's warehouse-location MILPs against capopt.txt
 python -m bench.williams              # seven of Williams' textbook models against the book, every engine
-python -m pytest tests/               # 808 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 821 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -2274,6 +2293,6 @@ examples/     blending/ a six-component, three-product gasoline blend;
               page take
 bench/        fetch, harness, verifier (points and infeasibility rays), GPU
               benchmark, Netlib, QPLIB, OR-Library, Williams, scale
-tests/        808 tests including regressions for every bug above
+tests/        821 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

@@ -1,0 +1,6 @@
+*TABLE SELL,"Sales -- $/bbl, kbbl/d"
+,TEXT,PRICE,MIN,MAX
+URG,"Motor spirit, BS-VI regular (RON 91)",84.0,60,150
+PRG,"Motor spirit, BS-VI premium (RON 95)",89.0,5,25
+NAP,"Naphtha, petrochemical export",68.0,,60
+LPG,LPG (not blended here),58.0,,40

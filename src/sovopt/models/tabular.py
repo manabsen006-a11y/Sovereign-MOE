@@ -21,6 +21,9 @@ component)::
     cost       cost per unit (any consistent unit: £/t, $/bbl)
     available  the most that can be used; blank = unlimited
     minimum    the least that must be used (a must-run stream); blank = 0
+    allowed    the products this component may be blended into, names
+               separated by ";" -- blank or "*" for every product (an
+               Aspen PIMS model's BLNMIX, which ``sovopt pims`` converts)
     qualities  every other numeric column is a quality -- sulfur, density,
                aromatics, a blending index -- carried into the blend in
                proportion to the quantity (linear blending); the columns
@@ -99,7 +102,8 @@ __all__ = ["BlendTables", "read_blending_csv", "parse_blending_csv",
 # the planning layer's columns are reserved here too, so a components table
 # written for a horizon reads as a single-period table without them
 _RESERVED_COMPONENT = {"name", "cost", "available", "minimum", "line", "storage_max",
-                       "storage_cost", "opening_stock", "closing_stock", "direct"}
+                       "storage_cost", "opening_stock", "closing_stock", "direct",
+                       "allowed"}
 _RESERVED_PRODUCT = {"name", "price", "demand_min", "demand_max"}
 
 
@@ -179,6 +183,7 @@ def parse_blending_csv(components_text: str, products_text: str) -> BlendTables:
                "cost": _num(r.get("cost"), f"components {name} cost") or 0.0,
                "available": _num(r.get("available"), f"components {name} available"),
                "minimum": _num(r.get("minimum"), f"components {name} minimum") or 0.0,
+               "allowed": (r.get("allowed") or "").strip(),
                "qualities": {}}
         for q in qualities:
             v = _num(r.get(q), f"components {name} {q}")
@@ -223,7 +228,28 @@ def parse_blending_csv(components_text: str, products_text: str) -> BlendTables:
                              f"demand_max {rec['demand_max']:g}")
         products.append(rec)
 
+    pnames = {pr["name"] for pr in products}
+    for co in components:
+        co["allowed"] = _allowed(co["allowed"], pnames, co["name"])
     return blending_from_tables(components, products, qualities)
+
+
+def _allowed(cell: str, products: set, component: str):
+    """The products a component may enter: ``None`` for every one."""
+    if cell in ("", "*"):
+        return None
+    names = [n.strip() for n in cell.split(";") if n.strip()]
+    for n in names:
+        if n not in products:
+            raise TableError(f"components: {component} is allowed into {n!r}, which is "
+                             f"not a product (products: {', '.join(sorted(products))})")
+    return frozenset(names)
+
+
+def may_enter(co: dict, product: str) -> bool:
+    """Whether ``co`` may be blended into ``product`` (its ``allowed``)."""
+    allowed = co.get("allowed")
+    return allowed is None or product in allowed
 
 
 def read_blending_csv(components_path, products_path) -> BlendTables:
@@ -252,8 +278,11 @@ def blending_from_tables(components, products, qualities=None) -> BlendTables:
             hi=INF if pr["demand_max"] is None else pr["demand_max"], c=pr["price"])
     for co in components:
         for pr in products:
+            # a pair ``allowed`` excludes stays in the model at zero, so every
+            # report indexes the same pairs whatever the table allows
             flow[co["name"], pr["name"]] = b.col(
-                f"USE[{co['name']}->{pr['name']}]", c=-co["cost"])
+                f"USE[{co['name']}->{pr['name']}]", c=-co["cost"],
+                hi=INF if may_enter(co, pr["name"]) else 0.0)
     for co in components:
         b.row(f"AVAIL[{co['name']}]",
               {flow[co["name"], pr["name"]]: 1.0 for pr in products},

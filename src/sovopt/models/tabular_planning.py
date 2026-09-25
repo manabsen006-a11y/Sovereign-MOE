@@ -70,7 +70,7 @@ from dataclasses import dataclass, field
 from ..core.problem import ObjSense, Problem, Status
 from ..core.tolerances import INF
 from ._builder import Builder
-from .tabular import TableError, _num, _plain, _rows, parse_blending_csv
+from .tabular import TableError, _num, _plain, _rows, may_enter, parse_blending_csv
 
 __all__ = ["PlanTables", "parse_planning_csv", "read_planning_csv",
            "planning_from_tables", "planning_plan", "planning_text", "planning_to_csv"]
@@ -228,7 +228,9 @@ def planning_from_tables(components, products, qualities, periods, prices,
                 hi=INF if co.get("storage_max") is None else co["storage_max"],
                 c=-co.get("storage_cost", 0.0))
             for pr in products:
-                use[co["name"], pr["name"], t] = b.col(f"USE[{co['name']}->{pr['name']}@{t}]")
+                use[co["name"], pr["name"], t] = b.col(
+                    f"USE[{co['name']}->{pr['name']}@{t}]",
+                    hi=INF if may_enter(co, pr["name"]) else 0.0)
     lines = sorted({c["line"] for c in components if c.get("line")})
     for k, t in enumerate(periods):
         for co in components:

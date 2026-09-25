@@ -7,6 +7,7 @@
     sovopt blend   components.csv products.csv   a plan from a planner's tables
                    --prices prices.csv           ... over a horizon (purchases, storage, capacities)
                    --pools pools.csv             ... through pools, to proven global optimality
+    sovopt pims    model.xlsx|tables/ out/   an Aspen PIMS model's blending tables to those CSVs
     sovopt devices                           what hardware this build can use
 
 The problem statement asks for an API or command line, not a GUI, so this is the
@@ -402,6 +403,41 @@ def cmd_blend(a):
     return 0 if sol.status == Status.OPTIMAL else 1
 
 
+def cmd_pims(a):
+    """Convert an Aspen PIMS model's blending tables, then read the result
+    back exactly as ``sovopt blend`` will, so a bad conversion is caught
+    here and not at the solve."""
+    from .io.pims import PimsError, pims_to_csv
+    from .models.tabular import TableError, read_blending_csv
+    index = {}
+    for spec in a.index or []:
+        key, _, power = spec.partition("=")
+        try:
+            index[key.strip()] = float(power)
+        except ValueError:
+            print(f"--index {spec!r}: give PROPERTY=POWER, e.g. RVP=1.25")
+            return 2
+    try:
+        notes = pims_to_csv(a.source, a.out_dir, a.values, index)
+    except PimsError as e:
+        print(f"cannot convert: {e}")
+        return 2
+    for n in notes:
+        print(f"note: {n}")
+    comps = os.path.join(a.out_dir, "components.csv")
+    prods = os.path.join(a.out_dir, "products.csv")
+    try:
+        t = read_blending_csv(comps, prods)
+    except TableError as e:
+        print(f"converted, but the tables do not read back: {e}")
+        return 2
+    print(f"wrote {comps} and {prods}: {len(t.components)} components, "
+          f"{len(t.products)} products, {len(t.qualities)} properties "
+          f"({', '.join(t.qualities)})")
+    print(f"next: sovopt blend {comps} {prods}")
+    return 0
+
+
 def cmd_demo(a):
     from .demo import run
     return run(size=a.size)
@@ -559,6 +595,18 @@ def main(argv=None):
     p.add_argument("--plan", help="write the plan as CSV (the recipe, the period table, or the flows)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(fn=cmd_blend)
+
+    p = sub.add_parser("pims", help="convert an Aspen PIMS model's blending tables (BUY, SELL, "
+                                    "BLNMIX, BLNSPEC, BLNPROP) to components.csv and products.csv")
+    p.add_argument("source", help="a folder of <TABLE>.csv files, or an .xlsx workbook with a "
+                                  "sheet per table")
+    p.add_argument("out_dir", help="where to write components.csv and products.csv")
+    p.add_argument("--values", help="values.csv: name, cost, available, minimum -- for streams "
+                                    "the refinery makes (a PIMS solution's marginal values and "
+                                    "rates)")
+    p.add_argument("--index", action="append", metavar="PROP=POWER",
+                   help="blend PROP through the index value**POWER, e.g. RVP=1.25 (repeatable)")
+    p.set_defaults(fn=cmd_pims)
 
     p = sub.add_parser("demo", help="end-to-end LP showcase")
     p.add_argument("--size", type=int, default=14,

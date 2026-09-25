@@ -111,6 +111,12 @@ def parse_pooling_csv(components_text, products_text, pools_text) -> PoolTables:
                              f"pooling model takes demand_max only")
     components = []
     for co in base.components:
+        if co.get("allowed") is not None:
+            # a pool mixes its inputs and feeds every product, so which
+            # products one component may reach is not the pool model's to
+            # restrict -- refused rather than dropped without a word
+            raise TableError(f"components: {co['name']} has an 'allowed' list; the pooling "
+                             f"model routes by 'direct' and the pools' inputs instead")
         rec = dict(co)
         rec["direct"] = _names(comps_raw[co["name"]].get("direct"), pnames,
                                f"components {co['name']} direct")

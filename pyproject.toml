@@ -17,10 +17,14 @@ dependencies = ["numpy>=1.24", "numba>=0.59"]
 # a fresh clone's suite then skips the GPU tests; with it, the tests run
 gpu = ["cupy-cuda12x[ctk]"]
 ui = ["fastapi>=0.100", "uvicorn>=0.20"]
+# reading an Aspen PIMS workbook directly (sovopt pims model.xlsx); a folder
+# of the tables saved as CSV needs nothing
+pims = ["openpyxl>=3"]
 # httpx2 is what starlette's TestClient drives (1.6 deprecated httpx there);
 # without it and the ui extra, tests/test_ui.py skips rather than fails --
-# which is how a fresh clone was found to have never exercised the UI
-dev = ["pytest>=7", "scipy>=1.10", "httpx2>=2"]
+# which is how a fresh clone was found to have never exercised the UI.
+# openpyxl is here so the PIMS workbook test runs rather than being absent
+dev = ["pytest>=7", "scipy>=1.10", "httpx2>=2", "openpyxl>=3"]
 
 [project.scripts]
 sovopt = "sovopt.cli:main"

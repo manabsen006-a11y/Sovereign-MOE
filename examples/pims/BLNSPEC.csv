@@ -1,0 +1,12 @@
+*TABLE BLNSPEC,"Blend specifications: N = minimum, X = maximum"
+,TEXT,URG,PRG,NAP
+NRON,"RON, min",91,95,
+NMON,"MON, min",81,85,
+NDEN,"Density, min",720,720,665
+XDEN,"Density, max",775,775,740
+XRVP,"RVP, max (kPa)",60,60,83
+XSUL,"Sulfur, max",10,10,650
+XBNZ,"Benzene, max",1.0,1.0,
+XARO,"Aromatics, max",35,35,
+XOLE,"Olefins, max",21,18,1.0
+XOXY,"Oxygen, max",2.7,2.7,

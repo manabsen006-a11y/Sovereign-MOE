@@ -1,0 +1,10 @@
+*TABLE BLNMIX,1 where a component may enter a blend
+,TEXT,URG,PRG,NAP
+LSR,"Light straight-run naphtha, hydrotreated",1,,1
+ISO,Isomerate,1,1,
+RFT,Reformate (CCR),1,1,
+FCN,"FCC light naphtha, after SHU",1,1,
+HCN,"FCC heavy naphtha, after HDS",1,1,
+ALK,Alkylate (purchased),1,1,
+NC4,Normal butane,1,1,
+MTB,MTBE (imported),1,1,
