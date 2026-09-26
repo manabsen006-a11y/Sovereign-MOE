@@ -1,12 +1,13 @@
 
 
-https://github.com/user-attachments/assets/09f34be0-295d-41f6-bf46-dfa313653ba6
 
 # SOVOPT
 
 **A sovereign GPU-accelerated optimization engine — LP / MILP, built from mathematical foundations.**
 
 SIH 2026 · Problem Statement 26119 · Mangalore Refinery and Petrochemicals Ltd
+
+https://github.com/user-attachments/assets/09f34be0-295d-41f6-bf46-dfa313653ba6
 
 No solver library is used, linked, or vendored. Every algorithm here is
 implemented from the published mathematics, with a citation header on each
