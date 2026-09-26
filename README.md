@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/09f34be0-295d-41f6-bf46-dfa313653ba6
+
 # SOVOPT
 
 **A sovereign GPU-accelerated optimization engine — LP / MILP, built from mathematical foundations.**
