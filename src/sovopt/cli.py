@@ -62,13 +62,16 @@ def _solve_large_lp(prob, device, time_limit, tol, verbose):
     verifier rejected, and the interior point returned a feasible plan
     within 7.3e-9 of optimal in 814 s. PDLP needs no factorisation, which is
     what it is kept for: when one factorisation of the KKT system is
-    predicted to take longer than the limit, the interior point refuses at
-    once, and PDLP gets the time that is left.
+    predicted to take longer than the limit, or to need more memory than is
+    free, the interior point refuses at once, and PDLP gets the time that
+    is left.
     """
+    from .core.memory import available_bytes
     from .lp.ipm import IPMParams, solve_ipm
     from .lp.pdlp import PDLPParams, solve_pdlp
     t0 = time.perf_counter()
-    sol = solve_ipm(prob, IPMParams(time_limit=time_limit, verbose=verbose))
+    sol = solve_ipm(prob, IPMParams(time_limit=time_limit, verbose=verbose,
+                                    memory_limit=float(available_bytes() or 0)))
     if not (sol.info or {}).get("refused"):
         return sol
     left = max(0.0, time_limit - (time.perf_counter() - t0))
@@ -338,7 +341,9 @@ def cmd_blend(a):
         elif a.prices:
             from .models.tabular_planning import (planning_plan, planning_text, planning_to_csv,
                                                   read_planning_csv)
-            tables = read_planning_csv(a.components, a.products, a.prices, a.demand, a.capacity)
+            from .core.memory import available_bytes
+            tables = read_planning_csv(a.components, a.products, a.prices, a.demand,
+                                       a.capacity, memory_limit=available_bytes())
             kind, plan_fn, text_fn, csv_fn = "planning", planning_plan, planning_text, planning_to_csv
         else:
             from .models.tabular import blend_plan, plan_text, plan_to_csv, read_blending_csv

@@ -21,7 +21,10 @@ from sovopt.core.problem import Status
 from sovopt.lp.ipm import solve_ipm
 from sovopt.lp.simplex import solve_simplex
 from sovopt.models.tabular import TableError
-from sovopt.models.tabular_planning import (parse_planning_csv, planning_plan, planning_text,
+from sovopt.core.memory import available_bytes, gib
+from sovopt.models._builder import Builder
+from sovopt.models.tabular_planning import (PLAN_BYTES_PER_NNZ, parse_planning_csv,
+                                            planning_plan, planning_size, planning_text,
                                             planning_to_csv, read_planning_csv)
 from sovopt.models.williams import PUBLISHED
 
@@ -101,3 +104,51 @@ def test_a_horizon_table_the_model_cannot_be_built_from_says_why(prices, demand,
     with pytest.raises(TableError) as e:
         parse_planning_csv(comps, prods, prices, demand, capacity)
     assert message in str(e.value)
+
+
+def test_the_size_is_counted_from_the_tables_exactly():
+    """Every row kind the plan has -- a minimum use, a capacity in some
+    periods only, a closing stock, a quality at zero and a specification at
+    zero (both dropped from the matrix), a pair not allowed -- counted
+    without building, and equal to what is built."""
+    comps = ("name,cost,minimum,line,closing_stock,allowed,hardness,sulfur\n"
+             "A,10,5,L,1,,2,0\nB,20,,L,,P,6,1\nC,30,,M,,,4,0\n")
+    prods = "name,price,hardness_min,hardness_max,sulfur_max\nP,50,3,5,0.5\nQ,40,,6,0\n"
+    prices = "period,A,B,C\nT1,10,20,30\nT2,,,\nT3,11,,\n"
+    capacity = "line,capacity,period\nL,80,T1\nL,90,T3\nM,70,\n"
+    for t in (parse_planning_csv(comps, prods, prices, None, capacity), _williams()):
+        p = t.problem
+        assert planning_size(t.components, t.products, t.periods, t.capacity) == (p.m, p.n, p.nnz)
+
+
+def test_a_plan_past_the_memory_given_is_refused_before_it_is_built():
+    """Two years of hourly periods paged the page's server to death. With a
+    memory limit, the plan is counted first and refused in words: its size,
+    what it needs, and how much of the horizon would fit."""
+    t = _williams()
+    need = PLAN_BYTES_PER_NNZ * t.problem.nnz
+    paths = [os.path.join(EX, n) for n in ("components.csv", "products.csv", "prices.csv")]
+    cap = os.path.join(EX, "capacity.csv")
+    with pytest.raises(TableError) as e:
+        read_planning_csv(*paths, capacity_path=cap, memory_limit=need - 1)
+    msg = str(e.value)
+    assert "6 periods" in msg and f"{t.problem.nnz:,} nonzeros" in msg
+    assert "about 5 periods fit" in msg and gib(need) in msg
+    assert read_planning_csv(*paths, capacity_path=cap, memory_limit=need).problem.nnz \
+        == t.problem.nnz
+
+
+def test_the_free_memory_is_read_or_left_unknown():
+    free = available_bytes()
+    assert free is None or free > 0
+    assert gib(3 * 2**30) == "3.0 GB" and gib(5 * 2**20) == "5 MB"
+
+
+def test_the_builder_refuses_a_duplicate_row_name():
+    # a set now, where a list scan made building quadratic in the rows:
+    # Test_Data's month took 99 s to build, 2 s after
+    b = Builder("t")
+    x = b.col("x")
+    b.le("R", {x: 1.0}, 1.0)
+    with pytest.raises(ValueError, match="duplicate row name"):
+        b.ge("R", {x: 1.0}, 0.0)

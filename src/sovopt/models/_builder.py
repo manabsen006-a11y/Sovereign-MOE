@@ -33,6 +33,8 @@ class Builder:
         self.ri, self.rj, self.rv = [], [], []
         self.rlb, self.rub, self.rows = [], [], []
         self.index = {}
+        self._row_names = set()        # the duplicate check: a list scan made
+                                       # building quadratic in the row count
 
     def col(self, name, lo=0.0, hi=INF, c=0.0, kind=VarKind.CONTINUOUS):
         if name in self.index:
@@ -49,8 +51,9 @@ class Builder:
         return self.col(name, 0.0, hi, c, VarKind.INTEGER)
 
     def row(self, name, terms, lo, hi):
-        if name in self.rows:
+        if name in self._row_names:
             raise ValueError(f"duplicate row name {name!r}")
+        self._row_names.add(name)
         r = len(self.rows)
         for v, a in terms.items():
             if a:

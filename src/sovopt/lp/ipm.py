@@ -121,6 +121,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..core.memory import gib
 from ..core.problem import ObjSense, Problem, Solution, Status
 from ..core.sparse import IDX, VAL
 from ..core.tolerances import DEFAULT, INF, Tolerances
@@ -130,6 +131,19 @@ from ..numerics.lu import LUSingular, lu_factor
 from ..numerics.lu import _column_order
 from ..numerics.ordering import amd_order, rcm_order, symbolic_fill
 from ..numerics.scaling import scale_problem
+
+SETUP_BYTES_PER_NNZ = 400.0
+"""Memory the interior point takes before its first factorisation, per
+nonzero of ``A`` and ``Q``: the scaled copy, the KKT matrix, the ordering
+race and its symbolic analysis. Measured over the built model on
+Test_Data's plans -- 405 bytes at a week (321k nonzeros), 422 at a month
+(1.4M). Used only by ``IPMParams.memory_limit``."""
+
+BYTES_PER_L_ENTRY = 60.0
+"""Memory the factorisation adds per entry of ``L``, which the symbolic
+analysis counts before any is computed: the factor, its refinement
+workspace and the iterates. Measured at 62 on the week (2.2M entries,
+7x its nonzeros). Used only by ``IPMParams.memory_limit``."""
 
 
 @dataclass
@@ -213,6 +227,17 @@ class IPMParams:
     between iterations and a compiled factorisation cannot look at a
     clock. A refusal is a ``TIME_LIMIT`` with the prediction in
     ``info["refused"]``, at no cost beyond the symbolic analysis."""
+
+    memory_limit: float = 0.0
+    """Bytes the solve may use; ``0`` does not look. Set, it refuses a
+    model whose set-up would not fit (:data:`SETUP_BYTES_PER_NNZ`, checked
+    before anything is allocated) or whose factorisation would not
+    (:data:`BYTES_PER_L_ENTRY` more per entry of ``L``, checked on the
+    symbolic count) -- a ``NOT_SOLVED`` with the reason in
+    ``info["refused"]``, as for time. A factorisation past free memory does
+    not fail: it pages, and the machine with it. :mod:`sovopt.cli` passes
+    the free memory, and PDLP, which needs no factorisation, takes the
+    model instead."""
 
     regularisation: str = "static"
     """How the two diagonal blocks are regularised.
@@ -902,6 +927,18 @@ class IPMWorkspace:
         return flip, work, s, sc
 
 
+def _refused(status, t0, params, kkt, reason) -> Solution:
+    """A solve declined before its first iteration, and why."""
+    sol = Solution(status=status, iterations=0, time=time.perf_counter() - t0,
+                   method="ipm")
+    sol.info = {"iterations": 0, "refused": reason}
+    if kkt is not None:
+        sol.info["ordering"] = kkt.ldl_name
+    if params.verbose:
+        print("  ipm: refused --", reason)
+    return sol
+
+
 def solve_ipm(prob: Problem, params: IPMParams | None = None,
               workspace: IPMWorkspace | None = None) -> Solution:
     """Solve an LP or a convex QP by a primal-dual interior-point method.
@@ -921,6 +958,11 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
                          f"not {params.regularisation!r}")
     tol = params.tol
     t0 = time.perf_counter()
+    nz = prob.A.nnz + (prob.Q.nnz if prob.Q is not None else 0)
+    if params.memory_limit > 0 and SETUP_BYTES_PER_NNZ * nz > params.memory_limit:
+        return _refused(Status.NOT_SOLVED, t0, params, None,
+                        f"setting up needs about {gib(SETUP_BYTES_PER_NNZ * nz)} "
+                        f"({nz:,} nonzeros) and {gib(params.memory_limit)} is free")
 
     kkt = None
     if workspace is not None and workspace.matches(prob) \
@@ -980,21 +1022,21 @@ def solve_ipm(prob: Problem, params: IPMParams | None = None,
     kkt.ldl_boosts = tuple(params.ldl_boosts)
     kkt.lu_fill_cap = params.lu_fill_cap
     kkt.lu_min_nnz = params.lu_min_nnz
+    if kkt.ldl_sym is not None and params.memory_limit > 0:
+        need = SETUP_BYTES_PER_NNZ * nz + BYTES_PER_L_ENTRY * kkt.ldl_sym.lnz
+        if need > params.memory_limit:
+            return _refused(Status.NOT_SOLVED, t0, params, kkt,
+                            f"the factorisation needs about {gib(need)} "
+                            f"({kkt.ldl_sym.lnz:,} entries in L) and "
+                            f"{gib(params.memory_limit)} is free")
     if kkt.ldl_sym is not None and params.flop_rate > 0:
         predicted = kkt.ldl_sym.flops / params.flop_rate
         if predicted > params.time_limit:
-            sol = Solution(status=Status.TIME_LIMIT, iterations=0,
-                           time=time.perf_counter() - t0, method="ipm")
-            sol.info = {"iterations": 0}
-            sol.info["refused"] = (
-                f"one factorisation predicted at {predicted:.0f} s "
-                f"({kkt.ldl_sym.lnz:,} entries in L, {kkt.ldl_sym.flops:.2e} "
-                f"multiply-adds at {params.flop_rate:.0e}/s) against a limit "
-                f"of {params.time_limit:.0f} s")
-            sol.info["ordering"] = kkt.ldl_name
-            if params.verbose:
-                print("  ipm: refused --", sol.info["refused"])
-            return sol
+            return _refused(Status.TIME_LIMIT, t0, params, kkt,
+                            f"one factorisation predicted at {predicted:.0f} s "
+                            f"({kkt.ldl_sym.lnz:,} entries in L, {kkt.ldl_sym.flops:.2e} "
+                            f"multiply-adds at {params.flop_rate:.0e}/s) against a limit "
+                            f"of {params.time_limit:.0f} s")
     try:
         z, y, zl, zu = _initial_point(kkt, A, cz, lo, hi, fixed,
                                       has_lo, has_hi, free_lo, free_hi,

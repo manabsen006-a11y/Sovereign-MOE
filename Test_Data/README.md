@@ -100,8 +100,12 @@ files, sized for the page:
 Each is an exact slice of the full set; `cost` and product `price` in its
 `components.csv` and `products.csv` are its first day's, which is what its
 one-period and pooling runs price. On the page (`python -m ui.server`,
-*blend from CSV tables*, the files in their slots), measured on the
-development laptop:
+*blend from CSV tables*), put all six files in their slots and pick the run
+under **calculate**: the six tables hold three calculations -- the
+one-period blend, the plan over the horizon, the blend through the shared
+tanks -- and the files a calculation does not use are set aside. Left on
+"from the files given" with both `price.csv` and `pools.csv` in place, the
+page asks which one. Measured on the development laptop:
 
 | Folder | Files | Result |
 |---|---|---|
@@ -175,7 +179,7 @@ Measured on the development laptop (RTX 3050 4 GB, 16 GB RAM):
 | plan, first 24 h | 2,526 × 4,416, 46k nnz | default engine OPTIMAL, 27 s (13,165 pivots); IPM OPTIMAL, 3.5 s; both ACCEPTED |
 | plan, first week | 17,502 × 30,912, 321k nnz | IPM OPTIMAL, 110 s, 0.65 GB, ACCEPTED |
 | plan, first month | 77,406 × 136,896, 1.4 M nnz | IPM `GAP_LIMIT`, ~820 s, 1.72 GB: feasible (rows to 5.4e-10), margin within 7.3e-9 of the proven bound, not certified at 1e-9 |
-| plan, full two years | ~1.8 M × 3.2 M, ~34 M nnz | not run: extrapolates past this machine's memory and to days of IPM time |
+| plan, full two years | 1,824,606 × 3,228,096, 33.5 M nnz | refused in about 5 s, before building: it needs at least 6.2 GB to build and solve by the leanest method, and the message gives the memory free and how many periods would fit (README, bug 23) |
 
 Three things to know:
 
@@ -193,7 +197,10 @@ Three things to know:
 - **The whole horizon is a stress case, not a planning run.** No refinery
   solves two years hourly as one LP; schedulers run days to weeks hourly,
   planners run months. The plan's size is streams × grades × hours, and at
-  17,544 hours that is far past what this laptop holds.
+  17,544 hours that is far past what this laptop holds. Asked for it, the
+  page and `sovopt blend` count the plan from the tables and refuse it in
+  words; the page used to try, page itself to death, and show only
+  "Failed to fetch".
 
 ## Blending assumptions
 

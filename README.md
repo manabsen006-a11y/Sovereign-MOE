@@ -79,7 +79,8 @@ iterations but needs a factorisation in each one and returns no basis of its
 own, and PDLP needs neither but converges slowly in the tail. `--method` picks
 one; `--method auto` takes the simplex up to 500k nonzeros and, past that,
 the interior point on the CPU -- PDLP when a GPU is asked for, or when the
-interior point declines a model it cannot factorise within the time limit.
+interior point declines a model it cannot factorise within the time limit or
+in the memory that is free (bug 23).
 It used to take PDLP past 500k, and PDLP answers to first-order accuracy: on
 Kennington's sixteen the interior point certified 15 in 482 s against PDLP's
 9 in 657 s, and on a month of hourly blending (`Test_Data/One_Month_2026-10`)
@@ -381,7 +382,7 @@ python -m bench.gpu_bench             # CPU vs GPU
 python -m bench.comparator            # head-to-head against HiGHS
 python -m bench.orlib --set cap       # Beasley's warehouse-location MILPs against capopt.txt
 python -m bench.williams              # seven of Williams' textbook models against the book, every engine
-python -m pytest tests/               # 821 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
+python -m pytest tests/               # 832 tests with the benchmark sets fetched; the 15 GPU ones skip without a device
                                       # fresh clone, nothing fetched, no GPU: 587 passed, 46 skipped, 9 min
 ```
 
@@ -1465,6 +1466,42 @@ six now have regression tests.
     incumbents on the MIQP and non-convex set identical or better with
     more nodes explored. The month window: `GAP_LIMIT`, gap 7.3e-9.
 
+23. **Two years of hourly planning took the page down without a word.**
+    Found on the page: `Test_Data/`'s full tables, *plan over the horizon*,
+    and the browser said only "TypeError: Failed to fetch" -- the server
+    had been stopped after half an hour, still building. Three faults:
+    - `Builder.row` checked for a duplicate row name with `name in
+      self.rows`, a list scan, so building was quadratic in the rows: the
+      month (77,406 rows) took 99 s to build, 74 of them in that line, and
+      the two years' 1.8M rows would have taken days. A set: the month
+      builds in 1.9 s. The planning reader's period checks were list
+      scans too, once per demand and capacity row; now sets.
+    - nothing asked whether the model fits. Two years hourly is 1,824,606
+      rows x 3,228,096 columns with 33.5M nonzeros; building it peaks at
+      139 bytes a nonzero, and the machine had under 3 GB free. It paged
+      until it was stopped. `planning_size` now counts rows, columns and
+      nonzeros from the tables -- exactly: it equals the built model on
+      Williams 12.1, the day and the month -- and with `memory_limit` (the
+      page and `sovopt blend` pass the free memory, read from the
+      operating system by `core/memory.py`) a plan needing more than 200
+      bytes a nonzero of it is refused before anything is built, in
+      words: its size, what it needs, what is free, and how many periods
+      would fit. The two years are refused in 5 s.
+    - the interior point, which `auto` takes past 500k nonzeros, measured
+      400 bytes a nonzero to set up and 60 more per entry of `L`, 7x the
+      nonzeros on these plans; a quarter of hours would build and then
+      page inside its factorisation. `IPMParams.memory_limit` refuses a
+      set-up or a factorisation that will not fit -- the second on the
+      symbolic count, before any is computed -- as `NOT_SOLVED` with the
+      reason in `info["refused"]`, and the CLI's large-LP route hands the
+      model to PDLP, 90 bytes a nonzero, as it already did for time.
+
+    And the page, when its server stops answering, now says that it
+    stopped and why that happens, not "Failed to fetch". Its script is
+    checked by Node in the tests: a first version of that message put a
+    `\n` in the page's Python string, which became a newline inside a
+    JavaScript string and stopped every button on the page.
+
 ---
 
 ## Known limits
@@ -2293,6 +2330,6 @@ examples/     blending/ a six-component, three-product gasoline blend;
               page take
 bench/        fetch, harness, verifier (points and infeasibility rays), GPU
               benchmark, Netlib, QPLIB, OR-Library, Williams, scale
-tests/        821 tests including regressions for every bug above
+tests/        832 tests including regressions for every bug above
 ui/           local single-page interface (FastAPI; exercised in tests/test_ui.py)
 ```

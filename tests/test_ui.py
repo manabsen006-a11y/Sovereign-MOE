@@ -230,3 +230,84 @@ def test_a_solve_that_ends_without_a_point_is_reported_not_crashed(client, monke
     res = body["results"][0]
     assert res["status"] == "TIME_LIMIT"
     assert res["objective"] is None and res["viol_row"] is None
+
+
+DAY = os.path.join(ROOT, "Test_Data", "One_Day_2026-10-13")
+
+
+def _six(folder):
+    rd = lambda n: open(os.path.join(folder, n), encoding="utf-8").read()   # noqa: E731
+    return {"source": "blend", "components_csv": rd("components.csv"),
+            "products_csv": rd("products.csv"), "prices_csv": rd("price.csv"),
+            "demand_csv": rd("demand.csv"), "capacity_csv": rd("capacity.csv"),
+            "pools_csv": rd("pools.csv"), "device": "cpu", "time_limit": 120}
+
+
+def test_all_six_tables_ask_which_calculation_in_words(client):
+    """A folder of six tables holds three calculations. Given all six and
+    no choice, the page used to answer with a Python traceback; it asks,
+    in a sentence, which one."""
+    body = client.post("/api/solve", json=_six(DAY)).json()
+    assert "Traceback" not in body["error"]
+    assert "two different calculations" in body["error"] and "calculate" in body["error"]
+
+
+def test_choosing_the_plan_sets_the_pools_aside(client):
+    body = client.post("/api/solve", json={**_six(DAY), "mode": "plan"}).json()
+    assert "error" not in body, body.get("error")
+    assert body["results"][0]["status"] == "OPTIMAL"
+    assert len(body["plan"]["periods"]) == 24
+    assert body["plan"]["verifier_verdict"] == "ACCEPTED"
+
+
+def test_choosing_the_pools_sets_the_prices_aside(client):
+    ex = os.path.join(ROOT, "examples", "pooling")
+    rd = lambda n: open(os.path.join(ex, n), encoding="utf-8").read()   # noqa: E731
+    body = client.post("/api/solve", json={
+        "source": "blend", "components_csv": rd("components.csv"),
+        "products_csv": rd("products.csv"), "pools_csv": rd("pools.csv"),
+        "prices_csv": "period,A,B,C\nT1,6,16,10\n", "mode": "pool",
+        "device": "cpu", "time_limit": 60}).json()
+    assert "error" not in body, body.get("error")
+    assert abs(body["results"][0]["objective"] - 400.0) < 1e-6
+
+
+def test_a_calculation_without_its_file_says_so(client):
+    body = {**_six(DAY), "mode": "plan"}
+    body["prices_csv"] = ""
+    err = client.post("/api/solve", json=body).json()["error"]
+    assert "Traceback" not in err and "needs prices.csv" in err
+
+
+def test_a_plan_past_free_memory_is_refused_in_words(client, monkeypatch):
+    """Test_Data's two years on the page: the server paged until it was
+    stopped, and the browser said only "Failed to fetch". The plan is
+    counted before it is built and refused with its size and what fits."""
+    import sovopt.core.memory as mem
+    monkeypatch.setattr(mem, "available_bytes", lambda: 2 * 2**20)
+    err = client.post("/api/solve", json={**_six(DAY), "mode": "plan"}).json()["error"]
+    assert "Traceback" not in err
+    assert "24 periods" in err and "periods fit" in err and "2 MB is free" in err
+
+
+def test_the_page_script_parses(client):
+    """A \\n in the page's Python string became a newline inside a
+    JavaScript string, and every button on the page stopped; the Python
+    tests all passed. Node checks the script, where Node is installed."""
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    html = client.get("/").text
+    js = "\n".join(re.findall(r"<script>(.*?)</script>", html, re.S))
+    assert "$('go').onclick" in js
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as fh:
+        fh.write(js)
+    try:
+        r = subprocess.run([node, "--check", fh.name], capture_output=True, text=True)
+    finally:
+        os.unlink(fh.name)
+    assert r.returncode == 0, r.stderr

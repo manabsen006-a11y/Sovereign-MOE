@@ -18,7 +18,7 @@ from sovopt.core.problem import ObjSense, Problem, Status, VarKind
 from sovopt.core.sparse import SparseMatrix
 from sovopt.core.tolerances import INF
 from sovopt.io.mps import read_mps
-from sovopt.lp.ipm import IPMParams, solve_ipm
+from sovopt.lp.ipm import SETUP_BYTES_PER_NNZ, IPMParams, solve_ipm
 from sovopt.lp.simplex import solve_simplex
 
 # tests/ is a package, so the shared LP generator and dual-objective
@@ -600,3 +600,23 @@ def test_the_verifier_and_the_engine_share_one_certificate():
     import bench.verify as verify_mod
     from sovopt.mip.safebound import certified_bound
     assert verify_mod.certified_bound is certified_bound
+
+
+def test_a_model_past_the_memory_given_is_refused_not_paged(monkeypatch):
+    """A factorisation past free memory does not fail, it pages. With a
+    limit the interior point refuses before allocating -- on its set-up, or
+    on the symbolic count of L -- and the CLI's large-LP route hands the
+    model to PDLP, which needs no factorisation."""
+    prob = random_lp(3, 40, 60)
+    setup = SETUP_BYTES_PER_NNZ * prob.A.nnz
+    s = solve_ipm(prob, IPMParams(memory_limit=setup - 1))
+    assert s.status == Status.NOT_SOLVED and "setting up" in s.info["refused"]
+    s = solve_ipm(prob, IPMParams(memory_limit=setup + 1))
+    assert s.status == Status.NOT_SOLVED and "entries in L" in s.info["refused"]
+    assert solve_ipm(prob, IPMParams(memory_limit=1e12)).status == Status.OPTIMAL
+
+    import sovopt.core.memory as mem
+    from sovopt.cli import _solve_large_lp
+    monkeypatch.setattr(mem, "available_bytes", lambda: 1)
+    s = _solve_large_lp(prob, "cpu", 30.0, 1e-8, False)
+    assert "pdlp" in s.method

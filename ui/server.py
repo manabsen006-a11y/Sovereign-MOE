@@ -31,9 +31,14 @@ from sovopt.core.backend import (GPU_ERROR, gpu_available,      # noqa: E402
 from sovopt.core.problem import ObjSense, Status, VarKind         # noqa: E402
 from sovopt.io import read_model                                  # noqa: E402
 from sovopt.models import TEMPLATES                               # noqa: E402
+from sovopt.models.tabular import TableError                      # noqa: E402
 from sovopt.numerics.scaling import compute_scaling               # noqa: E402
 
 app = FastAPI(title="SOVOPT")
+
+
+class InputError(ValueError):
+    """Something the person sending the model can fix, said in words."""
 
 
 def _finite(v):
@@ -132,6 +137,15 @@ pre{margin:0;white-space:pre-wrap;color:var(--dim);font-size:12px}
     then a column per quality. One row per product: name, price, demand_min,
     demand_max, then &lt;quality&gt;_min / &lt;quality&gt;_max. Excel's "save as
     CSV". See examples/blending.</div>
+    <label style="margin-top:10px">calculate</label>
+    <select id="tabmode">
+      <option value="auto">from the files given</option>
+      <option value="blend">one-period blend (components + products)</option>
+      <option value="plan">plan over the horizon (+ prices, demand, capacity)</option>
+      <option value="pool">through the shared tanks (+ pools)</option>
+    </select>
+    <div class="muted">A folder of all six tables holds three calculations;
+    pick one here and the files it does not use are set aside.</div>
     <label style="margin-top:10px">prices.csv &mdash; optional: a horizon</label>
     <input id="pricefile" type="file" accept=".csv,.txt">
     <label style="margin-top:6px">demand.csv &mdash; optional, with prices</label>
@@ -306,10 +320,15 @@ $('go').onclick=async()=>{
       body.products_csv=await readText($('prodfile'));
       if(!body.components_csv||!body.products_csv) throw new Error('choose both CSV files first');
       body.prices_csv=await readText($('pricefile')); body.demand_csv=await readText($('demandfile'));
-      body.capacity_csv=await readText($('capfile')); body.pools_csv=await readText($('poolfile'));}
+      body.capacity_csv=await readText($('capfile')); body.pools_csv=await readText($('poolfile'));
+      body.mode=$('tabmode').value;}
     d=await (await fetch('/api/solve',{method:'POST',
         headers:{'content-type':'application/json'},body:JSON.stringify(body)})).json(); }
-  catch(e){ d={error:String(e)}; }
+  catch(e){ d={error:(e instanceof TypeError)
+      ? 'the server stopped answering before the solve came back: it was closed, or the '
+        +'model ran it out of memory. Start it again (python -m ui.server), reload this '
+        +'page, and try a smaller model or horizon. ('+String(e)+')'
+      : String(e)}; }
   $('go').disabled=false;$('go').textContent='SOLVE';
   if(d.error){ $('out').innerHTML='<div class="card"><h2 class="bad">error</h2><pre>'+esc(d.error)+'</pre></div>'; return; }
 
@@ -377,11 +396,11 @@ def _build(body):
         name = os.path.basename(str(body.get("filename", "")))
         data = body.get("data_b64")
         if not name or not data:
-            raise ValueError("no model file supplied")
+            raise InputError("no model file supplied")
         low = name.lower()
         suffix = next((sfx for sfx in _UPLOAD_SUFFIXES if low.endswith(sfx)), None)
         if suffix is None:
-            raise ValueError(f"{name}: not a .mps, .lp or .qps file (optionally .gz/.bz2/.xz)")
+            raise InputError(f"{name}: not a .mps, .lp or .qps file (optionally .gz/.bz2/.xz)")
         if suffix in (".gz", ".bz2"):
             suffix = ".mps" + suffix                 # a bare .gz is read as MPS
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_upload" + suffix)
@@ -393,20 +412,47 @@ def _build(body):
         comps = body.get("components_csv") or ""
         prods = body.get("products_csv") or ""
         if not comps.strip() or not prods.strip():
-            raise ValueError("both components.csv and products.csv are needed")
+            raise TableError("both components.csv and products.csv are needed")
         pools = body.get("pools_csv") or ""
         prices = body.get("prices_csv") or ""
-        if pools.strip() and prices.strip():
-            raise ValueError("pools and prices cannot be combined: pooled qualities over a "
-                             "horizon is not a table-driven model yet")
+        mode = (body.get("mode") or "auto").lower()
+        if mode == "auto":
+            if pools.strip() and prices.strip():
+                # A folder of all six tables -- Test_Data's are built that
+                # way -- holds three calculations, and the plan over a
+                # horizon and the blend through pools are two of them.
+                # Picking one silently would drop the other's file without
+                # a word; asking takes one click.
+                raise TableError(
+                    "price.csv and pools.csv are two different calculations: a plan over "
+                    "the horizon, and a blend through the shared tanks. Choose one under "
+                    "'calculate' -- the files it does not use are set aside -- or leave "
+                    "one of the two files out.")
+            mode = "pool" if pools.strip() else "plan" if prices.strip() else "blend"
+        if mode == "pool":
+            if not pools.strip():
+                raise TableError("a blend through the shared tanks needs pools.csv")
+            prices = ""
+        elif mode == "plan":
+            if not prices.strip():
+                raise TableError("a plan over the horizon needs prices.csv (one row per period)")
+            pools = ""
+        elif mode == "blend":
+            pools = prices = ""
+        else:
+            raise TableError(f"unknown calculation {mode!r}: blend, plan or pool")
         if pools.strip():
             from sovopt.models.tabular_pooling import parse_pooling_csv
             tables = parse_pooling_csv(comps, prods, pools)
             prob = tables.problem.linear          # the LP part; the bilinear model is on tables
         elif prices.strip():
+            from sovopt.core.memory import available_bytes
             from sovopt.models.tabular_planning import parse_planning_csv
+            # refused in words, counted from the tables, if the plan cannot
+            # fit: two years hourly paged this server to death instead
             tables = parse_planning_csv(comps, prods, prices, body.get("demand_csv") or None,
-                                        body.get("capacity_csv") or None)
+                                        body.get("capacity_csv") or None,
+                                        memory_limit=available_bytes())
             prob = tables.problem
         else:
             from sovopt.models.tabular import parse_blending_csv
@@ -418,7 +464,7 @@ def _build(body):
     if body.get("source") == "mps":
         text = body.get("mps", "")
         if not text.strip():
-            raise ValueError("no model text supplied")
+            raise InputError("no model text supplied")
         # Accept either format and work out which by looking at the text: the
         # reader is chosen by extension, and pasted text has no filename. MPS
         # is a sectioned card format, so its section keywords are decisive.
@@ -555,6 +601,10 @@ async def api_solve(request: Request):
             "agreement": agree,
             "plan": plan,
         })
+    except (TableError, InputError) as e:
+        # tables the model cannot be built from: the reason, in words -- a
+        # traceback here reads as the page having broken, not the input
+        return JSONResponse({"error": str(e)})
     except Exception:
         return JSONResponse({"error": traceback.format_exc(limit=4)})
 

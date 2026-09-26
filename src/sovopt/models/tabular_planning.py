@@ -73,7 +73,19 @@ from ._builder import Builder
 from .tabular import TableError, _num, _plain, _rows, may_enter, parse_blending_csv
 
 __all__ = ["PlanTables", "parse_planning_csv", "read_planning_csv",
-           "planning_from_tables", "planning_plan", "planning_text", "planning_to_csv"]
+           "planning_from_tables", "planning_size", "planning_plan", "planning_text",
+           "planning_to_csv", "PLAN_BYTES_PER_NNZ"]
+
+PLAN_BYTES_PER_NNZ = 200
+"""The least memory a plan takes per nonzero, to build it and to solve it
+by the leanest method, used only to refuse one that cannot fit before any
+of it is built. Measured on Test_Data's month (1.4M nonzeros): building
+peaks at 139 bytes per nonzero, the built model then holds 100 (the matrix
+twice, the names, the tables' index of every column), and PDLP adds 90;
+the interior point, which ``auto`` prefers, needs several times that and
+checks for itself (``IPMParams.memory_limit``). Two years of hourly
+periods are 33.5M nonzeros, 6.2 GB at this rate, and the page that was
+asked for them lost its server to paging instead of saying so."""
 
 
 @dataclass
@@ -93,8 +105,14 @@ class PlanTables:
 
 
 def parse_planning_csv(components_text, products_text, prices_text,
-                       demand_text=None, capacity_text=None) -> PlanTables:
-    """Build the planning model from the tables' text."""
+                       demand_text=None, capacity_text=None,
+                       memory_limit=None) -> PlanTables:
+    """Build the planning model from the tables' text.
+
+    ``memory_limit`` (bytes; :func:`sovopt.core.memory.available_bytes`
+    for the machine's free memory) refuses, with the size and the horizon
+    that would fit, a plan that needs more than that -- counted from the
+    tables, before anything is built. None builds whatever is asked."""
     base = parse_blending_csv(components_text, products_text)
     comps_raw = _rows(components_text, "components")
     extra = {}
@@ -115,26 +133,32 @@ def parse_planning_csv(components_text, products_text, prices_text,
     names = {c["name"] for c in components}
     pnames = {p["name"] for p in base.products}
 
-    # prices: periods in row order, a column per component
+    # prices: periods in row order, a column per component. The lookups are
+    # sets and dicts: a year of hourly periods is 8,760 rows, and demand and
+    # capacity add a row per product or line and period, so a list scan per
+    # row made reading quadratic in the horizon.
     prows = _rows_by(prices_text, "prices", "period")
     periods, prices = [], {}
+    seen = set()
+    by_lower = {c.lower(): c for c in sorted(names)}
     for r in prows:
         per = (r.get("period") or r.get("name") or "").strip()
         if not per:
             raise TableError(f"prices line {r['_line']}: a row without a period")
-        if per in periods:
+        if per in seen:
             raise TableError(f"prices: period {per!r} appears twice")
         periods.append(per)
+        seen.add(per)
         for key, val in r.items():
             if key in ("period", "name") or key.startswith("_"):
                 continue
-            match = [c for c in names if c.lower() == key]
-            if not match:
+            match = by_lower.get(key)
+            if match is None:
                 raise TableError(f"prices: column {key!r} is not a component "
                                  f"(components: {', '.join(sorted(names))})")
             v = _num(val, f"prices {per} {key}")
             if v is not None:
-                prices[match[0], per] = v
+                prices[match, per] = v
     for co in components:
         for per in periods:
             prices.setdefault((co["name"], per), co["cost"])
@@ -144,7 +168,7 @@ def parse_planning_csv(components_text, products_text, prices_text,
         for r in _rows_by(demand_text, "demand", "product"):
             per = (r.get("period") or "").strip()
             prod = (r.get("product") or r.get("name") or "").strip()
-            if per not in periods:
+            if per not in seen:
                 raise TableError(f"demand line {r['_line']}: period {per!r} is not in prices.csv")
             if prod not in pnames:
                 raise TableError(f"demand line {r['_line']}: product {prod!r} is not in products.csv")
@@ -165,12 +189,61 @@ def parse_planning_csv(components_text, products_text, prices_text,
             if cap is None:
                 raise TableError(f"capacity line {r['_line']}: no capacity for {line}")
             per = (r.get("period") or "").strip()
-            if per and per not in periods:
+            if per and per not in seen:
                 raise TableError(f"capacity line {r['_line']}: period {per!r} is not in prices.csv")
             for p in ([per] if per else periods):
                 capacity[line, p] = cap
+    if memory_limit:
+        _refuse_if_too_large(components, base.products, periods, capacity, memory_limit)
     return planning_from_tables(components, base.products, base.qualities, periods,
                                 prices, demand, capacity)
+
+
+def planning_size(components, products, periods, capacity=None) -> tuple[int, int, int]:
+    """Rows, columns and nonzeros of the plan :func:`planning_from_tables`
+    builds from these tables, counted without building it."""
+    capacity = capacity or {}
+    C, P, T = len(components), len(products), len(periods)
+    lines = sorted({c["line"] for c in components if c.get("line")})
+    on_line = {ln: sum(1 for c in components if c.get("line") == ln) for ln in lines}
+    n_min = sum(1 for c in components if c["minimum"])
+    spec_rows = spec_nnz = 0
+    for pr in products:
+        for q, spec in pr["specs"].items():
+            for side in ("max", "min"):
+                if side in spec:
+                    spec_rows += 1
+                    spec_nnz += (sum(1 for c in components if c["qualities"][q])
+                                 + (1 if spec[side] else 0))
+    cap_rows = cap_nnz = 0
+    for t in periods:
+        for ln in lines:
+            if capacity.get((ln, t)) is not None:
+                cap_rows += 1
+                cap_nnz += on_line[ln] * P
+    closing = sum(1 for c in components if c.get("closing_stock") is not None)
+    n = T * (P + C * (2 + P))                                  # MAKE, BUY, STORE, USE
+    m = T * (C + n_min + P + spec_rows) + cap_rows + closing   # STOCK MINUSE BAL SPEC; CAP; CLOSE
+    nnz = (T * (C * (2 + P) + n_min * P + P * (C + 1) + spec_nnz)
+           + max(T - 1, 0) * C + cap_nnz + closing)           # STOCK's link to the period before
+    return m, n, nnz
+
+
+def _refuse_if_too_large(components, products, periods, capacity, memory_limit):
+    m, n, nnz = planning_size(components, products, periods, capacity)
+    need = PLAN_BYTES_PER_NNZ * nnz
+    if need <= memory_limit:
+        return
+    from ..core.memory import gib
+    fit = int(memory_limit // (PLAN_BYTES_PER_NNZ * nnz / len(periods)))
+    where = (f"about {fit:,} periods fit -- plan a shorter horizon (a month of hours is "
+             f"744 rows of price.csv)" if fit >= 1 else
+             "not even one period fits -- close other programs")
+    raise TableError(
+        f"the plan over {len(periods):,} periods is {m:,} rows x {n:,} columns with "
+        f"{nnz:,} nonzeros: building and solving it needs at least {gib(need)} of memory, "
+        f"and {gib(memory_limit)} is free. At that, {where}, or run it on a machine "
+        f"with more memory.")
 
 
 def _rows_by(text, what, key):
@@ -195,14 +268,14 @@ def _rows_by(text, what, key):
 
 
 def read_planning_csv(components_path, products_path, prices_path,
-                      demand_path=None, capacity_path=None) -> PlanTables:
+                      demand_path=None, capacity_path=None, memory_limit=None) -> PlanTables:
     def rd(p):
         if p is None:
             return None
         with open(p, encoding="utf-8-sig") as fh:
             return fh.read()
     return parse_planning_csv(rd(components_path), rd(products_path), rd(prices_path),
-                              rd(demand_path), rd(capacity_path))
+                              rd(demand_path), rd(capacity_path), memory_limit)
 
 
 def planning_from_tables(components, products, qualities, periods, prices,
