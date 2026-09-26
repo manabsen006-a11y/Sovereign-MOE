@@ -90,7 +90,7 @@ td:first-child{color:var(--dim);width:170px}
 pre{margin:0;white-space:pre-wrap;color:var(--dim);font-size:12px}
 .muted{color:var(--dim);font-size:12px}
 </style></head><body>
-<header><h1>V Y U H A</h1>
+<header><h1>S O V O P T</h1>
 <span class="sub">sovereign optimization engine &middot; SIH 2026 PS 26119 &middot; MRPL</span>
 <span class="sub" id="hw"></span></header>
 <main>
