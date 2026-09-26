@@ -1,0 +1,1 @@
+Our SIH 2026 brief for MRPL said: no solver library. So SOVOPT is LP, MILP and QP written from the papers up — three engines (simplex, interior point, GPU PDLP) that each hit 11/11 MIPLIB published values, and agree with HiGHS to 7.0e-16. Hand it a planner's CSV tables and it hands back a refinery blend plan an independent checker signs off on.

@@ -1,0 +1,223 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SOVOPT brag</title>
+<style>
+:root{--bg:#0e1418;--panel:#151f25;--line:#243139;--ink:#dbe4e8;--dim:#8496a0;
+      --amber:#d5a34a;--cyan:#4fc2ce;--ok:#62ac84;--bad:#d97867;}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--bg);color:var(--ink)}
+body{font-family:"Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.mono{font-family:Consolas,"Cascadia Mono",monospace}
+#grid{position:absolute;inset:-80px;
+  background-image:linear-gradient(rgba(79,194,206,.045) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(79,194,206,.045) 1px,transparent 1px);
+  background-size:80px 80px}
+#vig{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 45%,rgba(14,20,24,0) 30%,rgba(8,12,15,.85) 100%)}
+.scene{position:absolute;inset:0;opacity:0}
+.center{position:absolute;left:0;right:0;text-align:center}
+
+/* 1 hook */
+#s1 .comment{top:330px;font-size:30px;color:var(--dim)}
+#names{top:420px;display:flex;justify-content:center;gap:52px;font-size:58px}
+.nm{position:relative;display:inline-block;white-space:pre;color:var(--ink)}
+.nm .x{position:absolute;left:-6px;right:-6px;top:52%;height:5px;background:var(--bad);
+  transform-origin:left center;transform:scaleX(0);border-radius:3px}
+#s1 h1{top:600px;font-size:124px;font-weight:600;letter-spacing:-.01em}
+
+/* 2 reveal */
+#poly{position:absolute;inset:0}
+#logo{top:330px;font-size:176px;font-weight:700;letter-spacing:.22em;padding-left:.22em}
+#logo span{display:inline-block}
+#s2 .tag{top:585px;font-size:46px;font-weight:400}
+#s2 .tag b{font-weight:600;color:var(--cyan)}
+#s2 .meta{top:680px;font-size:22px;letter-spacing:.2em;color:var(--dim)}
+
+/* 3 terminal */
+#s3 .cap{top:92px;font-size:46px;font-weight:600}
+#s3 .cap em{font-style:normal;color:var(--amber)}
+#term{position:absolute;left:170px;top:206px;width:1580px;height:710px;background:var(--panel);
+  border:1px solid var(--line);border-radius:14px;box-shadow:0 40px 90px rgba(0,0,0,.55);overflow:hidden}
+#term .bar{height:48px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:0 20px}
+#term .dot{width:13px;height:13px;border-radius:50%;background:#2e434e}
+#term .ttl{margin-left:18px;color:var(--dim);font-size:19px}
+#tbody{padding:30px 40px;font-size:26px;line-height:42px;white-space:pre}
+.ln{opacity:0;height:42px}
+.dim{color:var(--dim)} .ok{color:var(--ok)} .am{color:var(--amber)} .cy{color:var(--cyan)}
+.row{display:flex;align-items:center}
+.row .lbl{width:520px;white-space:pre}
+.row .pct{width:140px;text-align:right;margin-right:26px}
+.row .br{height:18px;border-radius:3px;background:var(--cyan);transform-origin:left center}
+#stamp{display:inline-block;padding:0 14px;margin-left:6px;border-radius:6px;background:rgba(98,172,132,.16);
+  border:2px solid var(--ok);color:var(--ok);font-weight:700;line-height:36px}
+
+/* 4 engines */
+#s4 h2{top:150px;font-size:76px;font-weight:600;letter-spacing:-.01em}
+#cards{position:absolute;top:310px;left:0;right:0;display:flex;justify-content:center;gap:48px}
+.card{width:480px;height:390px;background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:34px 38px;position:relative;overflow:hidden}
+.card .acc{position:absolute;left:0;right:0;top:0;height:6px}
+.card .k{font-size:18px;letter-spacing:.2em;color:var(--dim)}
+.card .t{font-size:40px;font-weight:600;margin-top:10px}
+.card .d{font-size:22px;color:var(--dim);margin-top:4px}
+.card .n{font-size:112px;font-weight:700;margin-top:26px;line-height:1}
+.card .s{font-size:21px;color:var(--dim);margin-top:12px;letter-spacing:.04em}
+#chip{top:770px}
+#chip span{display:inline-block;font-size:30px;padding:16px 34px;border:1px solid #2e434e;border-radius:999px;background:var(--panel)}
+
+/* 5 outro */
+#s5 .l1{top:280px;font-size:118px;font-weight:600;letter-spacing:-.01em}
+#s5 .l2{top:420px;font-size:118px;font-weight:600;letter-spacing:-.01em;color:var(--cyan)}
+#s5 .l3{top:600px;font-size:28px;color:var(--dim);letter-spacing:.06em}
+#s5 .cmd{top:710px}
+#s5 .cmd>span{display:inline-block;font-size:34px;padding:18px 38px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+</style></head>
+<body>
+<div id="grid"></div><div id="vig"></div>
+
+<div class="scene" id="s1">
+  <div class="center mono comment"># never import, link, vendor, or read the source of:</div>
+  <div class="center mono" id="names"></div>
+  <h1 class="center">No solver library.</h1>
+</div>
+
+<div class="scene" id="s2">
+  <svg id="poly" viewBox="0 0 1920 1080" width="1920" height="1080"></svg>
+  <div class="center mono" id="logo"></div>
+  <div class="center tag"><b>LP · MILP · QP</b> — built from the mathematics up.</div>
+  <div class="center mono meta">SIH 2026 · PS 26119 · MANGALORE REFINERY AND PETROCHEMICALS</div>
+</div>
+
+<div class="scene" id="s3">
+  <div class="center cap">A planner's <em>CSV tables</em> in. A refinery <em>blend plan</em> out.</div>
+  <div id="term" class="mono">
+    <div class="bar"><div class="dot"></div><div class="dot"></div><div class="dot"></div><div class="ttl">sovopt — blend</div></div>
+    <div id="tbody"></div>
+  </div>
+</div>
+
+<div class="scene" id="s4">
+  <h2 class="center">Three engines. One answer.</h2>
+  <div id="cards"></div>
+  <div class="center mono" id="chip"><span>HiGHS head-to-head <span class="dim" style="all:unset;color:var(--dim)">·</span> 11/11 <span style="all:unset;color:var(--dim)">·</span> agree to <b class="ok">7.0e-16</b></span></div>
+</div>
+
+<div class="scene" id="s5">
+  <div class="center l1">Built from scratch.</div>
+  <div class="center l2">Checked by everything else.</div>
+  <div class="center mono l3">independent verifier · published values · HiGHS · exact arithmetic</div>
+  <div class="center mono cmd"><span><span class="cy">$</span> python -m sovopt.cli demo</span></div>
+</div>
+
+<script>
+const cl=(x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const p=(t,a,b)=>cl((t-a)/(b-a));
+const eo=x=>1-Math.pow(1-x,3);
+const eio=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const $=id=>document.getElementById(id);
+
+// scene windows on the 100 BPM bar grid (bar = 2.4 s)
+const S=[[-1,3.6],[3.6,7.2],[7.2,12.0],[12.0,16.8],[16.8,99]];
+function sceneA(t,i){const[a,b]=S[i];return eo(p(t,a+.05,a+.4))*(1-eio(p(t,b-.26,b)));}
+
+// ---------- build ----------
+const NAMES=['CBC','HiGHS','SCIP','GLPK','OR-Tools','scipy.optimize'];
+$('names').innerHTML=NAMES.map((n,i)=>`<span class="nm" id="nm${i}"><span class="tx"></span><span class="x"></span></span>`).join('');
+const nmW=NAMES.map((n,i)=>{const e=$('nm'+i);e.querySelector('.tx').textContent=n;const w=e.offsetWidth;e.style.width=w+'px';return w;});
+
+$('logo').innerHTML=[...'SOVOPT'].map(c=>`<span>${c}</span>`).join('');
+
+const V=[[560,840],[360,580],[500,300],[900,180],[1330,230],[1580,480],[1520,800],[1060,920]];
+const PATH=[0,7,6,5];
+{
+  const pts=V.map(v=>v.join(',')).join(' ');
+  let s=`<polygon id="pg" points="${pts}" fill="rgba(79,194,206,.035)" stroke="#2e434e" stroke-width="2.5"/>`;
+  for(let k=0;k<6;k++){const y=260+k*120;s+=`<line class="iso" x1="200" y1="${y+260}" x2="1720" y2="${y-260}" stroke="rgba(213,163,74,.10)" stroke-width="1.5" stroke-dasharray="6 10"/>`;}
+  s+=`<polyline id="pp" fill="none" stroke="#d5a34a" stroke-width="4" stroke-linejoin="round" points="${PATH.map(i=>V[i].join(',')).join(' ')}"/>`;
+  s+=V.map((v,i)=>`<circle class="vx" cx="${v[0]}" cy="${v[1]}" r="6" fill="#2e434e"/>`).join('');
+  s+=`<circle id="opt" cx="${V[5][0]}" cy="${V[5][1]}" r="16" fill="none" stroke="#d5a34a" stroke-width="3"/>`;
+  s+=`<circle id="dot" r="11" fill="#d5a34a"/>`;
+  $('poly').innerHTML=s;
+}
+const segLen=[];let polyLen=0;
+for(let k=0;k<PATH.length-1;k++){const a=V[PATH[k]],b=V[PATH[k+1]];const L=Math.hypot(b[0]-a[0],b[1]-a[1]);segLen.push(L);polyLen+=L;}
+$('pp').setAttribute('stroke-dasharray',polyLen);
+const pgLen=$('pg').getTotalLength();$('pg').setAttribute('stroke-dasharray',pgLen);
+
+const CMD='python -m sovopt.cli blend components.csv products.csv';
+const RECIPE=[['HeavyNaphtha','900.0000',36.0],['Alkylate','600.0000',24.0],['Isomerate','500.0000',20.0],
+              ['Reformate','280.8108',11.2],['FCCGasoline','187.2973',7.5],['LightNaphtha','31.8919',1.3]];
+const L=[];
+L.push(`<div class="ln" id="l0"><span class="cy">$</span> <span id="cmd"></span><span id="cur" class="cy">▌</span></div>`);
+L.push(`<div class="ln dim">model: 6 components, 3 products, 3 qualities -> 21 rows x 21 columns</div>`);
+L.push(`<div class="ln">status: <span class="ok" style="font-weight:700">OPTIMAL</span></div>`);
+L.push(`<div class="ln">margin: <span class="am" id="mg" style="font-weight:700">802,000.00</span><span class="dim">   (revenue 4,108,000.00 - component cost 3,306,000.00)</span></div>`);
+L.push(`<div class="ln"> </div>`);
+L.push(`<div class="ln dim">  recipe</div>`);
+RECIPE.forEach(r=>L.push(`<div class="ln row"><span class="lbl">    Premium  &lt;- ${r[0].padEnd(13)} ${r[1].padStart(9)}</span><span class="pct">${r[2].toFixed(1)}%</span><span class="br" style="width:${r[2]/36*560}px"></span></div>`));
+L.push(`<div class="ln"> </div>`);
+L.push(`<div class="ln"><span class="dim">independent check:</span> <span id="stamp">ACCEPTED</span> <span class="dim" id="cert">(certified optimal to 1e-09)</span></div>`);
+$('tbody').innerHTML=L.join('');
+const lines=[...document.querySelectorAll('#tbody .ln')];
+
+const ENG=[['ENGINE · 01','Revised simplex','exact · returns a basis','#d5a34a'],
+           ['ENGINE · 02','Interior point','primal-dual · LDLᵀ','#62ac84'],
+           ['ENGINE · 03','First-order PDLP','no factorisation · CPU + GPU','#4fc2ce']];
+$('cards').innerHTML=ENG.map((e,i)=>`<div class="card" id="c${i}"><div class="acc" style="background:${e[3]}"></div>
+  <div class="k mono">${e[0]}</div><div class="t">${e[1]}</div><div class="d">${e[2]}</div>
+  <div class="n mono" id="n${i}" style="color:${e[3]}">11/11</div><div class="s">MIPLIB · to published values</div></div>`).join('');
+
+// ---------- render: every frame a pure function of t ----------
+function render(t){
+  $('grid').style.transform=`translate(${-(t*9)%80}px,${-(t*5)%80}px)`;
+  for(let i=0;i<5;i++){const a=sceneA(t,i);const e=$('s'+(i+1));e.style.opacity=a;e.style.visibility=a>0.001?'visible':'hidden';
+    const into=p(t,S[i][0]+.05,S[i][0]+.6),out=p(t,S[i][1]-.26,S[i][1]);
+    e.style.transform=`scale(${1+.02*(1-eo(into))-.015*eio(out)})`;}
+
+  // 1 — hook
+  $('s1').querySelector('.comment').style.opacity=eo(p(t,0,.3));
+  NAMES.forEach((n,i)=>{const a=.12+i*.2;const e=$('nm'+i);
+    const k=Math.round(n.length*p(t,a,a+.14));e.querySelector('.tx').textContent=n.slice(0,k);
+    e.style.opacity=k>0?1:0;
+    const s=eo(p(t,a+.2,a+.36));e.querySelector('.x').style.transform=`scaleX(${s})`;
+    e.style.color=s>0? `rgb(${Math.round(219-(219-132)*s)},${Math.round(228-(228-150)*s)},${Math.round(232-(232-160)*s)})`:'#dbe4e8';});
+  {const h=eo(p(t,1.55,1.9));const e=$('s1').querySelector('h1');e.style.opacity=h;e.style.transform=`translateY(${(1-h)*24}px)`;}
+
+  // 2 — reveal
+  {const og=eo(p(t,3.6,4.5));$('pg').setAttribute('stroke-dashoffset',pgLen*(1-og));
+    document.querySelectorAll('#poly .vx').forEach((c,i)=>c.style.opacity=p(t,3.7+i*.06,3.9+i*.06));
+    document.querySelectorAll('#poly .iso').forEach((c,i)=>c.style.opacity=eo(p(t,3.8+i*.05,4.3+i*.05)));
+    const w=eio(p(t,4.3,6.3));$('pp').setAttribute('stroke-dashoffset',polyLen*(1-w));
+    let d=w*polyLen,k=0;while(k<segLen.length-1&&d>segLen[k]){d-=segLen[k];k++;}
+    const a=V[PATH[k]],b=V[PATH[k+1]],f=cl(d/segLen[k]);
+    const dt=$('dot');dt.setAttribute('cx',a[0]+(b[0]-a[0])*f);dt.setAttribute('cy',a[1]+(b[1]-a[1])*f);dt.style.opacity=p(t,4.2,4.4);
+    const o=p(t,6.25,6.6);const op=$('opt');op.style.opacity=o;op.setAttribute('r',16+10*eo(o));
+    $('poly').style.opacity=.55;}
+  [...$('logo').children].forEach((c,i)=>{const q=eo(p(t,3.75+i*.06,4.2+i*.06));c.style.opacity=q;c.style.transform=`translateY(${(1-q)*40}px)`;});
+  {const q=eo(p(t,4.25,4.65));const e=$('s2').querySelector('.tag');e.style.opacity=q;e.style.transform=`translateY(${(1-q)*18}px)`;}
+  $('s2').querySelector('.meta').style.opacity=eo(p(t,4.55,4.95));
+
+  // 3 — the product in use
+  {const q=eo(p(t,7.3,7.7));const e=$('s3').querySelector('.cap');e.style.opacity=q;
+   const tm=$('term');const r=eo(p(t,7.3,7.8));tm.style.opacity=r;tm.style.transform=`translateY(${(1-r)*50}px)`;}
+  lines[0].style.opacity=1;
+  $('cmd').textContent=CMD.slice(0,Math.round(CMD.length*p(t,7.75,8.55)));
+  $('cur').style.opacity=(t<8.65&&Math.floor(t*3.4)%2===0)||(t>=7.75&&t<8.6)?1:0;
+  const lt=[0,8.68,8.8,8.92,9.0,9.1,9.18,9.26,9.34,9.42,9.5,9.58,9.7,10.05];
+  lines.forEach((e,i)=>{if(i===0)return;const q=p(t,lt[i],lt[i]+.12);e.style.opacity=q;e.style.transform=`translateX(${(1-eo(q))*-10}px)`;});
+  {const q=eio(p(t,8.92,9.7));$('mg').textContent=Math.round(802000*q).toLocaleString('en-US')+'.00';}
+  document.querySelectorAll('#tbody .br').forEach((b,i)=>b.style.transform=`scaleX(${eo(p(t,9.26+i*.08,9.86+i*.08))})`);
+  {const q=p(t,10.25,10.45);const s=$('stamp');s.style.opacity=q>0?1:0;s.style.transform=`scale(${1+.35*(1-eo(q))})`;
+   $('cert').style.opacity=eo(p(t,10.45,10.7));}
+
+  // 4 — three engines
+  {const q=eo(p(t,12.15,12.5));const e=$('s4').querySelector('h2');e.style.opacity=q;e.style.transform=`translateY(${(1-q)*20}px)`;}
+  ENG.forEach((_,i)=>{const a=12.4+i*.18;const q=eo(p(t,a,a+.45));const c=$('c'+i);c.style.opacity=q;c.style.transform=`translateY(${(1-q)*60}px)`;
+    const n=Math.round(11*eio(p(t,a+.3,a+.9)));$('n'+i).textContent=`${n}/11`;});
+  {const q=eo(p(t,13.9,14.25));const e=$('chip');e.style.opacity=q;e.style.transform=`translateY(${(1-q)*16}px)`;}
+
+  // 5 — punchline
+  [['.l1',16.9],['.l2',17.15],['.l3',17.45],['.cmd',17.65]].forEach(([s,a])=>{const q=eo(p(t,a,a+.32));const e=$('s5').querySelector(s);e.style.opacity=q;e.style.transform=`translateY(${(1-q)*22}px)`;});
+}
+window.render=render;
+render(0);
+</script>
+</body></html>
